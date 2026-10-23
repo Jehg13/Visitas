@@ -1,0 +1,14 @@
+{
+  "name": "visitas",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev:frontend": "bun run --filter visitas-frontend dev",
+    "dev:backend": "bun run --filter visitas-backend dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck"
+  }
+}
