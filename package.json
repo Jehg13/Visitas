@@ -8,6 +8,8 @@
   "scripts": {
     "dev:frontend": "bun run --filter visitas-frontend dev",
     "dev:backend": "bun run --filter visitas-backend dev",
+    "db:migrate": "bun run --filter visitas-backend db:migrate",
+    "db:seed:test-users": "bun run --filter visitas-backend db:seed:test-users",
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck"
   }

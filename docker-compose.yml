@@ -3,7 +3,7 @@ services:
     image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: visitas
+      MYSQL_DATABASE: visitas_recep
       MYSQL_USER: visitas_app
       MYSQL_PASSWORD: visitas_local
       MYSQL_ROOT_PASSWORD: local_root_password

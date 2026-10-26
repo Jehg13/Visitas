@@ -1,0 +1,26 @@
+[
+  {
+    "login": "demo.admin",
+    "name": "Administrador de prueba",
+    "email": "admin.demo@visitas.local",
+    "active": "Y",
+    "priv_admin": "Y",
+    "role": "Administrador"
+  },
+  {
+    "login": "demo.recepcion",
+    "name": "Recepción de prueba",
+    "email": "recepcion.demo@visitas.local",
+    "active": "Y",
+    "priv_admin": "N",
+    "role": "Recepción"
+  },
+  {
+    "login": "jehg13072002",
+    "name": "Programador de prueba",
+    "email": "jehg13072002@gmail.com",
+    "active": "Y",
+    "priv_admin": "Y",
+    "role": "Programador"
+  }
+]
