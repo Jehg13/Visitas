@@ -1,5 +1,8 @@
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
+import { useRoute, useRouter } from "vue-router";
 import QRCode from "qrcode";
+import { confirmUser, notifyUser } from "./notifications";
 import DepartmentSection from "./sections/DepartmentSection.vue";
 import DailyLogSection from "./sections/DailyLogSection.vue";
 import EquipmentSection from "./sections/EquipmentSection.vue";
@@ -9,9 +12,18 @@ import AppointmentsSection from "./sections/AppointmentsSection.vue";
 import HomeSection from "./sections/HomeSection.vue";
 import BusinessDirectorySection from "./sections/BusinessDirectorySection.vue";
 import AccessSection from "./sections/AccessSection.vue";
+import { useAuthStore } from "./stores/auth";
+import { useDashboardStore } from "./stores/dashboard";
+import { dashboardSectionForPath, dashboardSectionPaths } from "./dashboardRoutes";
 const otherAppointmentVisitor = "__otro__";
-const props = defineProps();
-const currentUser = computed(() => props.user);
+const emit = defineEmits();
+const route = useRoute();
+const router = useRouter();
+const authStore = useAuthStore();
+const dashboardStore = useDashboardStore();
+const { activeSection, dashboardTheme, selectedAppointmentDate, appointmentFilter, appointments, externalStaff, departments, hosts, hostAccountOptions, businessPartners, generalVisitors, } = storeToRefs(dashboardStore);
+const { accounts: accessAccounts } = storeToRefs(authStore);
+const currentUser = computed(() => authStore.user);
 const otherHostAccountOption = "__otro__";
 const dashboardSections = [
     "Inicio",
@@ -78,16 +90,34 @@ function getStoredHosts() {
         return [];
     }
 }
-const activeSection = ref(getStoredDashboardSection(props.user.login));
-const dashboardTheme = ref(getStoredDashboardTheme(props.user.login));
+activeSection.value =
+    dashboardSectionForPath(route.path) ?? getStoredDashboardSection(currentUser.value.login);
+dashboardTheme.value = getStoredDashboardTheme(currentUser.value.login);
+selectedAppointmentDate.value = getLocalDate();
+hosts.value = getStoredHosts();
 const allowedDashboardSections = computed(() => {
-    if (props.user.isAdmin || props.user.sectionAccess.includes("recepcion")) {
-        return dashboardSections.filter((section) => section !== "Accesos" || props.user.isAdmin);
+    if (currentUser.value.isAdmin)
+        return dashboardSections;
+    if (currentUser.value.sectionAccess.includes("recepcion")) {
+        return ["Agenda de citas", "Bitácora diaria"];
     }
-    if (props.user.sectionAccess.includes("anfitriones"))
-        return ["Anfitriones"];
+    if (currentUser.value.sectionAccess.includes("anfitriones")) {
+        return [
+            "Agenda de citas",
+            "Personal de externos",
+            "Contratistas, proveedores y visitantes",
+            "Equipo y herramientas",
+        ];
+    }
     return [];
 });
+const isReception = computed(() => !currentUser.value.isAdmin && currentUser.value.sectionAccess.includes("recepcion"));
+const isHost = computed(() => !currentUser.value.isAdmin &&
+    currentUser.value.sectionAccess.includes("anfitriones") &&
+    !currentUser.value.sectionAccess.includes("recepcion"));
+if (isHost.value)
+    appointmentFilter.value = "all";
+const currentRoleLabel = computed(() => currentUser.value.isAdmin ? "Programador" : isReception.value ? "Recepción" : "Anfitrión");
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
 const appointmentDialogOpen = ref(false);
@@ -106,7 +136,6 @@ const businessPartnerDialogOpen = ref(false);
 const editingBusinessPartnerId = ref(null);
 const generalVisitorDialogOpen = ref(false);
 const editingGeneralVisitorId = ref(null);
-const toast = ref("");
 const visitorName = ref("");
 const visitorEmail = ref("");
 const visitorSelection = ref("");
@@ -116,13 +145,10 @@ const visitorDate = ref(getLocalDate());
 const visitorTime = ref("18:00");
 const appointmentSaving = ref(false);
 const appointmentLoading = ref(false);
-const selectedAppointmentDate = ref(getLocalDate());
-const appointmentFilter = ref("day");
 const appointmentSearch = ref("");
 const appointmentsPage = ref(1);
 const appointmentsPerPage = 5;
 const calendarMonth = ref(getLocalDate().slice(0, 7));
-const externalStaff = ref([]);
 const externalStaffSearch = ref("");
 const externalStaffName = ref("");
 const externalStaffPhone = ref("");
@@ -131,18 +157,14 @@ const externalStaffRelationshipType = ref("Contratista");
 const externalStaffBusinessPartnerId = ref(null);
 const departmentDialogOpen = ref(false);
 const editingDepartmentId = ref(null);
-const departments = ref([]);
 const departmentName = ref("");
 const departmentSaving = ref(false);
 const hostRole = ref("");
 const hostDialogOpen = ref(false);
 const editingHostId = ref(null);
 const hostSaving = ref(false);
-const hosts = ref(getStoredHosts());
 const nextHostId = ref(Math.max(0, ...hosts.value.map((host) => host.id)));
-const hostAccountOptions = ref([]);
 const hostAccountSelection = ref("");
-const accessAccounts = ref(props.accounts);
 const editingAccessAccount = ref(null);
 const accessAccountRoleDraft = ref("");
 const accessAccountSaving = ref(false);
@@ -153,7 +175,6 @@ const hostName = ref("");
 const hostDepartmentId = ref(null);
 const hostEmail = ref("");
 const hostPhone = ref("");
-const businessPartners = ref([]);
 const businessDirectoryLoading = ref(false);
 const businessPartnerSaving = ref(false);
 const generalVisitorSaving = ref(false);
@@ -171,7 +192,6 @@ const businessPartnerCategory = ref("");
 const businessPartnerEmployeeCount = ref(0);
 const businessPartnerType = ref("Contratista");
 const businessPartnerStatus = ref("Activa");
-const generalVisitors = ref([]);
 const nextGeneralVisitorId = ref(0);
 const generalVisitorSearch = ref("");
 const generalVisitorCurpFilter = ref("Todas");
@@ -180,13 +200,24 @@ const generalVisitorName = ref("");
 const generalVisitorCurp = ref("");
 const generalVisitorPhone = ref("");
 const generalVisitorEmail = ref("");
-watch(() => props.accounts, (accounts) => {
-    accessAccounts.value = accounts;
-}, { immediate: true });
 watch(allowedDashboardSections, (sections) => {
     if (!sections.includes(activeSection.value)) {
         activeSection.value = sections[0] ?? "";
     }
+}, { immediate: true });
+watch(() => route.path, (path) => {
+    const section = dashboardSectionForPath(path);
+    if (section) {
+        if (allowedDashboardSections.value.includes(section)) {
+            activeSection.value = section;
+        }
+        else {
+            void router.replace(dashboardSectionPaths[allowedDashboardSections.value[0]] ?? "/");
+        }
+        return;
+    }
+    if (path !== "/")
+        void router.replace("/");
 }, { immediate: true });
 watch(accessAccounts, (accounts) => {
     const sectionsByLogin = new Map(accounts.map((account) => [account.login.toLocaleLowerCase(), account.sectionAccess]));
@@ -206,12 +237,14 @@ watch(accessAccounts, (accounts) => {
 }, { immediate: true });
 watch(activeSection, (section) => {
     try {
-        localStorage.setItem(`visitas:${encodeURIComponent(props.user.login)}:active-section`, section);
+        localStorage.setItem(`visitas:${encodeURIComponent(currentUser.value.login)}:active-section`, section);
     }
     catch (error) {
         console.error("No se pudo guardar la sección del dashboard:", error);
         showToast("No se pudo recordar la sección para la próxima visita.");
     }
+    if (section === "Bitácora diaria")
+        void loadAppointments();
 }, { flush: "sync" });
 watch(hosts, (storedHosts) => {
     try {
@@ -225,51 +258,94 @@ watch(hosts, (storedHosts) => {
 const selectableHostAccounts = computed(() => hostAccountOptions.value.filter((account) => !hosts.value.some((host) => host.login.toLocaleLowerCase() === account.login.toLocaleLowerCase() &&
     host.id !== editingHostId.value)));
 const externalStaffPartnerOptions = computed(() => businessPartners.value.filter((partner) => partner.type === externalStaffRelationshipType.value));
+let liveRefreshTimer;
+function refreshVisibleSection() {
+    if (document.visibilityState !== "visible")
+        return;
+    if (activeSection.value === "Inicio" ||
+        activeSection.value === "Agenda de citas" ||
+        activeSection.value === "Bitácora diaria") {
+        void loadAppointments(true);
+    }
+    if (activeSection.value === "Personal de externos" ||
+        activeSection.value === "Contratistas, proveedores y visitantes" ||
+        activeSection.value === "Agenda de citas" ||
+        activeSection.value === "Bitácora diaria") {
+        void loadBusinessDirectory(true);
+    }
+    if (activeSection.value === "Departamento" && (currentUser.value.isAdmin || isReception.value)) {
+        void loadDepartments(true);
+    }
+    if (activeSection.value === "Anfitriones" && currentUser.value.isAdmin) {
+        void loadHostAccounts(true);
+    }
+}
 onMounted(() => {
-    if (allowedDashboardSections.value.length > 0)
+    if (currentUser.value.isAdmin || isReception.value)
         void loadDepartments();
-    if (currentUser.value.isAdmin || currentUser.value.sectionAccess.includes("recepcion")) {
+    if (currentUser.value.isAdmin || isReception.value || isHost.value) {
         void loadBusinessDirectory();
         void loadAppointments();
     }
-    if (currentUser.value.isAdmin || currentUser.value.sectionAccess.includes("recepcion")) {
+    if (currentUser.value.isAdmin) {
         void loadHostAccounts();
     }
+    liveRefreshTimer = window.setInterval(refreshVisibleSection, 30000);
+});
+onBeforeUnmount(() => {
+    if (liveRefreshTimer !== undefined)
+        window.clearInterval(liveRefreshTimer);
 });
 watch(dashboardTheme, (theme) => {
     try {
-        localStorage.setItem(`visitas:${encodeURIComponent(props.user.login)}:theme`, theme);
+        localStorage.setItem(`visitas:${encodeURIComponent(currentUser.value.login)}:theme`, theme);
     }
     catch (error) {
         console.error("No se pudo guardar la preferencia del tema:", error);
     }
 });
-async function loadAppointments() {
-    appointmentLoading.value = true;
+async function loadAppointments(silent = false) {
+    if (appointmentsRequestInProgress)
+        return;
+    appointmentsRequestInProgress = true;
+    if (!silent)
+        appointmentLoading.value = true;
     try {
         const response = await fetch("/api/appointments");
         const result = await response.json();
         if (!response.ok) {
-            showToast(result.error ?? "No se pudo cargar la agenda.");
+            const message = result.error ?? "No se pudo cargar la agenda.";
+            if (silent)
+                console.error(message);
+            else
+                showToast(message);
             return;
         }
         if (!Array.isArray(result.appointments)) {
             console.error("La API devolvió una lista de citas con formato inválido.");
-            showToast("No se pudo cargar la agenda.");
+            if (!silent)
+                showToast("No se pudo cargar la agenda.");
             return;
         }
         appointments.value = result.appointments;
     }
     catch (error) {
         console.error("Failed to load appointments:", error);
-        showToast("No se pudo conectar con el servidor para cargar la agenda.");
+        if (!silent)
+            showToast("No se pudo conectar con el servidor para cargar la agenda.");
     }
     finally {
-        appointmentLoading.value = false;
+        appointmentsRequestInProgress = false;
+        if (!silent)
+            appointmentLoading.value = false;
     }
 }
-async function loadBusinessDirectory() {
-    businessDirectoryLoading.value = true;
+async function loadBusinessDirectory(silent = false) {
+    if (businessDirectoryRequestInProgress)
+        return;
+    businessDirectoryRequestInProgress = true;
+    if (!silent)
+        businessDirectoryLoading.value = true;
     try {
         const [partnersResponse, visitorsResponse, externalStaffResponse] = await Promise.all([
             fetch("/api/business-partners"),
@@ -282,30 +358,45 @@ async function loadBusinessDirectory() {
             externalStaffResponse.json(),
         ]);
         if (!partnersResponse.ok) {
-            showToast(partnersResult.error ?? "No se pudieron cargar los contratistas y proveedores.");
+            const message = partnersResult.error ?? "No se pudieron cargar los contratistas y proveedores.";
+            if (silent)
+                console.error(message);
+            else
+                showToast(message);
             return;
         }
         if (!Array.isArray(partnersResult.businessPartners)) {
             console.error("La API devolvió una lista de empresas con formato inválido.");
-            showToast("No se pudo cargar el directorio de empresas.");
+            if (!silent)
+                showToast("No se pudo cargar el directorio de empresas.");
             return;
         }
         if (!visitorsResponse.ok) {
-            showToast(visitorsResult.error ?? "No se pudo cargar el público general.");
+            const message = visitorsResult.error ?? "No se pudo cargar el público general.";
+            if (silent)
+                console.error(message);
+            else
+                showToast(message);
             return;
         }
         if (!Array.isArray(visitorsResult.generalVisitors)) {
             console.error("La API devolvió una lista de personas con formato inválido.");
-            showToast("No se pudo cargar el público general.");
+            if (!silent)
+                showToast("No se pudo cargar el público general.");
             return;
         }
         if (!externalStaffResponse.ok) {
-            showToast(externalStaffResult.error ?? "No se pudo cargar el personal externo.");
+            const message = externalStaffResult.error ?? "No se pudo cargar el personal externo.";
+            if (silent)
+                console.error(message);
+            else
+                showToast(message);
             return;
         }
         if (!Array.isArray(externalStaffResult.externalStaff)) {
             console.error("La API devolvió una lista de personal externo con formato inválido.");
-            showToast("No se pudo cargar el personal externo.");
+            if (!silent)
+                showToast("No se pudo cargar el personal externo.");
             return;
         }
         businessPartners.value = partnersResult.businessPartners;
@@ -314,10 +405,13 @@ async function loadBusinessDirectory() {
     }
     catch (error) {
         console.error("Failed to load business directory:", error);
-        showToast("No se pudo conectar con el servidor para cargar el directorio.");
+        if (!silent)
+            showToast("No se pudo conectar con el servidor para cargar el directorio.");
     }
     finally {
-        businessDirectoryLoading.value = false;
+        businessDirectoryRequestInProgress = false;
+        if (!silent)
+            businessDirectoryLoading.value = false;
     }
 }
 function openAccessAccountEditor(account) {
@@ -353,7 +447,7 @@ async function saveAccessAccount() {
         }
         accessAccounts.value = result.accounts;
         editingAccessAccount.value = null;
-        showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`);
+        showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`, "success");
     }
     catch (error) {
         console.error("Failed to save account section access:", error);
@@ -392,63 +486,8 @@ const navigationGroups = [
         ],
     },
 ];
-const appointments = ref([]);
-const activities = [
-    {
-        time: "10:42",
-        title: "Llegada",
-        visitor: "Ana Torres",
-        company: "Tech Solutions",
-        detail: "Visitante llegó a recepción.",
-        icon: "arrival",
-        tone: "green",
-    },
-    {
-        time: "10:45",
-        title: "Ingreso",
-        visitor: "Ana Torres",
-        company: "Tech Solutions",
-        detail: "Acceso autorizado por María López.",
-        icon: "entry",
-        tone: "blue",
-    },
-    {
-        time: "12:17",
-        title: "Retiro",
-        visitor: "Carlos Méndez",
-        company: "Servicios Globales S.A.",
-        detail: "Visitante se retiró de la empresa.",
-        icon: "exit",
-        tone: "red",
-    },
-    {
-        time: "13:03",
-        title: "Llegada",
-        visitor: "Roberto Valdez",
-        company: "Construcciones del Norte",
-        detail: "Visitante llegó a recepción.",
-        icon: "arrival",
-        tone: "green",
-    },
-    {
-        time: "13:07",
-        title: "Ingreso",
-        visitor: "Roberto Valdez",
-        company: "Construcciones del Norte",
-        detail: "Acceso autorizado por Javier García.",
-        icon: "entry",
-        tone: "blue",
-    },
-    {
-        time: "16:20",
-        title: "Observaciones",
-        visitor: "Visita fuera de horario",
-        company: "",
-        detail: "Registro manual por recepción.",
-        icon: "note",
-        tone: "slate",
-    },
-];
+let appointmentsRequestInProgress = false;
+let businessDirectoryRequestInProgress = false;
 const summaryItems = [
     {
         title: "Personal externo",
@@ -478,7 +517,18 @@ const pageTitle = computed(() => !activeSection.value
         : activeSection.value);
 const hostEligibleDepartments = computed(() => departments.value);
 const appointmentCompanyOptions = computed(() => [...businessPartners.value].sort((first, second) => first.name.localeCompare(second.name, "es")));
-const appointmentHostOptions = computed(() => [...hosts.value].sort((first, second) => first.name.localeCompare(second.name, "es")));
+const appointmentHostOptions = computed(() => isHost.value
+    ? [{
+            id: 0,
+            login: currentUser.value.login,
+            name: currentUser.value.name?.trim() || currentUser.value.login,
+            departmentId: 0,
+            role: currentUser.value.role ?? "",
+            email: currentUser.value.email ?? "",
+            phone: "",
+            accessRoles: [],
+        }]
+    : [...hosts.value].sort((first, second) => first.name.localeCompare(second.name, "es")));
 const appointmentVisitorOptions = computed(() => externalStaff.value
     .filter((staff) => staff.businessPartnerId === visitorCompanyId.value)
     .sort((first, second) => first.fullName.localeCompare(second.fullName, "es")));
@@ -636,57 +686,84 @@ function selectSection(label) {
         return;
     activeSection.value = label;
     drawerOpen.value = false;
+    const path = dashboardSectionPaths[label];
+    if (path && route.path !== path)
+        void router.push(path);
 }
-async function loadDepartments() {
+async function loadDepartments(silent = false) {
     try {
         const response = await fetch("/api/departments");
         const result = await response.json();
         if (!response.ok) {
-            showToast(result.error ?? "No se pudieron cargar los departamentos.");
+            const message = result.error ?? "No se pudieron cargar los departamentos.";
+            if (silent)
+                console.error(message);
+            else
+                showToast(message);
             return;
         }
         if (!Array.isArray(result.departments)) {
             console.error("La API devolvió una lista de departamentos con formato inválido.");
-            showToast("No se pudieron cargar los departamentos.");
+            if (!silent)
+                showToast("No se pudieron cargar los departamentos.");
             return;
         }
         departments.value = result.departments;
     }
     catch (error) {
         console.error("Failed to load departments:", error);
-        showToast("No se pudo conectar con el servidor para cargar los departamentos.");
+        if (!silent)
+            showToast("No se pudo conectar con el servidor para cargar los departamentos.");
     }
 }
-async function loadHostAccounts() {
+async function loadHostAccounts(silent = false) {
     try {
         const response = await fetch("/api/host-accounts");
         const result = await response.json();
         if (!response.ok) {
-            showToast(result.error ?? "No se pudieron cargar las cuentas de Accesos.");
+            const message = result.error ?? "No se pudieron cargar las cuentas de Accesos.";
+            if (silent)
+                console.error(message);
+            else
+                showToast(message);
             return;
         }
         if (!Array.isArray(result.accounts)) {
             console.error("La API devolvió opciones de anfitrión con formato inválido.");
-            showToast("No se pudieron cargar las cuentas de Accesos.");
+            if (!silent)
+                showToast("No se pudieron cargar las cuentas de Accesos.");
             return;
         }
         hostAccountOptions.value = result.accounts;
     }
     catch (error) {
         console.error("Failed to load host account options:", error);
-        showToast("No se pudo conectar con el servidor para cargar las cuentas de Accesos.");
+        if (!silent)
+            showToast("No se pudo conectar con el servidor para cargar las cuentas de Accesos.");
     }
 }
-function showToast(message) {
-    toast.value = message;
-    window.setTimeout(() => {
-        toast.value = "";
-    }, 3200);
+function showToast(message, type = "error") {
+    notifyUser(message, type);
+}
+async function logout() {
+    try {
+        const response = await fetch("/api/auth/logout", { method: "POST" });
+        if (!response.ok) {
+            showToast("No se pudo cerrar la sesión. Inténtalo de nuevo.");
+            return;
+        }
+        emit("logout");
+    }
+    catch (error) {
+        console.error("Failed to log out:", error);
+        showToast("No se pudo conectar con el servidor para cerrar la sesión.");
+    }
 }
 async function createAppointmentQr(appointment) {
     return QRCode.toDataURL(JSON.stringify({
         type: "visitas-appointment",
         id: appointment.id,
+        referenceCode: appointment.referenceCode,
         visitor: appointment.visitor,
         company: appointment.company,
         host: appointment.host,
@@ -722,7 +799,7 @@ function openAppointmentDialog() {
     visitorEmail.value = "";
     visitorSelection.value = "";
     visitorCompanyId.value = null;
-    visitorHostLogin.value = "";
+    visitorHostLogin.value = isHost.value ? currentUser.value.login : "";
     appointmentDialogOpen.value = true;
 }
 function changeAppointmentCompany() {
@@ -784,7 +861,7 @@ async function submitDepartment() {
         departmentDialogOpen.value = false;
         editingDepartmentId.value = null;
         departmentName.value = "";
-        showToast(departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.");
+        showToast(departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.", "success");
     }
     catch (error) {
         console.error("Failed to save department:", error);
@@ -812,7 +889,7 @@ async function removeDepartment(id) {
             return;
         }
         departments.value = result.departments;
-        showToast("El departamento se eliminó.");
+        showToast("El departamento se eliminó.", "success");
     }
     catch (error) {
         console.error("Failed to delete department:", error);
@@ -949,7 +1026,7 @@ async function submitHost() {
     };
     if (editingHostId.value === null) {
         hosts.value.unshift({ id: ++nextHostId.value, ...hostData });
-        showToast("El anfitrión se registró con los datos de Accesos.");
+        showToast("El anfitrión se registró con los datos de Accesos.", "success");
     }
     else {
         const hostIndex = hosts.value.findIndex((host) => host.id === editingHostId.value);
@@ -959,7 +1036,7 @@ async function submitHost() {
             return;
         }
         hosts.value[hostIndex] = { id: editingHostId.value, ...hostData };
-        showToast("Los datos del anfitrión se actualizaron.");
+        showToast("Los datos del anfitrión se actualizaron.", "success");
     }
     hostDialogOpen.value = false;
     editingHostId.value = null;
@@ -972,7 +1049,7 @@ async function submitHost() {
 }
 function removeHost(id) {
     hosts.value = hosts.value.filter((host) => host.id !== id);
-    showToast("El anfitrión se eliminó del registro de demostración.");
+    showToast("El anfitrión se eliminó del registro de demostración.", "success");
 }
 function selectCalendarDay(date) {
     selectedAppointmentDate.value = date;
@@ -985,7 +1062,12 @@ async function submitAppointment() {
     if (appointmentSaving.value)
         return;
     const company = businessPartners.value.find((partner) => partner.id === visitorCompanyId.value);
-    const host = hosts.value.find((candidate) => candidate.login === visitorHostLogin.value);
+    const host = isHost.value
+        ? {
+            login: currentUser.value.login,
+            name: currentUser.value.name?.trim() || currentUser.value.login,
+        }
+        : hosts.value.find((candidate) => candidate.login === visitorHostLogin.value);
     const selectedVisitor = visitorSelection.value === otherAppointmentVisitor
         ? null
         : appointmentVisitorOptions.value.find((staff) => String(staff.id) === visitorSelection.value);
@@ -1033,7 +1115,7 @@ async function submitAppointment() {
         appointments.value = result.appointments;
         appointmentDialogOpen.value = false;
         selectedAppointmentDate.value = visitorDate.value;
-        showToast("La cita se guardó en la agenda.");
+        showToast("La cita se guardó en la agenda.", "success");
         visitorName.value = "";
         visitorEmail.value = "";
         visitorSelection.value = "";
@@ -1050,9 +1132,14 @@ async function submitAppointment() {
         appointmentSaving.value = false;
     }
 }
-function sendAppointmentQr(appointment) {
-    qrAppointment.value = appointment;
-    void sendAppointmentQrEmail(appointment);
+async function sendAppointmentQr(appointment) {
+    const isContractor = appointment.partnerType === "Contratista";
+    const message = isContractor
+        ? `Se enviará el código QR de visita y el código de referencia a ${appointment.email || "su correo"}. También recibirá el enlace de un solo uso para declarar el equipo y las herramientas que llevará. Al enviar el formulario, el enlace se desactivará; en recepción solo podrá ingresar lo registrado y verificado. Comparte esta condición con la persona visitante.`
+        : `Se enviará únicamente el código QR de visita y su código de referencia a ${appointment.email || "su correo"}. Para proveedores no se envía formulario ni enlace de equipo.`;
+    if (!await confirmUser(message, "Enviar QR"))
+        return;
+    await sendAppointmentQrEmail(appointment);
 }
 async function sendAppointmentQrEmail(appointment) {
     await sendAppointmentQrEmailTo(appointment);
@@ -1083,7 +1170,9 @@ async function sendAppointmentQrEmailTo(appointment, email) {
         }
         qrEmailRecoveryOpen.value = false;
         qrDialogOpen.value = false;
-        showToast(result.message ?? `El pase se envió a ${appointment.email}.`);
+        showToast(result.message ?? (appointment.partnerType === "Contratista"
+            ? `El pase, el código de referencia y el enlace de declaración se enviaron a ${appointment.email}.`
+            : `El pase y el código de referencia se enviaron a ${appointment.email}.`), "success");
     }
     catch (error) {
         console.error("Failed to email appointment QR:", error);
@@ -1133,7 +1222,7 @@ async function deleteAppointment(appointment) {
             return;
         }
         appointments.value = result.appointments;
-        showToast("La cita se eliminó de la agenda.");
+        showToast("La cita se eliminó de la agenda.", "success");
     }
     catch (error) {
         console.error("Failed to delete appointment:", error);
@@ -1163,7 +1252,7 @@ async function cancelAppointment(appointment) {
             return;
         }
         appointments.value = result.appointments;
-        showToast(`Se canceló la cita de ${appointment.visitor}.`);
+        showToast(`Se canceló la cita de ${appointment.visitor}.`, "success");
     }
     catch (error) {
         console.error("Failed to cancel appointment:", error);
@@ -1226,7 +1315,7 @@ async function submitExternalStaff() {
         editingExternalStaffId.value = null;
         showToast(editingId === null
             ? "El trabajador externo se registró."
-            : "Los datos del trabajador externo se actualizaron.");
+            : "Los datos del trabajador externo se actualizaron.", "success");
     }
     catch (error) {
         console.error("Failed to save external staff:", error);
@@ -1250,7 +1339,7 @@ async function removeExternalStaff(id) {
             return;
         }
         externalStaff.value = result.externalStaff;
-        showToast("El trabajador externo se eliminó.");
+        showToast("El trabajador externo se eliminó.", "success");
     }
     catch (error) {
         console.error("Failed to delete external staff:", error);
@@ -1272,10 +1361,18 @@ async function submitBusinessPartner() {
     if (businessPartnerSaving.value)
         return;
     const name = businessPartnerName.value.trim();
+    const description = businessPartnerDescription.value.trim();
     const rfc = businessPartnerRfc.value.trim().toLocaleUpperCase();
     const category = businessPartnerCategory.value.trim();
-    if (!name || !rfc || !category || businessPartnerEmployeeCount.value < 0)
+    const employeeCount = businessPartnerEmployeeCount.value;
+    if (!name || !description || !rfc || !category) {
+        showToast("Completa el nombre, la descripción, el RFC y la categoría.");
         return;
+    }
+    if (!Number.isSafeInteger(employeeCount) || employeeCount < 0 || employeeCount > 4294967295) {
+        showToast("El número de empleados debe ser un entero entre 0 y 4,294,967,295.");
+        return;
+    }
     const duplicateRfc = businessPartners.value.some((partner) => partner.rfc.toLocaleUpperCase() === rfc &&
         partner.id !== editingBusinessPartnerId.value);
     if (duplicateRfc) {
@@ -1284,7 +1381,7 @@ async function submitBusinessPartner() {
     }
     const partnerData = {
         name,
-        description: businessPartnerDescription.value.trim(),
+        description,
         rfc,
         category,
         employeeCount: businessPartnerEmployeeCount.value,
@@ -1311,7 +1408,7 @@ async function submitBusinessPartner() {
         }
         businessPartners.value = result.businessPartners;
         businessPartnerDialogOpen.value = false;
-        showToast(partnerId === null ? "La empresa se registró correctamente." : "Los datos de la empresa se actualizaron.");
+        showToast(partnerId === null ? "La empresa se registró correctamente." : "Los datos de la empresa se actualizaron.", "success");
     }
     catch (error) {
         console.error("Failed to save business partner:", error);
@@ -1341,7 +1438,7 @@ async function removeBusinessPartner(id) {
             return;
         }
         businessPartners.value = result.businessPartners;
-        showToast("La empresa se eliminó.");
+        showToast("La empresa se eliminó.", "success");
     }
     catch (error) {
         console.error("Failed to delete business partner:", error);
@@ -1361,10 +1458,18 @@ async function submitGeneralVisitor() {
         return;
     const fullName = generalVisitorName.value.trim();
     const curp = generalVisitorCurp.value.trim().toLocaleUpperCase();
-    if (!fullName)
+    const phone = generalVisitorPhone.value.trim();
+    const email = generalVisitorEmail.value.trim();
+    if (!fullName || !phone || !email) {
+        showToast("Completa el nombre, la CURP, el teléfono y el correo electrónico.");
         return;
-    if (curp && !/^[A-Z0-9]{18}$/.test(curp)) {
+    }
+    if (!/^[A-Z0-9]{18}$/.test(curp)) {
         showToast("La CURP debe contener 18 letras o números.");
+        return;
+    }
+    if (phone.length > 30 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showToast("Revisa que el teléfono y el correo electrónico sean válidos.");
         return;
     }
     const duplicateCurp = curp
@@ -1378,8 +1483,8 @@ async function submitGeneralVisitor() {
     const visitorData = {
         fullName,
         curp,
-        phone: generalVisitorPhone.value.trim(),
-        email: generalVisitorEmail.value.trim(),
+        phone,
+        email,
     };
     generalVisitorSaving.value = true;
     try {
@@ -1401,7 +1506,7 @@ async function submitGeneralVisitor() {
         }
         generalVisitors.value = result.generalVisitors;
         generalVisitorDialogOpen.value = false;
-        showToast(visitorId === null ? "La persona se registró correctamente." : "Los datos de la persona se actualizaron.");
+        showToast(visitorId === null ? "La persona se registró correctamente." : "Los datos de la persona se actualizaron.", "success");
     }
     catch (error) {
         console.error("Failed to save general visitor:", error);
@@ -1430,7 +1535,7 @@ async function removeGeneralVisitor(id) {
             return;
         }
         generalVisitors.value = result.generalVisitors;
-        showToast("La persona se eliminó.");
+        showToast("La persona se eliminó.", "success");
     }
     catch (error) {
         console.error("Failed to delete general visitor:", error);
@@ -1796,7 +1901,13 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.s
 __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
     href: "#i-user",
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+    ...{ class: "account-menu-identity" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+(__VLS_ctx.currentUser.name || __VLS_ctx.currentUser.login);
+__VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+(__VLS_ctx.currentRoleLabel);
 __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
     ...{ class: "icon account-chevron" },
 });
@@ -1807,9 +1918,25 @@ if (__VLS_ctx.privateMenuOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "account-dropdown" },
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "account-dropdown-profile" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "avatar" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        ...{ class: "icon" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
+        href: "#i-user",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "account-dropdown-identity" },
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
     (__VLS_ctx.currentUser.name || __VLS_ctx.currentUser.login);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+    (__VLS_ctx.currentRoleLabel);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "theme-toggle-label" },
     });
@@ -1854,6 +1981,17 @@ if (__VLS_ctx.privateMenuOpen) {
         'aria-hidden': "true",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.logout) },
+        ...{ class: "logout-button" },
+        type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        ...{ class: "icon" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
+        href: "#i-exit",
+    });
 }
 if (__VLS_ctx.drawerOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -1995,7 +2133,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
     href: "#i-shield",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-(__VLS_ctx.currentUser.isAdmin || __VLS_ctx.currentUser.sectionAccess.includes("recepcion") ? "RECEPCIÓN" : "ANFITRIONES");
+(__VLS_ctx.currentRoleLabel.toLocaleUpperCase("es-MX"));
 __VLS_asFunctionalElement(__VLS_intrinsicElements.br)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
@@ -2003,6 +2141,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElemen
     ...{ class: ({
             'dashboard-main-departments': __VLS_ctx.activeSection === 'Departamento',
             'dashboard-main-daily-log': __VLS_ctx.activeSection === 'Bitácora diaria',
+            'dashboard-main-home': __VLS_ctx.activeSection === 'Inicio',
         }) },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -2018,9 +2157,6 @@ if (__VLS_ctx.activeSection === 'Equipo y herramientas') {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
 }
 else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-}
-else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
 }
 else if (__VLS_ctx.activeSection === 'Agenda de citas') {
@@ -2065,16 +2201,9 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
     (__VLS_ctx.selectedAppointmentDate);
 }
 else if (__VLS_ctx.activeSection === 'Inicio') {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
-                    return;
-                if (!(__VLS_ctx.activeSection === 'Inicio'))
-                    return;
-                __VLS_ctx.showToast('Mostrando la agenda del 24 de octubre de 2026.');
-            } },
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "date-selector" },
-        type: "button",
+        'aria-label': "Fecha actual",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
         ...{ class: "icon" },
@@ -2083,12 +2212,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
         href: "#i-calendar",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        ...{ class: "icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-        href: "#i-down",
-    });
+    (new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "long", year: "numeric" }).format(new Date()));
 }
 if (__VLS_ctx.activeSection === 'Agenda de citas') {
     /** @type {[typeof AppointmentsSection, ]} */ ;
@@ -2115,6 +2239,8 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         selectedAppointmentDate: (__VLS_ctx.selectedAppointmentDate),
         today: (__VLS_ctx.getLocalDate()),
         loading: (__VLS_ctx.appointmentLoading),
+        canCreateAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
+        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
     }));
     const __VLS_1 = __VLS_0({
         ...{ 'onUpdate:page': {} },
@@ -2138,6 +2264,8 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         selectedAppointmentDate: (__VLS_ctx.selectedAppointmentDate),
         today: (__VLS_ctx.getLocalDate()),
         loading: (__VLS_ctx.appointmentLoading),
+        canCreateAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
+        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
     }, ...__VLS_functionalComponentArgsRest(__VLS_0));
     let __VLS_3;
     let __VLS_4;
@@ -2443,14 +2571,20 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
 else if (__VLS_ctx.activeSection === 'Equipo y herramientas') {
     /** @type {[typeof EquipmentSection, ]} */ ;
     // @ts-ignore
-    const __VLS_60 = __VLS_asFunctionalComponent(EquipmentSection, new EquipmentSection({}));
-    const __VLS_61 = __VLS_60({}, ...__VLS_functionalComponentArgsRest(__VLS_60));
+    const __VLS_60 = __VLS_asFunctionalComponent(EquipmentSection, new EquipmentSection({
+        theme: (__VLS_ctx.dashboardTheme),
+    }));
+    const __VLS_61 = __VLS_60({
+        theme: (__VLS_ctx.dashboardTheme),
+    }, ...__VLS_functionalComponentArgsRest(__VLS_60));
 }
 else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
     /** @type {[typeof DailyLogSection, ]} */ ;
     // @ts-ignore
     const __VLS_63 = __VLS_asFunctionalComponent(DailyLogSection, new DailyLogSection({
         ...{ 'onMovementSaved': {} },
+        ...{ 'onOpenQr': {} },
+        isAdmin: (__VLS_ctx.currentUser.isAdmin),
         appointments: (__VLS_ctx.appointments),
         appointmentsLoading: (__VLS_ctx.appointmentLoading),
         externalStaff: (__VLS_ctx.externalStaff),
@@ -2460,6 +2594,8 @@ else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
     }));
     const __VLS_64 = __VLS_63({
         ...{ 'onMovementSaved': {} },
+        ...{ 'onOpenQr': {} },
+        isAdmin: (__VLS_ctx.currentUser.isAdmin),
         appointments: (__VLS_ctx.appointments),
         appointmentsLoading: (__VLS_ctx.appointmentLoading),
         externalStaff: (__VLS_ctx.externalStaff),
@@ -2473,42 +2609,47 @@ else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
     const __VLS_69 = {
         onMovementSaved: (__VLS_ctx.loadAppointments)
     };
+    const __VLS_70 = {
+        onOpenQr: (__VLS_ctx.openQrDialog)
+    };
     var __VLS_65;
 }
 else if (__VLS_ctx.activeSection === 'Inicio') {
     /** @type {[typeof HomeSection, ]} */ ;
     // @ts-ignore
-    const __VLS_70 = __VLS_asFunctionalComponent(HomeSection, new HomeSection({
+    const __VLS_71 = __VLS_asFunctionalComponent(HomeSection, new HomeSection({
         ...{ 'onCreateAppointment': {} },
         ...{ 'onOpenQr': {} },
         ...{ 'onShowToast': {} },
         ...{ 'onOpenLog': {} },
+        ...{ 'onOpenAppointments': {} },
+        ...{ 'onOpenEquipment': {} },
         appointments: (__VLS_ctx.appointments),
-        activities: (__VLS_ctx.activities),
         summaryItems: (__VLS_ctx.summaryItems),
     }));
-    const __VLS_71 = __VLS_70({
+    const __VLS_72 = __VLS_71({
         ...{ 'onCreateAppointment': {} },
         ...{ 'onOpenQr': {} },
         ...{ 'onShowToast': {} },
         ...{ 'onOpenLog': {} },
+        ...{ 'onOpenAppointments': {} },
+        ...{ 'onOpenEquipment': {} },
         appointments: (__VLS_ctx.appointments),
-        activities: (__VLS_ctx.activities),
         summaryItems: (__VLS_ctx.summaryItems),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_70));
-    let __VLS_73;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_71));
     let __VLS_74;
     let __VLS_75;
-    const __VLS_76 = {
+    let __VLS_76;
+    const __VLS_77 = {
         onCreateAppointment: (__VLS_ctx.openAppointmentDialog)
     };
-    const __VLS_77 = {
+    const __VLS_78 = {
         onOpenQr: (__VLS_ctx.openQrDialog)
     };
-    const __VLS_78 = {
+    const __VLS_79 = {
         onShowToast: (__VLS_ctx.showToast)
     };
-    const __VLS_79 = {
+    const __VLS_80 = {
         onOpenLog: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2531,7 +2672,53 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
             __VLS_ctx.selectSection('Bitácora diaria');
         }
     };
-    var __VLS_72;
+    const __VLS_81 = {
+        onOpenAppointments: (...[$event]) => {
+            if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Anfitriones'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Accesos'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Departamento'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Personal de externos'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Equipo y herramientas'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Bitácora diaria'))
+                return;
+            if (!(__VLS_ctx.activeSection === 'Inicio'))
+                return;
+            __VLS_ctx.selectSection('Agenda de citas');
+        }
+    };
+    const __VLS_82 = {
+        onOpenEquipment: (...[$event]) => {
+            if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Anfitriones'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Accesos'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Departamento'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Personal de externos'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Equipo y herramientas'))
+                return;
+            if (!!(__VLS_ctx.activeSection === 'Bitácora diaria'))
+                return;
+            if (!(__VLS_ctx.activeSection === 'Inicio'))
+                return;
+            __VLS_ctx.selectSection('Equipo y herramientas');
+        }
+    };
+    var __VLS_73;
 }
 else {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -2636,6 +2823,7 @@ if (__VLS_ctx.appointmentDialogOpen) {
             type: "text",
             autocomplete: "name",
             maxlength: "180",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
             placeholder: "Nombre completo del visitante",
             required: true,
         });
@@ -2649,6 +2837,7 @@ if (__VLS_ctx.appointmentDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
         value: (__VLS_ctx.visitorHostLogin),
         required: true,
+        disabled: (__VLS_ctx.isHost),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
         value: "",
@@ -2659,8 +2848,9 @@ if (__VLS_ctx.appointmentDialogOpen) {
             key: (host.login),
             value: (host.login),
         });
-        (host.name);
-        (__VLS_ctx.departments.find((department) => department.id === host.departmentId)?.name ?? "Sin departamento");
+        (__VLS_ctx.isHost
+            ? host.name
+            : `${host.name} · ${__VLS_ctx.departments.find((department) => department.id === host.departmentId)?.name ?? "Sin departamento"}`);
     }
     if (__VLS_ctx.visitorSelection === __VLS_ctx.otherAppointmentVisitor) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
@@ -2774,34 +2964,48 @@ if (__VLS_ctx.qrDialogOpen) {
         (__VLS_ctx.qrAppointment.date);
         (__VLS_ctx.qrAppointment.time);
         (__VLS_ctx.qrAppointment.host);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.br)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.qrAppointment.referenceCode);
     }
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "qr-dialog-actions" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.qrDialogOpen))
-                    return;
-                __VLS_ctx.qrAppointment && __VLS_ctx.sendAppointmentQr(__VLS_ctx.qrAppointment);
-            } },
-        ...{ class: "button-primary dialog-submit" },
-        type: "button",
-        disabled: (__VLS_ctx.qrGenerating || __VLS_ctx.qrEmailSending || !__VLS_ctx.qrAppointment),
-    });
-    (__VLS_ctx.qrEmailSending ? "Enviando por correo..." : "Enviar por correo");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.qrDialogOpen))
-                    return;
-                __VLS_ctx.qrAppointment && __VLS_ctx.downloadAppointmentQr(__VLS_ctx.qrAppointment);
-            } },
-        ...{ class: "button-secondary dialog-submit" },
-        type: "button",
-        disabled: (__VLS_ctx.qrGenerating || !__VLS_ctx.qrDataUrl || !__VLS_ctx.qrAppointment),
-    });
+    if (!__VLS_ctx.isReception) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "qr-dialog-actions" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.qrDialogOpen))
+                        return;
+                    if (!(!__VLS_ctx.isReception))
+                        return;
+                    __VLS_ctx.qrAppointment && __VLS_ctx.sendAppointmentQr(__VLS_ctx.qrAppointment);
+                } },
+            ...{ class: "button-primary dialog-submit" },
+            type: "button",
+            disabled: (__VLS_ctx.qrGenerating || __VLS_ctx.qrEmailSending || !__VLS_ctx.qrAppointment),
+        });
+        (__VLS_ctx.qrEmailSending ? "Enviando por correo..." : "Enviar por correo");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.qrDialogOpen))
+                        return;
+                    if (!(!__VLS_ctx.isReception))
+                        return;
+                    __VLS_ctx.qrAppointment && __VLS_ctx.downloadAppointmentQr(__VLS_ctx.qrAppointment);
+                } },
+            ...{ class: "button-secondary dialog-submit" },
+            type: "button",
+            disabled: (__VLS_ctx.qrGenerating || !__VLS_ctx.qrDataUrl || !__VLS_ctx.qrAppointment),
+        });
+    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "qr-placeholder-note" },
     });
+    (__VLS_ctx.isReception
+        ? "Recepción puede consultar el pase; el anfitrión o Programación puede enviarlo."
+        : __VLS_ctx.qrAppointment?.partnerType === "Contratista"
+            ? "Contratistas: recibirán un enlace de un solo uso para declarar su equipo; lo que no se registre no podrá ingresar."
+            : "Proveedores: recibirán solamente el QR y código de referencia.");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
                 if (!(__VLS_ctx.qrDialogOpen))
@@ -2948,6 +3152,8 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
         value: (__VLS_ctx.businessPartnerName),
         type: "text",
         autocomplete: "organization",
+        maxlength: "180",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         required: true,
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
@@ -2956,6 +3162,7 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea, __VLS_intrinsicElements.textarea)({
         value: (__VLS_ctx.businessPartnerDescription),
         rows: "3",
+        maxlength: "65535",
         placeholder: "Describe a qué se dedica la empresa",
         required: true,
     });
@@ -2964,12 +3171,15 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
         value: (__VLS_ctx.businessPartnerRfc),
         type: "text",
         maxlength: "13",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         required: true,
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         value: (__VLS_ctx.businessPartnerCategory),
         type: "text",
+        maxlength: "120",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         placeholder: "Ej. Construcción, limpieza",
         required: true,
     });
@@ -2977,6 +3187,7 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "number",
         min: "0",
+        max: "4294967295",
         step: "1",
         required: true,
     });
@@ -3062,14 +3273,13 @@ if (__VLS_ctx.generalVisitorDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         value: (__VLS_ctx.generalVisitorName),
         type: "text",
+        maxlength: "180",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         autocomplete: "name",
         required: true,
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
         ...{ class: "directory-form-full" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "optional-field" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         ...{ onInput: (...[$event]) => {
@@ -3083,23 +3293,23 @@ if (__VLS_ctx.generalVisitorDialogOpen) {
         pattern: "[A-Za-z0-9]{18}",
         autocomplete: "off",
         placeholder: "18 caracteres",
+        required: true,
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "optional-field" },
-    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "tel",
+        maxlength: "30",
         autocomplete: "tel",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+        required: true,
     });
     (__VLS_ctx.generalVisitorPhone);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "optional-field" },
-    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "email",
+        maxlength: "254",
         autocomplete: "email",
+        required: true,
     });
     (__VLS_ctx.generalVisitorEmail);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
@@ -3326,6 +3536,8 @@ if (__VLS_ctx.hostDialogOpen) {
                 value: (__VLS_ctx.hostName),
                 type: "text",
                 autocomplete: "name",
+                maxlength: "180",
+                pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
                 required: true,
             });
         }
@@ -3334,6 +3546,8 @@ if (__VLS_ctx.hostDialogOpen) {
             value: (__VLS_ctx.hostLogin),
             type: "text",
             autocomplete: "username",
+            maxlength: "180",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
             readonly: (__VLS_ctx.hostAccountSelection !== __VLS_ctx.otherHostAccountOption),
             required: true,
         });
@@ -3341,6 +3555,7 @@ if (__VLS_ctx.hostDialogOpen) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             type: "email",
             autocomplete: "email",
+            maxlength: "254",
             readonly: (__VLS_ctx.hostAccountSelection !== __VLS_ctx.otherHostAccountOption),
         });
         (__VLS_ctx.hostEmail);
@@ -3361,12 +3576,14 @@ if (__VLS_ctx.hostDialogOpen) {
             value: (__VLS_ctx.hostRole),
             type: "text",
             autocomplete: "organization-title",
+            maxlength: "120",
             readonly: (__VLS_ctx.hostAccountSelection !== __VLS_ctx.otherHostAccountOption),
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             type: "tel",
             autocomplete: "tel",
+            maxlength: "30",
             readonly: (__VLS_ctx.hostAccountSelection !== __VLS_ctx.otherHostAccountOption),
         });
         (__VLS_ctx.hostPhone);
@@ -3434,6 +3651,7 @@ if (__VLS_ctx.departmentDialogOpen) {
         value: (__VLS_ctx.departmentName),
         type: "text",
         maxlength: "120",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         autocomplete: "organization-title",
         required: true,
     });
@@ -3505,6 +3723,8 @@ if (__VLS_ctx.externalStaffDialogOpen) {
         value: (__VLS_ctx.externalStaffName),
         type: "text",
         autocomplete: "name",
+        maxlength: "180",
+        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         placeholder: "Nombre y apellidos",
         required: true,
     });
@@ -3515,6 +3735,7 @@ if (__VLS_ctx.externalStaffDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "tel",
         autocomplete: "tel",
+        maxlength: "30",
         placeholder: "Número de contacto",
     });
     (__VLS_ctx.externalStaffPhone);
@@ -3525,6 +3746,7 @@ if (__VLS_ctx.externalStaffDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "email",
         autocomplete: "email",
+        maxlength: "254",
         placeholder: "correo@empresa.com",
     });
     (__VLS_ctx.externalStaffEmail);
@@ -3584,13 +3806,6 @@ if (__VLS_ctx.externalStaffDialogOpen) {
     });
     (__VLS_ctx.externalStaffSaving ? "Guardando..." : __VLS_ctx.editingExternalStaffId === null ? "Registrar personal" : "Guardar cambios");
 }
-if (__VLS_ctx.toast) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "toast-message" },
-        role: "status",
-    });
-    (__VLS_ctx.toast);
-}
 /** @type {__VLS_StyleScopedClasses['icon-library']} */ ;
 /** @type {__VLS_StyleScopedClasses['dashboard-app']} */ ;
 /** @type {__VLS_StyleScopedClasses['topbar']} */ ;
@@ -3610,14 +3825,21 @@ if (__VLS_ctx.toast) {
 /** @type {__VLS_StyleScopedClasses['account-menu-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['avatar']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['account-menu-identity']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['account-chevron']} */ ;
 /** @type {__VLS_StyleScopedClasses['account-dropdown']} */ ;
+/** @type {__VLS_StyleScopedClasses['account-dropdown-profile']} */ ;
+/** @type {__VLS_StyleScopedClasses['avatar']} */ ;
+/** @type {__VLS_StyleScopedClasses['icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['account-dropdown-identity']} */ ;
 /** @type {__VLS_StyleScopedClasses['theme-toggle-label']} */ ;
 /** @type {__VLS_StyleScopedClasses['theme-toggle']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['theme-toggle-switch']} */ ;
+/** @type {__VLS_StyleScopedClasses['logout-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['drawer-scrim']} */ ;
 /** @type {__VLS_StyleScopedClasses['sidebar']} */ ;
 /** @type {__VLS_StyleScopedClasses['sidebar-open']} */ ;
@@ -3645,6 +3867,7 @@ if (__VLS_ctx.toast) {
 /** @type {__VLS_StyleScopedClasses['dashboard-main']} */ ;
 /** @type {__VLS_StyleScopedClasses['dashboard-main-departments']} */ ;
 /** @type {__VLS_StyleScopedClasses['dashboard-main-daily-log']} */ ;
+/** @type {__VLS_StyleScopedClasses['dashboard-main-home']} */ ;
 /** @type {__VLS_StyleScopedClasses['dashboard-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['heading-accent']} */ ;
 /** @type {__VLS_StyleScopedClasses['date-selector']} */ ;
@@ -3652,7 +3875,6 @@ if (__VLS_ctx.toast) {
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['date-selector']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-panel']} */ ;
@@ -3732,9 +3954,6 @@ if (__VLS_ctx.toast) {
 /** @type {__VLS_StyleScopedClasses['directory-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
 /** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
-/** @type {__VLS_StyleScopedClasses['optional-field']} */ ;
-/** @type {__VLS_StyleScopedClasses['optional-field']} */ ;
-/** @type {__VLS_StyleScopedClasses['optional-field']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-submit']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
@@ -3804,7 +4023,6 @@ if (__VLS_ctx.toast) {
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-submit']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['toast-message']} */ ;
 var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
@@ -3819,12 +4037,24 @@ const __VLS_self = (await import('vue')).defineComponent({
             BusinessDirectorySection: BusinessDirectorySection,
             AccessSection: AccessSection,
             otherAppointmentVisitor: otherAppointmentVisitor,
+            activeSection: activeSection,
+            dashboardTheme: dashboardTheme,
+            selectedAppointmentDate: selectedAppointmentDate,
+            appointmentFilter: appointmentFilter,
+            appointments: appointments,
+            externalStaff: externalStaff,
+            departments: departments,
+            hosts: hosts,
+            businessPartners: businessPartners,
+            generalVisitors: generalVisitors,
+            accessAccounts: accessAccounts,
             currentUser: currentUser,
             otherHostAccountOption: otherHostAccountOption,
             visibleNavigationGroups: visibleNavigationGroups,
-            activeSection: activeSection,
-            dashboardTheme: dashboardTheme,
             allowedDashboardSections: allowedDashboardSections,
+            isReception: isReception,
+            isHost: isHost,
+            currentRoleLabel: currentRoleLabel,
             drawerOpen: drawerOpen,
             privateMenuOpen: privateMenuOpen,
             appointmentDialogOpen: appointmentDialogOpen,
@@ -3842,7 +4072,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             editingBusinessPartnerId: editingBusinessPartnerId,
             generalVisitorDialogOpen: generalVisitorDialogOpen,
             editingGeneralVisitorId: editingGeneralVisitorId,
-            toast: toast,
             visitorName: visitorName,
             visitorEmail: visitorEmail,
             visitorSelection: visitorSelection,
@@ -3852,12 +4081,9 @@ const __VLS_self = (await import('vue')).defineComponent({
             visitorTime: visitorTime,
             appointmentSaving: appointmentSaving,
             appointmentLoading: appointmentLoading,
-            selectedAppointmentDate: selectedAppointmentDate,
-            appointmentFilter: appointmentFilter,
             appointmentSearch: appointmentSearch,
             appointmentsPage: appointmentsPage,
             appointmentsPerPage: appointmentsPerPage,
-            externalStaff: externalStaff,
             externalStaffSearch: externalStaffSearch,
             externalStaffName: externalStaffName,
             externalStaffPhone: externalStaffPhone,
@@ -3866,16 +4092,13 @@ const __VLS_self = (await import('vue')).defineComponent({
             externalStaffBusinessPartnerId: externalStaffBusinessPartnerId,
             departmentDialogOpen: departmentDialogOpen,
             editingDepartmentId: editingDepartmentId,
-            departments: departments,
             departmentName: departmentName,
             departmentSaving: departmentSaving,
             hostRole: hostRole,
             hostDialogOpen: hostDialogOpen,
             editingHostId: editingHostId,
             hostSaving: hostSaving,
-            hosts: hosts,
             hostAccountSelection: hostAccountSelection,
-            accessAccounts: accessAccounts,
             editingAccessAccount: editingAccessAccount,
             accessAccountRoleDraft: accessAccountRoleDraft,
             accessAccountSaving: accessAccountSaving,
@@ -3886,7 +4109,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             hostDepartmentId: hostDepartmentId,
             hostEmail: hostEmail,
             hostPhone: hostPhone,
-            businessPartners: businessPartners,
             businessDirectoryLoading: businessDirectoryLoading,
             businessPartnerSaving: businessPartnerSaving,
             generalVisitorSaving: generalVisitorSaving,
@@ -3903,7 +4125,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             businessPartnerEmployeeCount: businessPartnerEmployeeCount,
             businessPartnerType: businessPartnerType,
             businessPartnerStatus: businessPartnerStatus,
-            generalVisitors: generalVisitors,
             generalVisitorSearch: generalVisitorSearch,
             generalVisitorCurpFilter: generalVisitorCurpFilter,
             generalVisitorPage: generalVisitorPage,
@@ -3917,8 +4138,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             openAccessAccountEditor: openAccessAccountEditor,
             saveAccessAccount: saveAccessAccount,
             getLocalDate: getLocalDate,
-            appointments: appointments,
-            activities: activities,
             summaryItems: summaryItems,
             pageTitle: pageTitle,
             hostEligibleDepartments: hostEligibleDepartments,
@@ -3942,6 +4161,7 @@ const __VLS_self = (await import('vue')).defineComponent({
             activeAppointmentCount: activeAppointmentCount,
             selectSection: selectSection,
             showToast: showToast,
+            logout: logout,
             openQrDialog: openQrDialog,
             openAppointmentDialog: openAppointmentDialog,
             changeAppointmentCompany: changeAppointmentCompany,
@@ -3973,12 +4193,12 @@ const __VLS_self = (await import('vue')).defineComponent({
             removeGeneralVisitor: removeGeneralVisitor,
         };
     },
-    __typeProps: {},
+    __typeEmits: {},
 });
 export default (await import('vue')).defineComponent({
     setup() {
         return {};
     },
-    __typeProps: {},
+    __typeEmits: {},
 });
 ; /* PartiallyEnd: #4569/main.vue */

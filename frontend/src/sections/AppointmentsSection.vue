@@ -6,6 +6,7 @@ type Appointment = {
   time: string;
   visitor: string;
   email: string;
+  referenceCode: string;
   registeredBy: string;
   company: string;
   host: string;
@@ -32,6 +33,8 @@ defineProps<{
   selectedAppointmentDate: string;
   today: string;
   loading: boolean;
+  canCreateAppointments: boolean;
+  canManageAppointments: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -60,7 +63,12 @@ const emit = defineEmits<{
         </div>
         <div class="workspace-heading-actions">
           <span class="workspace-count">{{ selectedAppointments.length }} citas</span>
-          <button class="button-primary" type="button" @click="emit('create')">
+          <button
+            v-if="canCreateAppointments"
+            class="button-primary"
+            type="button"
+            @click="emit('create')"
+          >
             <svg class="icon"><use href="#i-plus" /></svg>
             <span>Nueva cita</span>
           </button>
@@ -117,8 +125,9 @@ const emit = defineEmits<{
                 </span>
               </td>
               <td>
-                <div class="agenda-actions">
+                <div class="agenda-actions" :class="{ 'agenda-actions-readonly': !canManageAppointments }">
                   <button
+                    v-if="canManageAppointments"
                     class="workspace-remove"
                     type="button"
                     :aria-label="`Cancelar cita de ${appointment.visitor}`"
@@ -126,6 +135,7 @@ const emit = defineEmits<{
                     @click="emit('cancel', appointment)"
                   >Cancelar</button>
                   <button
+                    v-if="canManageAppointments"
                     class="agenda-qr-action"
                     type="button"
                     :aria-label="`Enviar QR a ${appointment.visitor}`"
@@ -139,6 +149,7 @@ const emit = defineEmits<{
                     @click="emit('openQr', appointment)"
                   ><svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span></button>
                   <button
+                    v-if="canManageAppointments"
                     class="workspace-remove agenda-delete-action"
                     type="button"
                     :aria-label="`Eliminar cita de ${appointment.visitor}`"

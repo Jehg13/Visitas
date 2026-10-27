@@ -1,4 +1,5 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { notifyUser } from "../notifications";
 const props = defineProps();
 const emit = defineEmits();
 const today = ref(getLocalDate());
@@ -23,28 +24,34 @@ const total = ref(0);
 const pages = ref(1);
 const loading = ref(false);
 const saving = ref(false);
+const exporting = ref(false);
+const exportMessage = ref("");
 const error = ref("");
 const quickActionError = ref("");
 const quickActionNotice = ref("");
 const quickActionAppointmentId = ref(null);
+const quickActionEntryId = ref(null);
 const quickSearch = ref("");
 const quickSearchInput = ref(null);
+const referenceCodeOpen = ref(false);
+const referenceCodeInputValue = ref("");
+const referenceCodeInput = ref(null);
+const scannerOpen = ref(false);
+const scannerError = ref("");
+const scannerVideo = ref(null);
+let scannerControls = null;
 const selectedQuickAppointmentId = ref(null);
+const selectedEntryId = ref(null);
 const quickObservation = ref("");
 const quickStatusOverrides = ref({});
 const dialogOpen = ref(false);
-const logEvent = ref("Llegada");
-const logTime = ref(getLocalTime());
 const logPersonType = ref("appointment");
 const logSubjectId = ref("");
 const manualPerson = ref("");
-const logDate = ref(today.value);
 const logDetails = ref("");
 let requestVersion = 0;
 let searchTimer;
-const selectedAppointments = computed(() => [...props.appointments]
-    .filter((appointment) => appointment.status !== "Cancelada" && appointment.status !== "Retirado")
-    .sort((first, second) => `${first.date} ${first.time}`.localeCompare(`${second.date} ${second.time}`)));
+let refreshTimer;
 const todayAppointments = computed(() => [...props.appointments]
     .filter((appointment) => appointment.date === today.value &&
     appointment.status !== "Cancelada")
@@ -57,6 +64,45 @@ const filteredQuickAppointments = computed(() => {
         .some((value) => value.toLocaleLowerCase("es").includes(query)));
 });
 const selectedQuickAppointment = computed(() => todayAppointments.value.find((appointment) => appointment.id === selectedQuickAppointmentId.value) ?? null);
+const selectedEntry = computed(() => entries.value.find((entry) => entry.id === selectedEntryId.value) ?? null);
+const selectedEntryAppointment = computed(() => {
+    if (!selectedEntry.value?.appointmentId)
+        return null;
+    return props.appointments.find((appointment) => appointment.id === selectedEntry.value?.appointmentId) ?? null;
+});
+const selectedPerson = computed(() => selectedQuickAppointment.value ?? selectedEntry.value);
+const selectedAppointment = computed(() => selectedQuickAppointment.value ?? selectedEntryAppointment.value);
+const equipmentEntryChecklistPending = computed(() => Boolean(selectedAppointment.value?.equipmentChecklistRequired &&
+    !selectedAppointment.value.equipmentEntryChecklistComplete));
+const selectedEntryStatus = computed(() => {
+    return selectedEntry.value ? entryStatus(selectedEntry.value) : "";
+});
+const selectedPersonStatus = computed(() => {
+    if (selectedQuickAppointment.value)
+        return quickAppointmentStatus(selectedQuickAppointment.value);
+    return selectedEntryAppointment.value
+        ? quickAppointmentStatus(selectedEntryAppointment.value)
+        : selectedEntryStatus.value;
+});
+const selectedPersonName = computed(() => selectedQuickAppointment.value?.visitor ?? selectedEntry.value?.person ?? "");
+const selectedPersonCompany = computed(() => selectedQuickAppointment.value?.company ?? selectedEntry.value?.company ?? "");
+const selectedPersonHost = computed(() => selectedQuickAppointment.value?.host ?? selectedEntry.value?.host ?? "");
+const selectedPersonDateTime = computed(() => selectedQuickAppointment.value
+    ? `${selectedQuickAppointment.value.date} · ${selectedQuickAppointment.value.time}`
+    : selectedEntry.value
+        ? `${selectedEntry.value.date} · ${selectedEntry.value.time}`
+        : "");
+const selectedAvailableMovements = computed(() => {
+    if (selectedEntry.value && selectedEntry.value.date !== getLocalDate())
+        return [];
+    if (selectedPersonStatus.value === "Pendiente")
+        return ["Llegada"];
+    if (selectedPersonStatus.value === "En proceso")
+        return ["Ingreso", "Retiro"];
+    if (selectedPersonStatus.value === "Dentro")
+        return ["Retiro"];
+    return [];
+});
 const selectedExternalStaff = computed(() => [...props.externalStaff].sort((first, second) => first.fullName.localeCompare(second.fullName, "es")));
 const selectedVisitors = computed(() => [...props.generalVisitors].sort((first, second) => first.fullName.localeCompare(second.fullName, "es")));
 const departmentOptions = computed(() => {
@@ -81,7 +127,6 @@ const availableHosts = computed(() => {
     const names = new Set(departmentHostNames.value);
     return hosts.value.filter((host) => names.has(host));
 });
-const requiresLinkedPerson = computed(() => logEvent.value === "Ingreso" || logEvent.value === "Retiro");
 const groupedEntries = computed(() => {
     const groups = new Map();
     for (const entry of entries.value) {
@@ -91,6 +136,7 @@ const groupedEntries = computed(() => {
     }
     return [...groups.entries()].map(([date, groupEntries]) => ({ date, entries: groupEntries }));
 });
+const recentEntries = computed(() => entries.value.slice(0, 6));
 const rangeLabel = computed(() => {
     if (fromDate.value === toDate.value)
         return formatDate(fromDate.value);
@@ -105,6 +151,44 @@ watch(() => props.appointments, (appointments) => {
 });
 function quickAppointmentStatus(appointment) {
     return quickStatusOverrides.value[appointment.id] ?? appointment.status;
+}
+function entryStatus(entry) {
+    const appointment = appointmentForEntry(entry);
+    if (appointment)
+        return quickAppointmentStatus(appointment);
+    const samePerson = (candidate) => {
+        if (entry.appointmentId !== null)
+            return candidate.appointmentId === entry.appointmentId;
+        if (entry.externalStaffId !== null)
+            return candidate.externalStaffId === entry.externalStaffId;
+        if (entry.visitorRecordId !== null)
+            return candidate.visitorRecordId === entry.visitorRecordId;
+        return candidate.appointmentId === null &&
+            candidate.externalStaffId === null &&
+            candidate.visitorRecordId === null &&
+            candidate.person.trim().toLocaleLowerCase("es") === entry.person.trim().toLocaleLowerCase("es");
+    };
+    const latestMovement = entries.value
+        .filter((candidate) => samePerson(candidate) &&
+        (candidate.event === "Llegada" || candidate.event === "Ingreso" || candidate.event === "Retiro"))
+        .sort((first, second) => `${second.date} ${second.time} ${second.id}`.localeCompare(`${first.date} ${first.time} ${first.id}`))[0];
+    if (latestMovement?.event === "Ingreso")
+        return "Dentro";
+    if (latestMovement?.event === "Retiro")
+        return "Retirado";
+    if (latestMovement?.event === "Llegada")
+        return "En proceso";
+    return "Pendiente";
+}
+function appointmentForEntry(entry) {
+    if (entry.appointmentId === null)
+        return null;
+    return props.appointments.find((appointment) => appointment.id === entry.appointmentId) ?? null;
+}
+function openEntryQr(entry) {
+    const appointment = appointmentForEntry(entry);
+    if (appointment)
+        emit("openQr", appointment);
 }
 function getLocalDate() {
     const now = new Date();
@@ -171,6 +255,78 @@ function requestUrl() {
     }
     return `/api/daily-log?${query.toString()}`;
 }
+function csvCell(value) {
+    const text = value === null ? "" : String(value);
+    const safeText = /^[\u0000-\u0020]*[=+\-@]/.test(text) ? `'${text}` : text;
+    return `"${safeText.replace(/"/g, '""')}"`;
+}
+async function exportLog() {
+    if (exporting.value)
+        return;
+    if (!fromDate.value || !toDate.value || fromDate.value > toDate.value) {
+        notifyUser("Selecciona un rango de fechas válido para exportar.");
+        return;
+    }
+    exporting.value = true;
+    exportMessage.value = "";
+    try {
+        const exportUrl = new URL(requestUrl(), window.location.origin);
+        exportUrl.searchParams.set("page", "1");
+        exportUrl.searchParams.set("pageSize", "100");
+        const firstResponse = await fetch(exportUrl);
+        const firstResult = await firstResponse.json();
+        if (!firstResponse.ok)
+            throw new Error(firstResult.error ?? "No se pudo exportar la bitácora.");
+        if (!Array.isArray(firstResult.entries) || !Number.isSafeInteger(firstResult.pages) || !firstResult.pages) {
+            throw new Error("El servidor devolvió datos incompletos para exportar la bitácora.");
+        }
+        const exportEntries = [...firstResult.entries];
+        for (let exportPage = 2; exportPage <= firstResult.pages; exportPage += 1) {
+            exportUrl.searchParams.set("page", String(exportPage));
+            const response = await fetch(exportUrl);
+            const result = await response.json();
+            if (!response.ok)
+                throw new Error(result.error ?? `No se pudo cargar la página ${exportPage} de la bitácora.`);
+            if (!Array.isArray(result.entries)) {
+                throw new Error(`El servidor devolvió datos incompletos en la página ${exportPage}.`);
+            }
+            exportEntries.push(...result.entries);
+        }
+        if (exportEntries.length === 0) {
+            notifyUser("No hay movimientos en el rango y filtros seleccionados.", "info");
+            return;
+        }
+        const columns = [
+            "date", "time", "event", "person", "company", "host", "category", "details",
+            ...(props.isAdmin ? ["actorName"] : []),
+        ];
+        const headings = [
+            "Fecha", "Hora", "Movimiento", "Persona", "Empresa", "Anfitrión", "Categoría", "Detalles",
+            ...(props.isAdmin ? ["Registró / autorizó"] : []),
+        ];
+        const csvRows = [
+            headings.map(csvCell).join(","),
+            ...exportEntries.map((entry) => columns.map((column) => csvCell(entry[column])).join(",")),
+        ];
+        const blob = new Blob(["\uFEFF", csvRows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+        const downloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+        link.download = `bitacora-${fromDate.value}-${toDate.value}.csv`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(downloadUrl);
+        notifyUser(`Se exportaron ${exportEntries.length} movimientos.`, "success");
+    }
+    catch (cause) {
+        console.error("Failed to export daily log:", cause);
+        notifyUser(cause instanceof Error ? cause.message : "No se pudo exportar la bitácora.");
+    }
+    finally {
+        exporting.value = false;
+    }
+}
 async function loadEntries() {
     if (!fromDate.value || !toDate.value || fromDate.value > toDate.value) {
         error.value = "Selecciona un rango de fechas válido.";
@@ -215,10 +371,7 @@ async function loadEntries() {
     }
 }
 function openCreateDialog() {
-    logEvent.value = "Llegada";
-    logTime.value = getLocalTime();
-    logDate.value = today.value;
-    logPersonType.value = "appointment";
+    logPersonType.value = props.generalVisitors.length > 0 ? "visitor" : "manual";
     logSubjectId.value = "";
     manualPerson.value = "";
     logDetails.value = "";
@@ -233,22 +386,18 @@ async function submitEntry() {
     if (saving.value)
         return;
     if (logPersonType.value === "manual" && !manualPerson.value.trim()) {
-        error.value = "Escribe el nombre de la persona.";
+        notifyUser("Escribe el nombre de la persona.");
         return;
     }
     if (logPersonType.value !== "manual" && !logSubjectId.value) {
-        error.value = "Selecciona la cita o ficha de la persona.";
-        return;
-    }
-    if (requiresLinkedPerson.value && logPersonType.value === "manual") {
-        error.value = "Para un ingreso o retiro se necesita vincular una cita o ficha registrada.";
+        notifyUser("Selecciona la cita o ficha de la persona.");
         return;
     }
     const selectedId = Number(logSubjectId.value);
     const payload = {
-        event: logEvent.value,
-        date: logDate.value,
-        time: logTime.value,
+        event: "Llegada",
+        date: getLocalDate(),
+        time: getLocalTime(),
         personName: logPersonType.value === "manual" ? manualPerson.value.trim() : "",
         details: logDetails.value.trim(),
         appointmentId: logPersonType.value === "appointment" ? selectedId : null,
@@ -265,19 +414,38 @@ async function submitEntry() {
         });
         const result = await response.json();
         if (!response.ok) {
-            error.value = result.error ?? "No se pudo guardar el movimiento.";
+            notifyUser(result.error ?? "No se pudo guardar el movimiento.");
             return;
         }
         dialogOpen.value = false;
-        fromDate.value = logDate.value;
-        toDate.value = logDate.value;
+        selectedQuickAppointmentId.value = null;
+        selectedEntryId.value = null;
+        quickSearch.value = "";
+        quickObservation.value = "";
+        const successMessage = result.duplicate
+            ? `${result.personName ?? "La persona"} ya tenía su llegada registrada.`
+            : `Llegada registrada para ${result.personName ?? "la persona"}.`;
+        notifyUser(successMessage, result.duplicate ? "info" : "success");
+        fromDate.value = payload.date;
+        toDate.value = payload.date;
         page.value = 1;
         await loadEntries();
+        const savedPersonName = result.personName?.trim().toLocaleLowerCase("es");
+        const savedEntry = entries.value.find((entry) => entry.event === "Llegada" &&
+            entry.date === payload.date &&
+            entry.person.trim().toLocaleLowerCase("es") === savedPersonName);
+        if (savedEntry)
+            selectedEntryId.value = savedEntry.id;
         emit("movementSaved");
+        logSubjectId.value = "";
+        manualPerson.value = "";
+        logDetails.value = "";
+        await nextTick();
+        quickSearchInput.value?.focus();
     }
     catch (cause) {
         console.error("Failed to save daily log movement:", cause);
-        error.value = "No se pudo conectar con el servidor para guardar el movimiento.";
+        notifyUser("No se pudo conectar con el servidor para guardar el movimiento.");
     }
     finally {
         saving.value = false;
@@ -285,10 +453,80 @@ async function submitEntry() {
 }
 function selectQuickAppointment(appointment) {
     selectedQuickAppointmentId.value = appointment.id;
+    selectedEntryId.value = null;
     quickActionError.value = "";
     quickActionNotice.value = "";
     quickObservation.value = "";
     quickSearch.value = appointment.visitor;
+}
+async function openReferenceCodeEntry() {
+    referenceCodeOpen.value = true;
+    referenceCodeInputValue.value = "";
+    quickActionError.value = "";
+    quickActionNotice.value = "";
+    await nextTick();
+    referenceCodeInput.value?.focus();
+}
+function submitReferenceCode() {
+    const referenceCode = referenceCodeInputValue.value.trim();
+    if (!/^\d{8}$/.test(referenceCode)) {
+        notifyUser("El código de referencia debe contener 8 dígitos.");
+        return;
+    }
+    const appointment = todayAppointments.value.find((candidate) => candidate.referenceCode === referenceCode);
+    if (!appointment) {
+        notifyUser("No encontramos una cita de hoy con ese código de referencia.");
+        return;
+    }
+    selectQuickAppointment(appointment);
+    referenceCodeOpen.value = false;
+    referenceCodeInputValue.value = "";
+}
+async function openQrScanner() {
+    if (scannerOpen.value)
+        return;
+    scannerOpen.value = true;
+    scannerError.value = "";
+    quickActionError.value = "";
+    await nextTick();
+    const video = scannerVideo.value;
+    if (!video) {
+        scannerOpen.value = false;
+        notifyUser("No se pudo iniciar la vista de la cámara.");
+        return;
+    }
+    try {
+        const { BrowserQRCodeReader } = await import("@zxing/browser");
+        const qrReader = new BrowserQRCodeReader();
+        const controls = await qrReader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" } } }, video, (result, _decodeError, callbackControls) => {
+            if (!result || !scannerOpen.value)
+                return;
+            const decodedText = result.getText();
+            callbackControls.stop();
+            scannerControls = null;
+            scannerOpen.value = false;
+            quickSearch.value = decodedText;
+            void handleQuickSearchEnter();
+        });
+        scannerControls = controls;
+        if (!scannerOpen.value) {
+            controls.stop();
+            scannerControls = null;
+        }
+    }
+    catch (cause) {
+        console.error("Failed to start the appointment QR camera scanner:", cause);
+        const message = cause instanceof Error && cause.name === "NotAllowedError"
+            ? "No se concedió permiso para usar la cámara. Puedes introducir el código manualmente."
+            : "No se pudo acceder a la cámara. Verifica los permisos y que la página use HTTPS.";
+        notifyUser(message);
+        scannerOpen.value = false;
+    }
+}
+function closeQrScanner() {
+    scannerOpen.value = false;
+    scannerControls?.stop();
+    scannerControls = null;
 }
 function movementIsAvailable(event, appointment) {
     const status = quickAppointmentStatus(appointment);
@@ -296,12 +534,13 @@ function movementIsAvailable(event, appointment) {
         return false;
     if (event === "Llegada")
         return status === "Pendiente";
-    if (event === "Ingreso")
-        return status === "Pendiente" || status === "En proceso";
-    return status === "Dentro";
+    if (event === "Ingreso") {
+        return ((status === "Pendiente" || status === "En proceso") &&
+            (!appointment.equipmentChecklistRequired || appointment.equipmentEntryChecklistComplete));
+    }
+    return status === "Dentro" || status === "En proceso";
 }
-async function saveQuickMovement(event) {
-    const appointment = selectedQuickAppointment.value;
+async function saveQuickMovement(event, appointment = selectedQuickAppointment.value ?? selectedEntryAppointment.value) {
     if (!appointment || quickActionAppointmentId.value !== null || !movementIsAvailable(event, appointment))
         return;
     const operationDate = getLocalDate();
@@ -317,13 +556,14 @@ async function saveQuickMovement(event) {
                 event,
                 date: operationDate,
                 time: getLocalTime(),
+                personName: "",
                 appointmentId: appointment.id,
                 details: quickObservation.value.trim(),
             }),
         });
         const result = await response.json();
         if (!response.ok) {
-            quickActionError.value = result.error ?? "No se pudo actualizar el estado de la visita.";
+            notifyUser(result.error ?? "No se pudo actualizar el estado de la visita.");
             return;
         }
         quickStatusOverrides.value[appointment.id] = event === "Ingreso"
@@ -331,10 +571,11 @@ async function saveQuickMovement(event) {
             : event === "Retiro"
                 ? "Retirado"
                 : "En proceso";
-        selectedQuickAppointmentId.value = null;
-        quickSearch.value = "";
+        selectedQuickAppointmentId.value = appointment.id;
+        selectedEntryId.value = null;
+        quickSearch.value = appointment.visitor;
         quickObservation.value = "";
-        quickActionNotice.value = `${appointment.visitor}: ${event === "Llegada" ? "llegada registrada" : event === "Ingreso" ? "entrada registrada" : "retiro registrado"}.`;
+        notifyUser(`${appointment.visitor}: ${event === "Llegada" ? "llegada registrada" : event === "Ingreso" ? "entrada registrada" : "retiro registrado"}.`, "success");
         fromDate.value = operationDate;
         toDate.value = operationDate;
         search.value = "";
@@ -348,7 +589,7 @@ async function saveQuickMovement(event) {
     }
     catch (cause) {
         console.error("Failed to update visit status:", cause);
-        quickActionError.value = "No se pudo conectar con el servidor. Intenta de nuevo.";
+        notifyUser("No se pudo conectar con el servidor. Intenta de nuevo.");
     }
     finally {
         quickActionAppointmentId.value = null;
@@ -356,17 +597,84 @@ async function saveQuickMovement(event) {
         quickSearchInput.value?.focus();
     }
 }
+function selectEntry(entry) {
+    selectedEntryId.value = entry.id;
+    selectedQuickAppointmentId.value = null;
+    quickActionError.value = "";
+    quickActionNotice.value = "";
+    quickObservation.value = "";
+}
+async function saveSelectedEntryMovement(event) {
+    const entry = selectedEntry.value;
+    if (!entry || quickActionEntryId.value !== null || !selectedAvailableMovements.value.includes(event))
+        return;
+    if (selectedEntryAppointment.value) {
+        await saveQuickMovement(event, selectedEntryAppointment.value);
+        return;
+    }
+    const operationDate = getLocalDate();
+    today.value = operationDate;
+    quickActionEntryId.value = entry.id;
+    quickActionError.value = "";
+    quickActionNotice.value = "";
+    try {
+        const response = await fetch("/api/daily-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                event,
+                date: operationDate,
+                time: getLocalTime(),
+                personName: entry.person,
+                details: quickObservation.value.trim(),
+                appointmentId: entry.appointmentId,
+                externalStaffId: entry.externalStaffId,
+                visitorRecordId: entry.visitorRecordId,
+            }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            notifyUser(result.error ?? "No se pudo actualizar el estado de la visita.");
+            return;
+        }
+        quickObservation.value = "";
+        notifyUser(`${entry.person}: ${event === "Llegada" ? "llegada registrada" : event === "Ingreso" ? "entrada registrada" : "retiro registrado"}.`, "success");
+        fromDate.value = operationDate;
+        toDate.value = operationDate;
+        search.value = "";
+        eventFilter.value = "";
+        categoryFilter.value = "";
+        hostFilter.value = "";
+        departmentFilter.value = "";
+        page.value = 1;
+        await loadEntries();
+        const refreshedEntry = entries.value.find((candidate) => candidate.person.trim().toLocaleLowerCase("es") === entry.person.trim().toLocaleLowerCase("es") &&
+            candidate.event === event);
+        if (refreshedEntry)
+            selectedEntryId.value = refreshedEntry.id;
+        emit("movementSaved");
+    }
+    catch (cause) {
+        console.error("Failed to update selected visit status:", cause);
+        notifyUser("No se pudo conectar con el servidor. Intenta de nuevo.");
+    }
+    finally {
+        quickActionEntryId.value = null;
+    }
+}
 async function handleQuickSearchEnter() {
-    if (quickActionAppointmentId.value !== null)
+    if (quickActionAppointmentId.value !== null || quickActionEntryId.value !== null)
         return;
     quickActionError.value = "";
     quickActionNotice.value = "";
     selectedQuickAppointmentId.value = null;
+    selectedEntryId.value = null;
     refreshLocalDate();
     const value = quickSearch.value.trim();
     if (!value)
         return;
     let scannedAppointmentId = null;
+    let scannedReferenceCode = "";
     try {
         const scannedValue = JSON.parse(value);
         if (typeof scannedValue === "object" &&
@@ -378,14 +686,32 @@ async function handleQuickSearchEnter() {
             Number.isSafeInteger(scannedValue.id)) {
             scannedAppointmentId = scannedValue.id;
         }
+        if (typeof scannedValue === "object" &&
+            scannedValue !== null &&
+            "type" in scannedValue &&
+            scannedValue.type === "visitas-appointment" &&
+            "referenceCode" in scannedValue &&
+            typeof scannedValue.referenceCode === "string") {
+            scannedReferenceCode = scannedValue.referenceCode;
+        }
     }
     catch {
         // Non-JSON input is treated as a name search.
     }
-    if (scannedAppointmentId !== null) {
-        const appointment = todayAppointments.value.find((item) => item.id === scannedAppointmentId);
+    if (scannedAppointmentId !== null || scannedReferenceCode) {
+        const appointment = todayAppointments.value.find((item) => (scannedAppointmentId !== null && item.id === scannedAppointmentId) ||
+            (scannedReferenceCode !== "" && item.referenceCode === scannedReferenceCode));
         if (!appointment) {
-            quickActionError.value = "Este QR no corresponde a una cita de hoy o la visita está cancelada.";
+            notifyUser("Este QR no corresponde a una cita de hoy o la visita está cancelada.");
+            return;
+        }
+        selectQuickAppointment(appointment);
+        return;
+    }
+    if (/^\d{8}$/.test(value)) {
+        const appointment = todayAppointments.value.find((item) => item.referenceCode === value);
+        if (!appointment) {
+            notifyUser("No encontramos una cita de hoy con ese código de referencia.");
             return;
         }
         selectQuickAppointment(appointment);
@@ -398,7 +724,7 @@ async function handleQuickSearchEnter() {
         quickActionNotice.value = "Selecciona a la persona correcta de la lista.";
     }
     else {
-        quickActionError.value = "No encontramos una cita de hoy con ese nombre o empresa.";
+        notifyUser("No encontramos una cita de hoy con ese nombre o empresa.");
     }
 }
 async function removeEntry(entry) {
@@ -409,14 +735,15 @@ async function removeEntry(entry) {
         const response = await fetch(`/api/daily-log/${entry.id}`, { method: "DELETE" });
         const result = await response.json();
         if (!response.ok) {
-            error.value = result.error ?? "No se pudo eliminar el movimiento.";
+            notifyUser(result.error ?? "No se pudo eliminar el movimiento.");
             return;
         }
+        notifyUser(result.message ?? "El movimiento se eliminó correctamente.", "success");
         await loadEntries();
     }
     catch (cause) {
         console.error("Failed to delete daily log movement:", cause);
-        error.value = "No se pudo conectar con el servidor para eliminar el movimiento.";
+        notifyUser("No se pudo conectar con el servidor para eliminar el movimiento.");
     }
 }
 function resetFilters() {
@@ -451,11 +778,23 @@ watch(search, () => {
 onMounted(() => {
     void loadEntries();
     quickSearchInput.value?.focus();
+    refreshTimer = window.setInterval(() => {
+        if (document.visibilityState === "visible" &&
+            !loading.value &&
+            fromDate.value &&
+            toDate.value &&
+            fromDate.value <= toDate.value) {
+            void loadEntries();
+        }
+    }, 30000);
 });
 onBeforeUnmount(() => {
     requestVersion += 1;
     if (searchTimer)
         clearTimeout(searchTimer);
+    if (refreshTimer !== undefined)
+        window.clearInterval(refreshTimer);
+    closeQrScanner();
 });
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
 const __VLS_ctx = {};
@@ -463,31 +802,11 @@ let __VLS_components;
 let __VLS_directives;
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
     ...{ class: "daily-log-page" },
-    'aria-labelledby': "daily-log-title",
+    'aria-label': "Bitácora de movimientos",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
     ...{ class: "daily-log-header" },
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "daily-log-heading-copy" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "daily-log-eyebrow" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    viewBox: "0 0 24 24",
-    'aria-hidden': "true",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "M12 3 4.5 6v5.6c0 4.5 3.2 7.8 7.5 9.4 4.3-1.6 7.5-4.9 7.5-9.4V6L12 3Z",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "m9 12 2 2 4-4",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
-    id: "daily-log-title",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "daily-log-header-actions" },
 });
@@ -529,6 +848,20 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
     d: "M3 3v5h5m4-1v5l3 2",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (__VLS_ctx.exportLog) },
+    ...{ class: "daily-log-secondary-button daily-log-export-button" },
+    type: "button",
+    disabled: (__VLS_ctx.exporting),
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+    viewBox: "0 0 24 24",
+    'aria-hidden': "true",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+    d: "M12 3v12m0 0 4-4m-4 4-4-4M5 17v4h14v-4",
+});
+(__VLS_ctx.exporting ? "Exportando..." : "Exportar CSV");
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
     ...{ onClick: (__VLS_ctx.openCreateDialog) },
     ...{ class: "daily-log-primary-button" },
     type: "button",
@@ -540,6 +873,13 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.s
 __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
     d: "M12 5v14M5 12h14",
 });
+if (__VLS_ctx.exportMessage) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-export-message" },
+        role: (__VLS_ctx.exportMessage.startsWith('Se exportaron') ? 'status' : 'alert'),
+    });
+    (__VLS_ctx.exportMessage);
+}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "daily-log-summary" },
     'aria-label': "Resumen de movimientos",
@@ -633,6 +973,12 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.
 __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
 (__VLS_ctx.summary.exits);
 __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+    ...{ class: "daily-log-workspace" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+    ...{ class: "daily-log-main-column" },
+});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
     ...{ class: "daily-log-quick-panel" },
     'aria-labelledby': "daily-log-quick-title",
@@ -648,11 +994,89 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3
     id: "daily-log-quick-title",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "daily-log-result-count" },
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+    ...{ class: "daily-log-quick-heading-actions" },
 });
-(__VLS_ctx.todayAppointments.length);
-(__VLS_ctx.todayAppointments.length === 1 ? "visita" : "visitas");
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (__VLS_ctx.openReferenceCodeEntry) },
+    ...{ class: "daily-log-secondary-button" },
+    type: "button",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (__VLS_ctx.openQrScanner) },
+    ...{ class: "daily-log-secondary-button daily-log-mobile-scan-button" },
+    type: "button",
+    disabled: (__VLS_ctx.scannerOpen),
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (__VLS_ctx.openCreateDialog) },
+    ...{ class: "daily-log-primary-button" },
+    type: "button",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+    viewBox: "0 0 24 24",
+    'aria-hidden': "true",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+    d: "M12 5v14M5 12h14",
+});
+if (__VLS_ctx.referenceCodeOpen) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
+        ...{ onSubmit: (__VLS_ctx.submitReferenceCode) },
+        ...{ class: "daily-log-reference-code-form" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+        for: "daily-log-reference-code",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+        id: "daily-log-reference-code",
+        ref: "referenceCodeInput",
+        value: (__VLS_ctx.referenceCodeInputValue),
+        type: "text",
+        inputmode: "numeric",
+        autocomplete: "off",
+        maxlength: "8",
+        pattern: "[0-9]{8}",
+        placeholder: "00000000",
+        'aria-describedby': "daily-log-reference-code-help",
+        required: true,
+    });
+    /** @type {typeof __VLS_ctx.referenceCodeInput} */ ;
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ class: "daily-log-secondary-button" },
+        type: "submit",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
+        id: "daily-log-reference-code-help",
+    });
+}
+if (__VLS_ctx.scannerOpen) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "daily-log-qr-scanner" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.video, __VLS_intrinsicElements.video)({
+        ref: "scannerVideo",
+        autoplay: true,
+        muted: true,
+        playsinline: true,
+        'aria-label': "Vista de la cámara para escanear el QR",
+    });
+    /** @type {typeof __VLS_ctx.scannerVideo} */ ;
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.closeQrScanner) },
+        ...{ class: "daily-log-secondary-button" },
+        type: "button",
+    });
+}
+if (__VLS_ctx.scannerError) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-quick-error" },
+        role: "alert",
+    });
+    (__VLS_ctx.scannerError);
+}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
     ...{ class: "daily-log-quick-search" },
 });
@@ -661,63 +1085,33 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.s
     'aria-hidden': "true",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "M7 12h10",
+    d: "M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3M7 12h10",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     ...{ onInput: (...[$event]) => {
             __VLS_ctx.selectedQuickAppointmentId = null;
+            __VLS_ctx.selectedEntryId = null;
             __VLS_ctx.quickActionError = '';
             __VLS_ctx.quickActionNotice = '';
         } },
     ...{ onKeydown: (__VLS_ctx.handleQuickSearchEnter) },
     ref: "quickSearchInput",
     type: "search",
-    placeholder: "Nombre, empresa o escanea QR…",
-    'aria-label': "Busca por nombre o empresa, o escanea QR",
+    placeholder: "Buscar por nombre o empresa, o escanear QR…",
+    'aria-label': "Buscar cita o escanear QR",
     disabled: (__VLS_ctx.appointmentsLoading),
 });
 (__VLS_ctx.quickSearch);
 /** @type {typeof __VLS_ctx.quickSearchInput} */ ;
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-if (__VLS_ctx.quickActionNotice) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "daily-log-quick-notice" },
-        role: "status",
-    });
-    (__VLS_ctx.quickActionNotice);
-}
-if (__VLS_ctx.quickActionError) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "daily-log-quick-error" },
-        role: "alert",
-    });
-    (__VLS_ctx.quickActionError);
-}
-if (__VLS_ctx.appointmentsLoading) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "daily-log-quick-empty" },
-    });
-}
-else if (!__VLS_ctx.todayAppointments.length) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "daily-log-quick-empty" },
-    });
-}
-else if (__VLS_ctx.filteredQuickAppointments.length) {
+if (__VLS_ctx.quickSearch.trim() && __VLS_ctx.filteredQuickAppointments.length) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "daily-log-quick-list" },
     });
     for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.filteredQuickAppointments))) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ onClick: (...[$event]) => {
-                    if (!!(__VLS_ctx.appointmentsLoading))
-                        return;
-                    if (!!(!__VLS_ctx.todayAppointments.length))
-                        return;
-                    if (!(__VLS_ctx.filteredQuickAppointments.length))
+                    if (!(__VLS_ctx.quickSearch.trim() && __VLS_ctx.filteredQuickAppointments.length))
                         return;
                     __VLS_ctx.selectQuickAppointment(appointment);
                 } },
@@ -747,74 +1141,31 @@ else if (__VLS_ctx.filteredQuickAppointments.length) {
         (__VLS_ctx.selectedQuickAppointmentId === appointment.id ? "Seleccionada" : "Seleccionar");
     }
 }
-else {
+else if (__VLS_ctx.quickSearch.trim() && !__VLS_ctx.appointmentsLoading) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "daily-log-quick-empty" },
     });
     (__VLS_ctx.quickSearch);
 }
-if (__VLS_ctx.selectedQuickAppointment) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-selected-person" },
-        'aria-live': "polite",
+else {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-quick-empty" },
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-selected-person-details" },
+    (__VLS_ctx.appointmentsLoading ? "Cargando citas…" : `${__VLS_ctx.todayAppointments.length} citas programadas para hoy`);
+}
+if (__VLS_ctx.quickActionNotice) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-quick-notice" },
+        role: "status",
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-    (__VLS_ctx.selectedQuickAppointment.visitor);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    (__VLS_ctx.selectedQuickAppointment.company || "Visitante");
-    if (__VLS_ctx.selectedQuickAppointment.host) {
-        (__VLS_ctx.selectedQuickAppointment.host);
-    }
-    (__VLS_ctx.selectedQuickAppointment.time);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-        ...{ class: "daily-log-quick-observation" },
+    (__VLS_ctx.quickActionNotice);
+}
+if (__VLS_ctx.quickActionError) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-quick-error" },
+        role: "alert",
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        value: (__VLS_ctx.quickObservation),
-        type: "text",
-        maxlength: "4000",
-        placeholder: "Agrega un detalle si hace falta",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-quick-actions" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.selectedQuickAppointment))
-                    return;
-                __VLS_ctx.saveQuickMovement('Llegada');
-            } },
-        ...{ class: "daily-log-quick-action" },
-        type: "button",
-        disabled: (__VLS_ctx.quickActionAppointmentId !== null || !__VLS_ctx.movementIsAvailable('Llegada', __VLS_ctx.selectedQuickAppointment)),
-    });
-    (__VLS_ctx.quickActionAppointmentId === __VLS_ctx.selectedQuickAppointment.id ? "Guardando…" : "Llegada");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.selectedQuickAppointment))
-                    return;
-                __VLS_ctx.saveQuickMovement('Ingreso');
-            } },
-        ...{ class: "daily-log-quick-action" },
-        type: "button",
-        disabled: (__VLS_ctx.quickActionAppointmentId !== null || !__VLS_ctx.movementIsAvailable('Ingreso', __VLS_ctx.selectedQuickAppointment)),
-    });
-    (__VLS_ctx.quickActionAppointmentId === __VLS_ctx.selectedQuickAppointment.id ? "Guardando…" : "Entrada");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.selectedQuickAppointment))
-                    return;
-                __VLS_ctx.saveQuickMovement('Retiro');
-            } },
-        ...{ class: "daily-log-quick-action daily-log-quick-action-exit" },
-        type: "button",
-        disabled: (__VLS_ctx.quickActionAppointmentId !== null || !__VLS_ctx.movementIsAvailable('Retiro', __VLS_ctx.selectedQuickAppointment)),
-    });
-    (__VLS_ctx.quickActionAppointmentId === __VLS_ctx.selectedQuickAppointment.id ? "Guardando…" : "Retiro");
+    (__VLS_ctx.quickActionError);
 }
 if (__VLS_ctx.error) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -856,7 +1207,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.
     ...{ class: "daily-log-result-count" },
 });
 (__VLS_ctx.total);
-(__VLS_ctx.total === 1 ? "movimiento" : "movimientos");
+(__VLS_ctx.total === 1 ? "registro" : "registros");
 __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
     ...{ onSubmit: (...[$event]) => {
             __VLS_ctx.page = 1;
@@ -881,7 +1232,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     type: "search",
-    placeholder: "Buscar persona, empresa o anfitrión",
+    placeholder: "Buscar por nombre, empresa o teléfono…",
     'aria-label': "Buscar persona, empresa o anfitrión",
 });
 (__VLS_ctx.search);
@@ -908,68 +1259,6 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElement
 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
     value: "Observaciones",
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "sr-only" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-    value: (__VLS_ctx.categoryFilter),
-    'aria-label': "Filtrar por categoría",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Visitante",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Contratista",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Proveedor",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Sin categoría",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "sr-only" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-    value: (__VLS_ctx.hostFilter),
-    'aria-label': "Filtrar por anfitrión",
-    disabled: (Boolean(__VLS_ctx.departmentFilter)),
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "",
-});
-for (const [host] of __VLS_getVForSourceType((__VLS_ctx.availableHosts))) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        key: (host),
-        value: (host),
-    });
-    (host);
-}
-if (__VLS_ctx.departmentOptions.length) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "sr-only" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-        value: (__VLS_ctx.departmentFilter),
-        'aria-label': "Filtrar por departamento",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "",
-    });
-    for (const [department] of __VLS_getVForSourceType((__VLS_ctx.departmentOptions))) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-            key: (department.id),
-            value: (String(department.id)),
-        });
-        (department.name);
-    }
-}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
     ...{ onClick: (__VLS_ctx.resetFilters) },
     ...{ class: "daily-log-reset-button" },
@@ -1011,116 +1300,111 @@ else if (!__VLS_ctx.loading && __VLS_ctx.entries.length === 0) {
     (__VLS_ctx.total === 0 && !__VLS_ctx.search && !__VLS_ctx.eventFilter && !__VLS_ctx.categoryFilter && !__VLS_ctx.hostFilter ? "Sin movimientos registrados" : "No encontramos resultados");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
     (__VLS_ctx.total === 0 && !__VLS_ctx.search && !__VLS_ctx.eventFilter && !__VLS_ctx.categoryFilter && !__VLS_ctx.hostFilter ? "Todavía no hay actividad registrada para este periodo." : "Prueba con otra búsqueda o limpia los filtros para consultar más movimientos.");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-empty-actions" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (__VLS_ctx.openCreateDialog) },
-        ...{ class: "daily-log-primary-button" },
-        type: "button",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        viewBox: "0 0 24 24",
-        'aria-hidden': "true",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-        d: "M12 5v14M5 12h14",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (__VLS_ctx.resetFilters) },
-        ...{ class: "daily-log-secondary-button" },
-        type: "button",
-    });
 }
 else {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-timeline" },
+        ...{ class: "daily-log-table-scroll" },
     });
-    for (const [group] of __VLS_getVForSourceType((__VLS_ctx.groupedEntries))) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-            key: (group.date),
-            ...{ class: "daily-log-day-group" },
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements.table)({
+        ...{ class: "daily-log-table" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.thead, __VLS_intrinsicElements.thead)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    if (__VLS_ctx.isAdmin) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "sr-only" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.tbody, __VLS_intrinsicElements.tbody)({});
+    for (const [entry] of __VLS_getVForSourceType((__VLS_ctx.entries))) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({
+            ...{ onClick: (...[$event]) => {
+                    if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    if (!!(__VLS_ctx.error))
+                        return;
+                    if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    __VLS_ctx.selectEntry(entry);
+                } },
+            ...{ onKeydown: (...[$event]) => {
+                    if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    if (!!(__VLS_ctx.error))
+                        return;
+                    if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    __VLS_ctx.selectEntry(entry);
+                } },
+            ...{ onKeydown: (...[$event]) => {
+                    if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    if (!!(__VLS_ctx.error))
+                        return;
+                    if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    __VLS_ctx.selectEntry(entry);
+                } },
+            key: (entry.id),
+            ...{ class: ({ 'is-selected': __VLS_ctx.selectedEntryId === entry.id }) },
+            'aria-selected': (__VLS_ctx.selectedEntryId === entry.id),
+            tabindex: "0",
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.h4, __VLS_intrinsicElements.h4)({
-            ...{ class: "daily-log-day-heading" },
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
+            ...{ class: "daily-log-table-time" },
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-        (__VLS_ctx.formatDate(group.date));
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
-        (group.entries.length);
-        (group.entries.length === 1 ? "evento" : "eventos");
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.ol, __VLS_intrinsicElements.ol)({
-            ...{ class: "daily-log-event-list" },
+        (entry.time);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "daily-log-table-event" },
+            ...{ class: (`is-${entry.event.toLowerCase()}`) },
         });
-        for (const [entry] of __VLS_getVForSourceType((group.entries))) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.li, __VLS_intrinsicElements.li)({
-                key: (entry.id),
-                ...{ class: "daily-log-event" },
-                ...{ class: (`daily-log-event-${entry.event.toLowerCase()}`) },
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: (__VLS_ctx.eventIcon(entry.event)),
+        });
+        (entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({
+            ...{ class: "daily-log-table-person" },
+        });
+        (entry.person);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
+            ...{ class: "daily-log-table-date" },
+        });
+        (__VLS_ctx.formatDate(entry.date));
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
+            ...{ class: "daily-log-table-company" },
+        });
+        (entry.company || "N/A");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        (entry.host || "N/A");
+        if (__VLS_ctx.isAdmin) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
+                ...{ class: "daily-log-table-actor" },
             });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                ...{ class: "daily-log-event-icon" },
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-                viewBox: "0 0 24 24",
-                'aria-hidden': "true",
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-                d: (__VLS_ctx.eventIcon(entry.event)),
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.time, __VLS_intrinsicElements.time)({
-                ...{ class: "daily-log-event-time" },
-            });
-            (entry.time);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                ...{ class: "daily-log-event-content" },
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                ...{ class: "daily-log-event-topline" },
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-            (entry.person);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                ...{ class: "daily-log-event-type" },
-            });
-            (__VLS_ctx.eventVerb(entry.event));
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                ...{ class: "daily-log-event-meta" },
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                ...{ class: "daily-log-category" },
-                ...{ class: (`daily-log-category-${entry.category.toLowerCase().replace(' ', '-')}`) },
-            });
-            (entry.category);
-            if (entry.company) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-                (entry.company);
-            }
-            if (entry.host) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-                (entry.host);
-            }
-            if (entry.host && __VLS_ctx.departmentForHost(entry.host)) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-                (__VLS_ctx.departmentForHost(entry.host));
-            }
-            if (entry.appointmentId) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                    ...{ class: "daily-log-linked" },
-                });
-                (entry.appointmentId);
-            }
-            if (entry.appointmentId === null && entry.externalStaffId === null && entry.visitorRecordId === null) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                    ...{ class: "daily-log-unlinked" },
-                });
-            }
-            if (entry.details) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-                    ...{ class: "daily-log-event-details" },
-                });
-                (entry.details);
-            }
+            (entry.actorName || "Sin registro");
+        }
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "daily-log-table-status" },
+            ...{ class: (`is-${__VLS_ctx.entryStatus(entry).toLowerCase().replace(' ', '-')}`) },
+        });
+        (__VLS_ctx.entryStatus(entry));
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        if (__VLS_ctx.appointmentForEntry(entry)) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
                 ...{ onClick: (...[$event]) => {
                         if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
@@ -1129,61 +1413,257 @@ else {
                             return;
                         if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
                             return;
-                        __VLS_ctx.removeEntry(entry);
+                        if (!(__VLS_ctx.appointmentForEntry(entry)))
+                            return;
+                        __VLS_ctx.openEntryQr(entry);
                     } },
-                ...{ class: "daily-log-delete" },
+                ...{ class: "daily-log-table-qr" },
                 type: "button",
-                'aria-label': (`Eliminar movimiento de ${entry.person}`),
-                title: "Eliminar movimiento",
+                'aria-label': (`Ver QR de ${entry.person}`),
+            });
+        }
+        else {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                ...{ class: "daily-log-table-no-qr" },
+            });
+        }
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    if (!!(__VLS_ctx.error))
+                        return;
+                    if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
+                        return;
+                    __VLS_ctx.removeEntry(entry);
+                } },
+            ...{ class: "daily-log-delete" },
+            type: "button",
+            'aria-label': (`Eliminar movimiento de ${entry.person}`),
+            title: "Eliminar movimiento",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14m-7-3h4l1 3H9l1-3Z",
+        });
+    }
+}
+__VLS_asFunctionalElement(__VLS_intrinsicElements.footer, __VLS_intrinsicElements.footer)({
+    ...{ class: "daily-log-pagination" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+(__VLS_ctx.total === 0 ? 0 : (__VLS_ctx.page - 1) * __VLS_ctx.pageSize + 1);
+(Math.min(__VLS_ctx.page * __VLS_ctx.pageSize, __VLS_ctx.total));
+(__VLS_ctx.total);
+(__VLS_ctx.total === 1 ? "registro" : "registros");
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (...[$event]) => {
+            __VLS_ctx.page--;
+        } },
+    type: "button",
+    disabled: (__VLS_ctx.page <= 1 || __VLS_ctx.loading),
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+    ...{ class: "daily-log-pagination-page" },
+});
+(__VLS_ctx.page);
+(__VLS_ctx.pages);
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (...[$event]) => {
+            __VLS_ctx.page++;
+        } },
+    type: "button",
+    disabled: (__VLS_ctx.page >= __VLS_ctx.pages || __VLS_ctx.loading),
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.aside, __VLS_intrinsicElements.aside)({
+    ...{ class: "daily-log-side-column" },
+    'aria-label': "Detalle y actividad reciente",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
+    ...{ class: "daily-log-selection-card" },
+    'aria-labelledby': "daily-log-selection-title",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+    ...{ class: "daily-log-selection-heading" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+    ...{ class: "daily-log-selection-icon" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+    viewBox: "0 0 24 24",
+    'aria-hidden': "true",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+    cx: "12",
+    cy: "8",
+    r: "4",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+    d: "M4 21a8 8 0 0 1 16 0",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+    ...{ class: "daily-log-panel-kicker" },
+});
+(__VLS_ctx.selectedAppointment ? "REGISTRO CON CITA" : "VISITA SELECCIONADA");
+__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+    id: "daily-log-selection-title",
+});
+(__VLS_ctx.selectedPersonName || "Selecciona un registro");
+if (__VLS_ctx.selectedPerson) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "daily-log-selection-meta" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.selectedPersonCompany || "N/A");
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.selectedPersonHost || "N/A");
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.selectedPersonDateTime);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({
+        ...{ class: "daily-log-selection-state" },
+        ...{ class: (`is-${__VLS_ctx.selectedPersonStatus.replace(' ', '-').toLocaleLowerCase()}`) },
+    });
+    (__VLS_ctx.selectedPersonStatus);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+        ...{ class: "daily-log-quick-observation" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+        value: (__VLS_ctx.quickObservation),
+        type: "text",
+        maxlength: "4000",
+        placeholder: "Agrega un detalle si hace falta",
+    });
+    if (__VLS_ctx.selectedAvailableMovements.length) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "daily-log-selection-action-group" },
+        });
+        for (const [movement] of __VLS_getVForSourceType((__VLS_ctx.selectedAvailableMovements))) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!(__VLS_ctx.selectedPerson))
+                            return;
+                        if (!(__VLS_ctx.selectedAvailableMovements.length))
+                            return;
+                        __VLS_ctx.selectedQuickAppointment ? __VLS_ctx.saveQuickMovement(movement) : __VLS_ctx.saveSelectedEntryMovement(movement);
+                    } },
+                key: (movement),
+                ...{ class: "daily-log-selection-action" },
+                ...{ class: ({ 'is-exit': movement === 'Retiro' }) },
+                type: "button",
+                disabled: (__VLS_ctx.quickActionAppointmentId !== null ||
+                    __VLS_ctx.quickActionEntryId !== null ||
+                    (movement === 'Ingreso' && __VLS_ctx.equipmentEntryChecklistPending)),
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
                 viewBox: "0 0 24 24",
                 'aria-hidden': "true",
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-                d: "M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14m-7-3h4l1 3H9l1-3Z",
+                d: (__VLS_ctx.eventIcon(movement)),
+            });
+            (__VLS_ctx.quickActionAppointmentId !== null || __VLS_ctx.quickActionEntryId !== null ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida");
+        }
+        if (__VLS_ctx.selectedAvailableMovements.includes('Ingreso') && __VLS_ctx.equipmentEntryChecklistPending) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                ...{ class: "daily-log-selection-complete" },
+                role: "status",
             });
         }
     }
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.footer, __VLS_intrinsicElements.footer)({
-        ...{ class: "daily-log-pagination" },
+    else if (__VLS_ctx.selectedEntry && __VLS_ctx.selectedEntry.date !== __VLS_ctx.today) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "daily-log-selection-complete" },
+        });
+    }
+    else {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "daily-log-selection-complete" },
+        });
+    }
+    if (__VLS_ctx.quickActionNotice) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "daily-log-quick-notice" },
+            role: "status",
+        });
+        (__VLS_ctx.quickActionNotice);
+    }
+    if (__VLS_ctx.quickActionError) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "daily-log-quick-error" },
+            role: "alert",
+        });
+        (__VLS_ctx.quickActionError);
+    }
+}
+else {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-selection-hint" },
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    (__VLS_ctx.total === 0 ? 0 : (__VLS_ctx.page - 1) * __VLS_ctx.pageSize + 1);
-    (Math.min(__VLS_ctx.page * __VLS_ctx.pageSize, __VLS_ctx.total));
-    (__VLS_ctx.total);
-    (__VLS_ctx.total === 1 ? "movimiento" : "movimientos");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+}
+__VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
+    ...{ class: "daily-log-recent-panel" },
+    'aria-labelledby': "daily-log-recent-title",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+    ...{ class: "daily-log-panel-heading" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+    ...{ class: "daily-log-panel-kicker" },
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+    id: "daily-log-recent-title",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+    ...{ onClick: (__VLS_ctx.showRecentHistory) },
+    ...{ class: "daily-log-recent-link" },
+    type: "button",
+});
+for (const [entry] of __VLS_getVForSourceType((__VLS_ctx.recentEntries))) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
-                if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
-                    return;
-                if (!!(__VLS_ctx.error))
-                    return;
-                if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
-                    return;
-                __VLS_ctx.page--;
+                __VLS_ctx.selectEntry(entry);
             } },
+        key: (`recent-${entry.id}`),
+        ...{ class: "daily-log-recent-entry" },
+        ...{ class: ({ 'is-selected': __VLS_ctx.selectedEntryId === entry.id }) },
         type: "button",
-        disabled: (__VLS_ctx.page <= 1 || __VLS_ctx.loading),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "daily-log-pagination-page" },
+        ...{ class: "daily-log-recent-time" },
     });
-    (__VLS_ctx.page);
-    (__VLS_ctx.pages);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!!(__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
-                    return;
-                if (!!(__VLS_ctx.error))
-                    return;
-                if (!!(!__VLS_ctx.loading && __VLS_ctx.entries.length === 0))
-                    return;
-                __VLS_ctx.page++;
-            } },
-        type: "button",
-        disabled: (__VLS_ctx.page >= __VLS_ctx.pages || __VLS_ctx.loading),
+    (entry.time);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-recent-copy" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    (entry.person);
+    if (entry.company) {
+        (entry.company);
+    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+    (entry.details || __VLS_ctx.eventVerb(entry.event));
+}
+if (__VLS_ctx.recentEntries.length === 0) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-quick-empty" },
     });
 }
 if (__VLS_ctx.dialogOpen) {
@@ -1239,29 +1719,12 @@ if (__VLS_ctx.dialogOpen) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-        value: (__VLS_ctx.logEvent),
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "Llegada",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "Ingreso",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "Retiro",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
         ...{ onChange: (...[$event]) => {
                 if (!(__VLS_ctx.dialogOpen))
                     return;
                 __VLS_ctx.changePersonType($event.target.value);
             } },
         value: (__VLS_ctx.logPersonType),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "appointment",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
         value: "externalStaff",
@@ -1271,11 +1734,10 @@ if (__VLS_ctx.dialogOpen) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
         value: "manual",
-        disabled: (__VLS_ctx.requiresLinkedPerson),
     });
     if (__VLS_ctx.logPersonType !== 'manual') {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-        (__VLS_ctx.logPersonType === "appointment" ? "Cita / visitante" : __VLS_ctx.logPersonType === "externalStaff" ? "Personal externo" : "Visitante");
+        (__VLS_ctx.logPersonType === "externalStaff" ? "Personal externo" : "Visitante");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
             value: (__VLS_ctx.logSubjectId),
             required: true,
@@ -1284,18 +1746,6 @@ if (__VLS_ctx.dialogOpen) {
             value: "",
             disabled: true,
         });
-        if (__VLS_ctx.logPersonType === 'appointment') {
-            for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.selectedAppointments))) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-                    key: (appointment.id),
-                    value: (String(appointment.id)),
-                });
-                (appointment.visitor);
-                (appointment.company || "Sin empresa");
-                (appointment.date);
-                (appointment.time);
-            }
-        }
         if (__VLS_ctx.logPersonType === 'externalStaff') {
             for (const [person] of __VLS_getVForSourceType((__VLS_ctx.selectedExternalStaff))) {
                 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
@@ -1323,37 +1773,24 @@ if (__VLS_ctx.dialogOpen) {
             value: (__VLS_ctx.manualPerson),
             type: "text",
             maxlength: "180",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
             placeholder: "Nombre de la persona",
             required: true,
         });
     }
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        type: "date",
-        required: true,
-    });
-    (__VLS_ctx.logDate);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        type: "time",
-        required: true,
-    });
-    (__VLS_ctx.logTime);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
         ...{ class: "daily-log-form-details" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea, __VLS_intrinsicElements.textarea)({
         value: (__VLS_ctx.logDetails),
         maxlength: "4000",
-        placeholder: (__VLS_ctx.logEvent === 'Observaciones' ? 'Describe la observación' : 'Detalle adicional (opcional)'),
-        required: (__VLS_ctx.logEvent === 'Observaciones'),
+        placeholder: "Detalle adicional (opcional)",
         rows: "3",
     });
-    if (__VLS_ctx.requiresLinkedPerson) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "daily-log-form-note" },
-        });
-    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-form-note" },
+    });
+    (__VLS_ctx.logPersonType === "externalStaff" ? "La empresa se conservará desde su ficha; el anfitrión se mostrará como N/A." : "Empresa y anfitrión se mostrarán como N/A para esta visita.");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ class: "button-primary workspace-submit" },
         type: "submit",
@@ -1368,17 +1805,18 @@ if (__VLS_ctx.dialogOpen) {
         });
     }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    (__VLS_ctx.saving ? "Guardando…" : "Guardar movimiento");
+    (__VLS_ctx.saving ? "Guardando…" : "Registrar llegada");
 }
 /** @type {__VLS_StyleScopedClasses['daily-log-page']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-header']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-heading-copy']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-eyebrow']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-header-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-date-range']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-date-separator']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-export-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-primary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-export-message']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-summary']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-stat']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-stat-events']} */ ;
@@ -1396,15 +1834,22 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-stat-exits']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-stat-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-stat-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-workspace']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-main-column']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-result-count']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-search']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-notice']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-heading-actions']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-mobile-scan-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-primary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-reference-code-form']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-qr-scanner']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-search']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-list']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-visitor']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-visitor-selected']} */ ;
@@ -1412,14 +1857,9 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-person']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-select']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-selected-person']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-selected-person-details']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-observation']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-actions']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-action']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-action']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-action']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-action-exit']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-notice']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-heading']} */ ;
@@ -1428,36 +1868,54 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-filters']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-search']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
-/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
-/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
-/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-reset-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-loading']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-spinner']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-loading']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-empty']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-empty-icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-empty-actions']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-primary-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-timeline']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-day-group']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-day-heading']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-list']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-time']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-content']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-topline']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-type']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-meta']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-category']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-linked']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-unlinked']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-event-details']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-scroll']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table']} */ ;
+/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-time']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-event']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-person']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-company']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-actor']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-status']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-qr']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-no-qr']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-delete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-pagination']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-pagination-page']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-side-column']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-card']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-meta']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-state']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-observation']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-action-group']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-exit']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-notice']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-hint']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-panel']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-panel-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-link']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-entry']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-time']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-dialog']} */ ;
@@ -1477,13 +1935,13 @@ var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
         return {
+            today: today,
             fromDate: fromDate,
             toDate: toDate,
             search: search,
             eventFilter: eventFilter,
             categoryFilter: categoryFilter,
             hostFilter: hostFilter,
-            departmentFilter: departmentFilter,
             page: page,
             pageSize: pageSize,
             entries: entries,
@@ -1492,45 +1950,66 @@ const __VLS_self = (await import('vue')).defineComponent({
             pages: pages,
             loading: loading,
             saving: saving,
+            exporting: exporting,
+            exportMessage: exportMessage,
             error: error,
             quickActionError: quickActionError,
             quickActionNotice: quickActionNotice,
             quickActionAppointmentId: quickActionAppointmentId,
+            quickActionEntryId: quickActionEntryId,
             quickSearch: quickSearch,
             quickSearchInput: quickSearchInput,
+            referenceCodeOpen: referenceCodeOpen,
+            referenceCodeInputValue: referenceCodeInputValue,
+            referenceCodeInput: referenceCodeInput,
+            scannerOpen: scannerOpen,
+            scannerError: scannerError,
+            scannerVideo: scannerVideo,
             selectedQuickAppointmentId: selectedQuickAppointmentId,
+            selectedEntryId: selectedEntryId,
             quickObservation: quickObservation,
             dialogOpen: dialogOpen,
-            logEvent: logEvent,
-            logTime: logTime,
             logPersonType: logPersonType,
             logSubjectId: logSubjectId,
             manualPerson: manualPerson,
-            logDate: logDate,
             logDetails: logDetails,
-            selectedAppointments: selectedAppointments,
             todayAppointments: todayAppointments,
             filteredQuickAppointments: filteredQuickAppointments,
             selectedQuickAppointment: selectedQuickAppointment,
+            selectedEntry: selectedEntry,
+            selectedPerson: selectedPerson,
+            selectedAppointment: selectedAppointment,
+            equipmentEntryChecklistPending: equipmentEntryChecklistPending,
+            selectedPersonStatus: selectedPersonStatus,
+            selectedPersonName: selectedPersonName,
+            selectedPersonCompany: selectedPersonCompany,
+            selectedPersonHost: selectedPersonHost,
+            selectedPersonDateTime: selectedPersonDateTime,
+            selectedAvailableMovements: selectedAvailableMovements,
             selectedExternalStaff: selectedExternalStaff,
             selectedVisitors: selectedVisitors,
-            departmentOptions: departmentOptions,
-            availableHosts: availableHosts,
-            requiresLinkedPerson: requiresLinkedPerson,
-            groupedEntries: groupedEntries,
+            recentEntries: recentEntries,
             rangeLabel: rangeLabel,
             quickAppointmentStatus: quickAppointmentStatus,
+            entryStatus: entryStatus,
+            appointmentForEntry: appointmentForEntry,
+            openEntryQr: openEntryQr,
             formatDate: formatDate,
             eventIcon: eventIcon,
             eventVerb: eventVerb,
-            departmentForHost: departmentForHost,
+            exportLog: exportLog,
             loadEntries: loadEntries,
             openCreateDialog: openCreateDialog,
             changePersonType: changePersonType,
             submitEntry: submitEntry,
             selectQuickAppointment: selectQuickAppointment,
-            movementIsAvailable: movementIsAvailable,
+            openReferenceCodeEntry: openReferenceCodeEntry,
+            submitReferenceCode: submitReferenceCode,
+            openQrScanner: openQrScanner,
+            closeQrScanner: closeQrScanner,
             saveQuickMovement: saveQuickMovement,
+            selectEntry: selectEntry,
+            saveSelectedEntryMovement: saveSelectedEntryMovement,
             handleQuickSearchEnter: handleQuickSearchEnter,
             removeEntry: removeEntry,
             resetFilters: resetFilters,

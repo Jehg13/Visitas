@@ -34,20 +34,24 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.
     ...{ class: "workspace-count" },
 });
 (__VLS_ctx.selectedAppointments.length);
-__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-    ...{ onClick: (...[$event]) => {
-            __VLS_ctx.emit('create');
-        } },
-    ...{ class: "button-primary" },
-    type: "button",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    ...{ class: "icon" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-    href: "#i-plus",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+if (__VLS_ctx.canCreateAppointments) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (...[$event]) => {
+                if (!(__VLS_ctx.canCreateAppointments))
+                    return;
+                __VLS_ctx.emit('create');
+            } },
+        ...{ class: "button-primary" },
+        type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        ...{ class: "icon" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
+        href: "#i-plus",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "agenda-toolbar" },
 });
@@ -136,25 +140,34 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.paginatedAppointm
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "agenda-actions" },
+        ...{ class: ({ 'agenda-actions-readonly': !__VLS_ctx.canManageAppointments }) },
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                __VLS_ctx.emit('cancel', appointment);
-            } },
-        ...{ class: "workspace-remove" },
-        type: "button",
-        'aria-label': (`Cancelar cita de ${appointment.visitor}`),
-        disabled: (appointment.status === 'Retirado' || appointment.status === 'Cancelada'),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                __VLS_ctx.emit('sendQr', appointment);
-            } },
-        ...{ class: "agenda-qr-action" },
-        type: "button",
-        'aria-label': (`Enviar QR a ${appointment.visitor}`),
-        disabled: (appointment.status === 'Retirado' || appointment.status === 'Cancelada'),
-    });
+    if (__VLS_ctx.canManageAppointments) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.canManageAppointments))
+                        return;
+                    __VLS_ctx.emit('cancel', appointment);
+                } },
+            ...{ class: "workspace-remove" },
+            type: "button",
+            'aria-label': (`Cancelar cita de ${appointment.visitor}`),
+            disabled: (appointment.status === 'Retirado' || appointment.status === 'Cancelada'),
+        });
+    }
+    if (__VLS_ctx.canManageAppointments) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.canManageAppointments))
+                        return;
+                    __VLS_ctx.emit('sendQr', appointment);
+                } },
+            ...{ class: "agenda-qr-action" },
+            type: "button",
+            'aria-label': (`Enviar QR a ${appointment.visitor}`),
+            disabled: (appointment.status === 'Retirado' || appointment.status === 'Cancelada'),
+        });
+    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
                 __VLS_ctx.emit('openQr', appointment);
@@ -170,14 +183,18 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.paginatedAppointm
         href: "#i-qr",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                __VLS_ctx.emit('delete', appointment);
-            } },
-        ...{ class: "workspace-remove agenda-delete-action" },
-        type: "button",
-        'aria-label': (`Eliminar cita de ${appointment.visitor}`),
-    });
+    if (__VLS_ctx.canManageAppointments) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.canManageAppointments))
+                        return;
+                    __VLS_ctx.emit('delete', appointment);
+                } },
+            ...{ class: "workspace-remove agenda-delete-action" },
+            type: "button",
+            'aria-label': (`Eliminar cita de ${appointment.visitor}`),
+        });
+    }
 }
 if (__VLS_ctx.searchedAppointments.length === 0) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
@@ -348,6 +365,7 @@ for (const [day] of __VLS_getVForSourceType((__VLS_ctx.calendarDays))) {
 /** @type {__VLS_StyleScopedClasses['agenda-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['status-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-actions']} */ ;
+/** @type {__VLS_StyleScopedClasses['agenda-actions-readonly']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-qr-action']} */ ;
 /** @type {__VLS_StyleScopedClasses['qr-button']} */ ;

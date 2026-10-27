@@ -53,7 +53,7 @@ const emit = defineEmits<{
         Registra un departamento antes de asignar anfitriones.
       </p>
       <div class="external-staff-toolbar">
-        <label class="agenda-search">
+        <label class="agenda-search host-search">
           <svg class="icon"><use href="#i-search" /></svg>
           <span class="sr-only">Buscar anfitrión</span>
           <input

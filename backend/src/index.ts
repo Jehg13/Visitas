@@ -1,7 +1,7 @@
 import pool from "./db";
 import { authenticateUser, getActiveUser, type AuthenticatedUser } from "./auth";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 
@@ -84,6 +84,9 @@ type ExternalStaffRow = RowDataPacket & {
 type AppointmentRow = RowDataPacket & {
   id: number;
   business_partner_id: number | null;
+  partner_type?: "Contratista" | "Proveedor" | null;
+  visitor_record_id?: number | null;
+  created_by_login?: string | null;
   visit_date: string;
   visit_time: string;
   visitor_name: string;
@@ -92,6 +95,9 @@ type AppointmentRow = RowDataPacket & {
   company_name: string;
   host_name: string;
   status: "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
+  reference_code?: string;
+  equipment_checklist_required: number | boolean;
+  equipment_entry_checklist_complete: number | boolean;
 };
 
 type DailyLogRow = RowDataPacket & {
@@ -100,6 +106,7 @@ type DailyLogRow = RowDataPacket & {
   entry_time: string;
   event_type: "Llegada" | "Ingreso" | "Retiro" | "Observaciones";
   person_name: string;
+  recorded_by_name: string | null;
   details: string | null;
   appointment_id: number | null;
   external_staff_id: number | null;
@@ -180,10 +187,10 @@ function parseEquipmentDeclaredItems(value: unknown): EquipmentDeclaredItemInput
       (itemType !== "Equipo" && itemType !== "Herramienta") ||
       typeof quantity !== "number" || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100000 ||
       typeof product !== "string" || !product.trim() || product.trim().length > 180 ||
-      typeof brand !== "string" || brand.length > 120 ||
-      typeof model !== "string" || model.length > 120 ||
+      typeof brand !== "string" || !brand.trim() || brand.length > 120 ||
+      typeof model !== "string" || !model.trim() || model.length > 120 ||
       typeof serialNumber !== "string" || serialNumber.length > 180 ||
-      typeof color !== "string" || color.length > 80 ||
+      typeof color !== "string" || !color.trim() || color.length > 80 ||
       typeof notes !== "string" || notes.length > 1000
     ) return null;
     items.push({
@@ -237,8 +244,140 @@ function parseEquipmentInspectionItems(value: unknown): EquipmentInspectionItemI
   return items;
 }
 
-function hashEquipmentToken(token: string) {
+function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function hashAuthValue(scope: string, value: string) {
+  return createHash("sha256").update(`${scope}:${value}`).digest("hex");
+}
+
+async function authenticateWithLockout(identifier: string, password: string, sourceAddress: string) {
+  const [accounts] = await pool.execute<RowDataPacket[]>(
+    "SELECT login FROM accesos WHERE login = ? OR email = ? LIMIT 1",
+    [identifier, identifier],
+  );
+  const principal = String(accounts[0]?.login ?? identifier.trim()).toLowerCase();
+  const principalHash = hashAuthValue("login", principal);
+  const sourceHash = hashAuthValue("source", sourceAddress);
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+    await connection.execute(
+      `INSERT IGNORE INTO auth_login_failures (principal_hash, source_hash, failed_attempts)
+       VALUES (?, ?, 0)`,
+      [principalHash, sourceHash],
+    );
+    const [limits] = await connection.execute<RowDataPacket[]>(
+      `SELECT failed_attempts,
+              GREATEST(TIMESTAMPDIFF(SECOND, NOW(), locked_until), 0) AS remaining_seconds
+       FROM auth_login_failures
+       WHERE principal_hash = ? AND source_hash = ?
+       FOR UPDATE`,
+      [principalHash, sourceHash],
+    );
+    const remainingSeconds = Number(limits[0]?.remaining_seconds ?? 0);
+    if (remainingSeconds > 0) {
+      await connection.commit();
+      return { user: null, retryAfterSeconds: remainingSeconds };
+    }
+
+    const user = await authenticateUser(identifier, password, connection);
+    if (user) {
+      await connection.execute(
+        "DELETE FROM auth_login_failures WHERE principal_hash = ? AND source_hash = ?",
+        [principalHash, sourceHash],
+      );
+      await connection.commit();
+      return { user, retryAfterSeconds: 0 };
+    }
+
+    const failedAttempts = Number(limits[0]?.failed_attempts ?? 0) + 1;
+    const shouldLock = failedAttempts >= 3 && (failedAttempts - 3) % 2 === 0;
+    const lockMinutes = shouldLock
+      ? Math.min(60, 5 * (1 + (failedAttempts - 3) / 2))
+      : 0;
+    await connection.execute(
+      `UPDATE auth_login_failures
+       SET failed_attempts = ?,
+           locked_until = CASE
+             WHEN ? = 1 THEN DATE_ADD(NOW(), INTERVAL ? MINUTE)
+             ELSE locked_until
+           END
+       WHERE principal_hash = ? AND source_hash = ?`,
+      [failedAttempts, shouldLock ? 1 : 0, lockMinutes, principalHash, sourceHash],
+    );
+    await connection.commit();
+    return { user: null, retryAfterSeconds: lockMinutes * 60 };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function consumeRecoveryLimit(
+  rateKey: string,
+  maxAttempts: number,
+  windowSeconds: number,
+  minIntervalSeconds = 0,
+) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute(
+      `INSERT IGNORE INTO auth_recovery_limits
+         (rate_key, attempt_count, window_started_at, last_attempt_at)
+       VALUES (?, 0, NOW(), NOW())`,
+      [rateKey],
+    );
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT attempt_count,
+              TIMESTAMPDIFF(SECOND, window_started_at, NOW()) AS window_elapsed,
+              TIMESTAMPDIFF(SECOND, last_attempt_at, NOW()) AS since_last_attempt
+       FROM auth_recovery_limits
+       WHERE rate_key = ?
+       FOR UPDATE`,
+      [rateKey],
+    );
+    const row = rows[0];
+    const count = Number(row?.attempt_count ?? 0);
+    const elapsed = Number(row?.window_elapsed ?? 0);
+    const sinceLastAttempt = Number(row?.since_last_attempt ?? minIntervalSeconds);
+
+    if (elapsed >= windowSeconds) {
+      await connection.execute(
+        `UPDATE auth_recovery_limits
+         SET attempt_count = 1, window_started_at = NOW(), last_attempt_at = NOW()
+         WHERE rate_key = ?`,
+        [rateKey],
+      );
+      await connection.commit();
+      return true;
+    }
+    if (
+      count >= maxAttempts ||
+      (count > 0 && sinceLastAttempt < minIntervalSeconds)
+    ) {
+      await connection.commit();
+      return false;
+    }
+    await connection.execute(
+      `UPDATE auth_recovery_limits
+       SET attempt_count = attempt_count + 1, last_attempt_at = NOW()
+       WHERE rate_key = ?`,
+      [rateKey],
+    );
+    await connection.commit();
+    return true;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -289,11 +428,10 @@ function parseGeneralVisitor(value: unknown): GeneralVisitorInput | null {
   const { fullName, curp, phone, email } = value;
   if (
     typeof fullName !== "string" || !fullName.trim() || fullName.trim().length > 180 ||
-    typeof curp !== "string" || curp.trim().length > 18 ||
-    (curp.trim() !== "" && !/^[A-Za-z0-9]{18}$/.test(curp.trim())) ||
-    typeof phone !== "string" || phone.length > 30 ||
-    typeof email !== "string" || email.length > 254 ||
-    (email.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+    typeof curp !== "string" || !/^[A-Za-z0-9]{18}$/.test(curp.trim()) ||
+    typeof phone !== "string" || !phone.trim() || phone.trim().length > 30 ||
+    typeof email !== "string" || !email.trim() || email.trim().length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
   ) {
     return null;
   }
@@ -450,25 +588,71 @@ async function listExternalStaff() {
   }));
 }
 
-async function listAppointments() {
-  const [rows] = await pool.query<AppointmentRow[]>(
-    `SELECT id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
-            TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
-            visitor_name, visitor_email, registered_by, company_name, host_name, status
+async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
+  const visibilityConditions: string[] = [];
+  const visibilityParameters: string[] = [];
+  if (ownerLogin !== undefined) {
+    visibilityConditions.push("appointments.created_by_login = ?");
+    visibilityParameters.push(ownerLogin);
+  }
+  if (hostNames.length > 0) {
+    visibilityConditions.push(
+      `LOWER(TRIM(appointments.host_name)) IN (${hostNames.map(() => "?").join(", ")})`,
+    );
+    visibilityParameters.push(...hostNames.map((name) => name.trim().toLocaleLowerCase()));
+  }
+  const query = `SELECT appointments.id, DATE_FORMAT(appointments.visit_date, '%Y-%m-%d') AS visit_date,
+            TIME_FORMAT(appointments.visit_time, '%H:%i') AS visit_time,
+            appointments.visitor_name, appointments.visitor_email, appointments.reference_code, appointments.registered_by,
+            appointments.company_name, appointments.host_name, appointments.status,
+            business_partners.partner_type,
+            EXISTS (
+              SELECT 1 FROM equipment_declarations ed
+              WHERE ed.appointment_id = appointments.id
+            ) AS equipment_checklist_required,
+            EXISTS (
+              SELECT 1
+              FROM equipment_declarations ed
+              INNER JOIN equipment_inspections ei
+                ON ei.declaration_id = ed.id
+               AND ei.phase = 'Entrada'
+               AND ei.status = 'Completada'
+              WHERE ed.appointment_id = appointments.id
+            ) AS equipment_entry_checklist_complete
      FROM appointments
-     ORDER BY visit_date DESC, visit_time, id DESC`,
-  );
+     LEFT JOIN business_partners ON business_partners.id = appointments.business_partner_id
+     ${visibilityConditions.length === 0 ? "" : `WHERE (${visibilityConditions.join(" OR ")})`}
+     ORDER BY appointments.visit_date DESC, appointments.visit_time, appointments.id DESC`;
+  const [rows] = visibilityParameters.length === 0
+    ? await pool.query<AppointmentRow[]>(query)
+    : await pool.execute<AppointmentRow[]>(query, visibilityParameters);
   return rows.map((row) => ({
     id: Number(row.id),
     date: row.visit_date,
     time: row.visit_time,
     visitor: row.visitor_name,
     email: row.visitor_email,
+    referenceCode: row.reference_code ?? "",
     registeredBy: row.registered_by,
     company: row.company_name,
+    partnerType: row.partner_type ?? undefined,
     host: row.host_name,
     status: row.status,
+    equipmentChecklistRequired: Boolean(row.equipment_checklist_required),
+    equipmentEntryChecklistComplete: Boolean(row.equipment_entry_checklist_complete),
   }));
+}
+
+async function createAppointmentReferenceCode() {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const candidate = randomInt(0, 100_000_000).toString().padStart(8, "0");
+    const [matches] = await pool.execute<RowDataPacket[]>(
+      "SELECT id FROM appointments WHERE reference_code = ? LIMIT 1",
+      [candidate],
+    );
+    if (matches.length === 0) return candidate;
+  }
+  throw new Error("No se pudo generar un código de referencia único para la cita.");
 }
 
 const dailyLogJoins = `
@@ -507,6 +691,7 @@ async function listDailyLogEntries(
   hosts: string[],
   page: number,
   pageSize: number,
+  includeRecorder: boolean,
 ) {
   const conditions = ["d.entry_date BETWEEN ? AND ?"];
   const parameters: Array<string | number> = [fromDate, toDate];
@@ -548,7 +733,9 @@ async function listDailyLogEntries(
     `SELECT d.id,
             DATE_FORMAT(d.entry_date, '%Y-%m-%d') AS entry_date,
             TIME_FORMAT(d.entry_time, '%H:%i') AS entry_time,
-            d.event_type, d.person_name, d.details,
+            d.event_type, d.person_name,
+            ${includeRecorder ? "d.recorded_by_name" : "NULL"} AS recorded_by_name,
+            d.details,
             d.appointment_id, d.external_staff_id, d.visitor_record_id,
             COALESCE(bp.name, a.company_name) AS company_name,
             a.host_name,
@@ -577,6 +764,7 @@ async function listDailyLogEntries(
       time: row.entry_time,
       event: row.event_type,
       person: row.person_name,
+      actorName: row.recorded_by_name,
       details: row.details ?? "",
       appointmentId: row.appointment_id === null ? null : Number(row.appointment_id),
       externalStaffId: row.external_staff_id === null ? null : Number(row.external_staff_id),
@@ -637,6 +825,28 @@ async function getDailyLogSummary(fromDate: string, toDate: string) {
     pendingArrivals: Number(pendingRows[0]?.pending_count ?? 0),
     exits: Number(countRows[0]?.exit_count ?? 0),
   };
+}
+
+async function getDailyLogDailyCounts(fromDate: string, toDate: string) {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date,
+            SUM(event_type = 'Llegada') AS arrivals,
+            SUM(event_type = 'Ingreso') AS entries,
+            SUM(event_type = 'Retiro') AS exits,
+            SUM(event_type = 'Observaciones') AS observations
+     FROM daily_log_entries
+     WHERE entry_date BETWEEN ? AND ?
+     GROUP BY entry_date
+     ORDER BY entry_date`,
+    [fromDate, toDate],
+  );
+  return rows.map((row) => ({
+    date: String(row.entry_date),
+    arrivals: Number(row.arrivals ?? 0),
+    entries: Number(row.entries ?? 0),
+    exits: Number(row.exits ?? 0),
+    observations: Number(row.observations ?? 0),
+  }));
 }
 
 async function listDepartments() {
@@ -777,17 +987,34 @@ async function hasSectionAccess(user: AuthenticatedUser, section: SectionAccess)
   return (await listUserSectionAccess(user.login, false)).includes(section);
 }
 
+async function hasHostOnlyAccess(user: AuthenticatedUser) {
+  if (user.isAdmin) return false;
+  const sections = await listUserSectionAccess(user.login, false);
+  return sections.includes("anfitriones") && !sections.includes("recepcion");
+}
+
+async function canManageExternalModules(user: AuthenticatedUser) {
+  return user.isAdmin || (await hasHostOnlyAccess(user));
+}
+
+async function canReadExternalModules(user: AuthenticatedUser) {
+  return user.isAdmin ||
+    (await hasSectionAccess(user, "recepcion")) ||
+    (await hasHostOnlyAccess(user));
+}
+
 async function handleEquipmentRequest(request: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/equipment/options" && request.method === "GET") {
     try {
       const user = await getRequestUser(request);
       if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
-      if (!(await hasSectionAccess(user, "recepcion"))) {
+      if (!(await canManageExternalModules(user))) {
         return Response.json({ error: "No tienes permiso para el módulo de equipo." }, { status: 403 });
       }
       const [partners] = await pool.query<RowDataPacket[]>(
-        `SELECT id, name FROM business_partners
+        `SELECT id, name, partner_type FROM business_partners
          WHERE is_active = TRUE
+           AND partner_type = 'Contratista'
          ORDER BY name`,
       );
       const [staff] = await pool.query<RowDataPacket[]>(
@@ -795,6 +1022,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          FROM external_staff s
          INNER JOIN business_partners p ON p.id = s.business_partner_id
          WHERE p.is_active = TRUE
+           AND p.partner_type = 'Contratista'
          ORDER BY s.full_name`,
       );
       const [appointments] = await pool.query<RowDataPacket[]>(
@@ -804,13 +1032,18 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                 p.name AS linked_company_name
          FROM appointments a
          INNER JOIN business_partners p ON p.id = a.business_partner_id
-         WHERE a.status NOT IN ('Cancelada', 'Retirado')
+         WHERE p.partner_type = 'Contratista'
+           AND a.status NOT IN ('Cancelada', 'Retirado')
            AND a.visit_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
          ORDER BY a.visit_date DESC, a.visit_time DESC
          LIMIT 200`,
       );
       return Response.json({
-        partners: partners.map((row) => ({ id: Number(row.id), name: row.name })),
+        partners: partners.map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          type: row.partner_type,
+        })),
         staff: staff.map((row) => ({
           id: Number(row.id),
           businessPartnerId: Number(row.business_partner_id),
@@ -841,7 +1074,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
   try {
     const user = await getRequestUser(request);
     if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
-    if (!(await hasSectionAccess(user, "recepcion"))) {
+    if (!(await canManageExternalModules(user))) {
       return Response.json({ error: "No tienes permiso para el módulo de equipo." }, { status: 403 });
     }
 
@@ -863,8 +1096,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       const [countRows] = await pool.execute<RowDataPacket[]>(
         `SELECT COUNT(*) AS total
          FROM equipment_declarations d
-         INNER JOIN business_partners p ON p.id = d.business_partner_id
-         WHERE (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)`,
+         INNER JOIN business_partners p
+           ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
+         WHERE p.partner_type = 'Contratista'
+           AND (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)`,
         [search, term, term],
       );
       const [rows] = await pool.execute<RowDataPacket[]>(
@@ -883,9 +1118,11 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                  INNER JOIN equipment_inspections ei ON ei.id = ii.inspection_id
                  WHERE ei.declaration_id = d.id AND ii.result = 'Incidencia') AS incident_count
          FROM equipment_declarations d
-         INNER JOIN business_partners p ON p.id = d.business_partner_id
+         INNER JOIN business_partners p
+           ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
          LEFT JOIN appointments a ON a.id = d.appointment_id
-         WHERE (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)
+         WHERE p.partner_type = 'Contratista'
+           AND (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)
          ORDER BY d.created_at DESC
          LIMIT ? OFFSET ?`,
         [search, term, term, pageSize, (page - 1) * pageSize],
@@ -946,11 +1183,14 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       }
 
       const [partnerRows] = await pool.execute<RowDataPacket[]>(
-        "SELECT id FROM business_partners WHERE id = ? AND is_active = TRUE LIMIT 1",
+        "SELECT id, partner_type FROM business_partners WHERE id = ? AND is_active = TRUE LIMIT 1",
         [businessPartnerId],
       );
       if (partnerRows.length === 0) {
         return Response.json({ error: "La empresa no existe o está inactiva." }, { status: 400 });
+      }
+      if (partnerRows[0].partner_type !== "Contratista") {
+        return Response.json({ error: "Las declaraciones de equipo y herramientas son exclusivas para contratistas." }, { status: 400 });
       }
 
       let personName = manualPersonName;
@@ -989,7 +1229,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       }
 
       const token = randomBytes(32).toString("base64url");
-      const tokenHash = hashEquipmentToken(token);
+      const tokenHash = hashToken(token);
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
@@ -1036,9 +1276,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                 DATE_FORMAT(a.visit_date, '%Y-%m-%d') AS visit_date,
                 TIME_FORMAT(a.visit_time, '%H:%i') AS visit_time
          FROM equipment_declarations d
-         INNER JOIN business_partners p ON p.id = d.business_partner_id
+         INNER JOIN business_partners p
+           ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
          LEFT JOIN appointments a ON a.id = d.appointment_id
-         WHERE d.id = ? LIMIT 1`,
+         WHERE d.id = ? AND p.partner_type = 'Contratista' LIMIT 1`,
         [declarationId],
       );
       const declaration = declarationRows[0];
@@ -1143,7 +1384,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          SET token_hash = ?, token_expires_at = DATE_ADD(NOW(), INTERVAL 30 DAY),
              token_revoked_at = NULL
          WHERE id = ? AND status = 'Pendiente'`,
-        [hashEquipmentToken(token), declarationId],
+        [hashToken(token), declarationId],
       );
       return Response.json({
         token,
@@ -1256,14 +1497,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
               color: String(entryItems[0].checked_color),
             };
           }
-          const differs =
-            checked.quantity !== expected.quantity ||
-            checked.product.trim().toLocaleLowerCase() !== expected.product.trim().toLocaleLowerCase() ||
-            checked.brand.trim().toLocaleLowerCase() !== expected.brand.trim().toLocaleLowerCase() ||
-            checked.model.trim().toLocaleLowerCase() !== expected.model.trim().toLocaleLowerCase() ||
-            checked.serialNumber.trim().toLocaleLowerCase() !== expected.serialNumber.trim().toLocaleLowerCase() ||
-            checked.color.trim().toLocaleLowerCase() !== expected.color.trim().toLocaleLowerCase();
-          const incident = differs || checked.incident;
+          const incident = checked.incident;
           if (incident && !checked.notes.trim()) {
             await connection.rollback();
             return Response.json(
@@ -1288,12 +1522,12 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
               declared.model,
               declared.serial_number,
               declared.color,
-              checked.quantity,
-              checked.product.trim(),
-              checked.brand.trim(),
-              checked.model.trim(),
-              checked.serialNumber.trim(),
-              checked.color.trim(),
+              expected.quantity,
+              expected.product,
+              expected.brand,
+              expected.model,
+              expected.serialNumber,
+              expected.color,
               incident ? "Incidencia" : "Conforme",
               checked.notes.trim(),
             ],
@@ -1318,12 +1552,12 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
 
 const server = Bun.serve({
   port,
-  async fetch(request) {
+  async fetch(request, server) {
     const url = new URL(request.url);
 
     const publicEquipmentPath = url.pathname.match(/^\/api\/equipment\/public\/([A-Za-z0-9_-]{40,60})$/);
     if (publicEquipmentPath && ["GET", "PUT"].includes(request.method)) {
-      const tokenHash = hashEquipmentToken(publicEquipmentPath[1]);
+      const tokenHash = hashToken(publicEquipmentPath[1]);
       try {
         if (request.method === "GET") {
           const [declarations] = await pool.execute<RowDataPacket[]>(
@@ -1332,7 +1566,8 @@ const server = Bun.serve({
                     DATE_FORMAT(a.visit_date, '%Y-%m-%d') AS visit_date,
                     TIME_FORMAT(a.visit_time, '%H:%i') AS visit_time
              FROM equipment_declarations d
-             INNER JOIN business_partners p ON p.id = d.business_partner_id
+             INNER JOIN business_partners p
+               ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
              LEFT JOIN appointments a ON a.id = d.appointment_id
              WHERE d.token_hash = ?
                AND d.token_revoked_at IS NULL
@@ -1389,8 +1624,10 @@ const server = Bun.serve({
         try {
           await connection.beginTransaction();
           const [declarations] = await connection.execute<RowDataPacket[]>(
-            `SELECT id, status
-             FROM equipment_declarations
+            `SELECT d.id, d.status
+             FROM equipment_declarations d
+             INNER JOIN business_partners p
+               ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
              WHERE token_hash = ?
                AND token_revoked_at IS NULL
                AND token_expires_at > NOW()
@@ -1446,6 +1683,224 @@ const server = Bun.serve({
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/api/auth/password-recovery") {
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+      }
+      if (!isRecord(body) || typeof body.email !== "string") {
+        return Response.json({ error: "Escribe un correo electrónico válido." }, { status: 400 });
+      }
+      const email = body.email.trim().toLowerCase();
+      if (
+        email.length > 254 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ) {
+        return Response.json({ error: "Escribe un correo electrónico válido." }, { status: 400 });
+      }
+
+      try {
+        const sourceAddress = server.requestIP(request)?.address ?? "unknown";
+        const [emailAllowed, sourceAllowed] = await Promise.all([
+          consumeRecoveryLimit(hashAuthValue("recovery-email", email), 3, 60 * 60, 2 * 60),
+          consumeRecoveryLimit(hashAuthValue("recovery-source", sourceAddress), 10, 60 * 60),
+        ]);
+        if (!emailAllowed || !sourceAllowed) {
+          return Response.json(
+            { message: "Si el correo está asociado a una cuenta activa, recibirás instrucciones para recuperar tu contraseña." },
+            { status: 202 },
+          );
+        }
+
+        const [accounts] = await pool.execute<RowDataPacket[]>(
+          `SELECT login, name, email
+           FROM accesos
+           WHERE LOWER(email) = ? AND active IN ('Y', '1')
+           LIMIT 2`,
+          [email],
+        );
+        const account = accounts.length === 1 ? accounts[0] : null;
+        if (account) {
+          let recoveryTokenHash: string | null = null;
+          let transporter: ReturnType<typeof nodemailer.createTransport> | undefined;
+          try {
+            const smtpHost = Bun.env.SMTP_HOST?.trim();
+            const smtpUser = Bun.env.SMTP_USER?.trim();
+            const smtpPassword = Bun.env.SMTP_PASSWORD;
+            const smtpPort = Number(Bun.env.SMTP_PORT ?? 587);
+            const smtpFrom = Bun.env.SMTP_FROM?.trim() || smtpUser;
+            const configuredAppUrl = Bun.env.PUBLIC_APP_URL?.trim();
+            const appUrl = configuredAppUrl ||
+              (Bun.env.NODE_ENV === "production" ? "" : "http://localhost:5173");
+            let resetUrl: URL | null = null;
+            try {
+              if (appUrl) {
+                const parsedAppUrl = new URL(appUrl);
+                if (
+                  (parsedAppUrl.protocol === "https:" ||
+                    (Bun.env.NODE_ENV !== "production" && parsedAppUrl.protocol === "http:")) &&
+                  !parsedAppUrl.username &&
+                  !parsedAppUrl.password
+                ) {
+                  resetUrl = new URL("/", parsedAppUrl);
+                }
+              }
+            } catch {
+              resetUrl = null;
+            }
+
+            if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom ||
+                !Number.isInteger(smtpPort) || !resetUrl) {
+              console.error("Password recovery is unavailable: SMTP or PUBLIC_APP_URL is not configured.");
+            } else {
+              const token = randomBytes(32).toString("base64url");
+              recoveryTokenHash = hashToken(token);
+              await pool.execute(
+                `UPDATE password_reset_tokens
+                 SET used_at = NOW()
+                 WHERE login = ? AND used_at IS NULL`,
+                [account.login],
+              );
+              await pool.execute(
+                `INSERT INTO password_reset_tokens (login, token_hash, expires_at)
+                 VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+                [account.login, recoveryTokenHash],
+              );
+              resetUrl.hash = `restablecer=${token}`;
+              const recipientName = String(account.name ?? account.login);
+              const safeName = escapeEmailHtml(recipientName);
+              const safeLink = escapeEmailHtml(resetUrl.toString());
+              const secure = Bun.env.SMTP_SECURE === "true" || smtpPort === 465;
+              transporter = nodemailer.createTransport({
+                host: smtpHost,
+                port: smtpPort,
+                secure,
+                requireTLS: !secure,
+                auth: { user: smtpUser, pass: smtpPassword },
+              });
+              await transporter.sendMail({
+                from: smtpFrom,
+                to: String(account.email),
+                subject: "Recuperación de contraseña | CyMEZ Recep",
+                text: `Hola ${recipientName},\n\nRecibimos una solicitud para cambiar la contraseña de tu cuenta. Abre este enlace dentro de los próximos 10 minutos:\n${resetUrl.toString()}\n\nSi no solicitaste este cambio, ignora este correo. Tu contraseña no cambiará.`,
+                html: `<!doctype html><html lang="es"><body style="margin:0;padding:32px;background:#030d20;font-family:Arial,sans-serif;color:#f0f6ff"><table role="presentation" style="width:100%;max-width:620px;margin:auto;border:1px solid #124477;border-radius:16px;background:#061831"><tr><td style="padding:30px"><div style="margin-bottom:20px;color:#82bfff;font-size:12px;font-weight:bold;letter-spacing:2px">CYMEZ RECEP · CONTROL DE VISITANTES</div><h1 style="margin:0 0 12px;font-size:24px">Recuperar contraseña</h1><p style="color:#b3c9e6;line-height:1.6">Hola ${safeName}, recibimos una solicitud para cambiar la contraseña de tu cuenta.</p><p style="margin:26px 0"><a href="${safeLink}" style="display:inline-block;padding:14px 22px;border-radius:9px;background:#d9263f;color:#fff;text-decoration:none;font-weight:bold">Crear nueva contraseña</a></p><p style="color:#b3c9e6;line-height:1.6">Este enlace vence en <strong style="color:#fff">10 minutos</strong> y solo puede utilizarse una vez. Si no solicitaste este cambio, ignora este correo; tu contraseña no cambiará.</p></td></tr></table></body></html>`,
+              });
+              recoveryTokenHash = null;
+            }
+          } catch (error) {
+            if (recoveryTokenHash) {
+              try {
+                await pool.execute(
+                  "UPDATE password_reset_tokens SET used_at = NOW() WHERE token_hash = ?",
+                  [recoveryTokenHash],
+                );
+              } catch (cleanupError) {
+                console.error("Failed to invalidate an unsent password recovery token:", cleanupError);
+              }
+            }
+            console.error("Failed to prepare or send password recovery email:", error);
+          } finally {
+            transporter?.close();
+          }
+        }
+        return Response.json(
+          { message: "Si el correo está asociado a una cuenta activa, recibirás instrucciones para recuperar tu contraseña." },
+          { status: 202 },
+        );
+      } catch (error) {
+        console.error("Failed to request password recovery:", error);
+        return Response.json({ error: "No se pudo procesar la solicitud. Inténtalo más tarde." }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/password-reset") {
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+      }
+      if (
+        !isRecord(body) ||
+        typeof body.token !== "string" ||
+        !/^[A-Za-z0-9_-]{43}$/.test(body.token) ||
+        typeof body.password !== "string" ||
+        typeof body.confirmation !== "string"
+      ) {
+        return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+      }
+      if (body.password !== body.confirmation) {
+        return Response.json({ error: "Las contraseñas no coinciden." }, { status: 400 });
+      }
+      const passwordLength = Array.from(body.password).length;
+      if (passwordLength < 12 || passwordLength > 128) {
+        return Response.json(
+          { error: "La contraseña debe tener entre 12 y 128 caracteres." },
+          { status: 400 },
+        );
+      }
+      if (
+        !/\p{Lu}/u.test(body.password) ||
+        !/\p{Ll}/u.test(body.password) ||
+        !/\d/.test(body.password) ||
+        !/[^\p{L}\p{N}\s]/u.test(body.password)
+      ) {
+        return Response.json(
+          { error: "Incluye al menos una mayúscula, una minúscula, un número y un carácter especial." },
+          { status: 400 },
+        );
+      }
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [tokens] = await connection.execute<RowDataPacket[]>(
+          `SELECT id, login
+           FROM password_reset_tokens
+           WHERE token_hash = ?
+             AND used_at IS NULL
+             AND expires_at > NOW()
+           LIMIT 1
+           FOR UPDATE`,
+          [hashToken(body.token)],
+        );
+        const reset = tokens[0];
+        if (!reset) {
+          await connection.rollback();
+          return Response.json(
+            { error: "El enlace venció o ya fue utilizado. Solicita uno nuevo." },
+            { status: 400 },
+          );
+        }
+        const passwordHash = await Bun.password.hash(body.password, { algorithm: "argon2id" });
+        if (!passwordHash.startsWith("$argon2id$")) {
+          throw new Error("No se pudo generar el hash seguro de la contraseña.");
+        }
+        await connection.execute(
+          "UPDATE accesos SET pswd = ? WHERE login = ?",
+          [passwordHash, reset.login],
+        );
+        await connection.execute(
+          "UPDATE password_reset_tokens SET used_at = NOW() WHERE login = ? AND used_at IS NULL",
+          [reset.login],
+        );
+        await connection.execute(
+          "DELETE FROM auth_login_failures WHERE principal_hash = ?",
+          [hashAuthValue("login", String(reset.login).toLowerCase())],
+        );
+        await connection.commit();
+        return Response.json({ message: "Tu contraseña se actualizó. Ya puedes iniciar sesión." });
+      } catch (error) {
+        await connection.rollback();
+        console.error("Failed to reset account password:", error);
+        return Response.json({ error: "No se pudo actualizar la contraseña. Inténtalo de nuevo." }, { status: 500 });
+      } finally {
+        connection.release();
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/api/auth/login") {
       let body: unknown;
       try {
@@ -1462,7 +1917,9 @@ const server = Bun.serve({
         typeof body.identifier !== "string" ||
         typeof body.password !== "string" ||
         !body.identifier.trim() ||
-        !body.password
+        body.identifier.trim().length > 255 ||
+        !body.password ||
+        body.password.length > 1024
       ) {
         return Response.json(
           { error: "Ingresa tu usuario o correo y tu contraseña." },
@@ -1471,8 +1928,20 @@ const server = Bun.serve({
       }
 
       try {
-        const user = await authenticateUser(body.identifier.trim(), body.password);
+        const sourceAddress = server.requestIP(request)?.address ?? "unknown";
+        const { user, retryAfterSeconds } = await authenticateWithLockout(
+          body.identifier.trim(),
+          body.password,
+          sourceAddress,
+        );
         if (!user) {
+          if (retryAfterSeconds > 0) {
+            const retryMinutes = Math.ceil(retryAfterSeconds / 60);
+            return Response.json(
+              { error: `Demasiados intentos fallidos. Espera ${retryMinutes} ${retryMinutes === 1 ? "minuto" : "minutos"} antes de volver a intentarlo.` },
+              { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+            );
+          }
           return Response.json(
             { error: "Usuario o contraseña incorrectos, o cuenta inactiva." },
             { status: 401 },
@@ -1533,7 +2002,7 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
+        if (!user.isAdmin) {
           return Response.json({ error: "No tienes permiso para consultar las cuentas de Accesos." }, { status: 403 });
         }
         return Response.json({ accounts: await listHostAccounts() });
@@ -1553,8 +2022,8 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
-          return Response.json({ error: "Solo Recepción puede asignar anfitriones." }, { status: 403 });
+        if (!user.isAdmin) {
+          return Response.json({ error: "Solo Programación puede asignar anfitriones." }, { status: 403 });
         }
 
         let login: string;
@@ -1601,19 +2070,21 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
-          return Response.json({ error: "No tienes permiso para administrar contratistas y proveedores." }, { status: 403 });
-        }
-
         const partnerId = businessPartnersPath[1] ? Number(businessPartnersPath[1]) : null;
         if (partnerId !== null && !Number.isSafeInteger(partnerId)) {
           return Response.json({ error: "La empresa seleccionada no es válida." }, { status: 400 });
         }
         if (request.method === "GET") {
+          if (!(await canReadExternalModules(user))) {
+            return Response.json({ error: "No tienes permiso para consultar contratistas y proveedores." }, { status: 403 });
+          }
           if (partnerId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
           return Response.json({ businessPartners: await listBusinessPartners() });
+        }
+        if (!(await canManageExternalModules(user))) {
+          return Response.json({ error: "No tienes permiso para modificar contratistas y proveedores." }, { status: 403 });
         }
         if (
           (request.method === "POST" && partnerId !== null) ||
@@ -1724,19 +2195,21 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
-          return Response.json({ error: "No tienes permiso para administrar público general." }, { status: 403 });
-        }
-
         const visitorId = generalVisitorsPath[1] ? Number(generalVisitorsPath[1]) : null;
         if (visitorId !== null && !Number.isSafeInteger(visitorId)) {
           return Response.json({ error: "La persona seleccionada no es válida." }, { status: 400 });
         }
         if (request.method === "GET") {
+          if (!(await canReadExternalModules(user))) {
+            return Response.json({ error: "No tienes permiso para consultar público general." }, { status: 403 });
+          }
           if (visitorId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
           return Response.json({ generalVisitors: await listGeneralVisitors() });
+        }
+        if (!(await canManageExternalModules(user))) {
+          return Response.json({ error: "No tienes permiso para modificar público general." }, { status: 403 });
         }
         if (
           (request.method === "POST" && visitorId !== null) ||
@@ -1821,6 +2294,39 @@ const server = Bun.serve({
     const equipmentResponse = await handleEquipmentRequest(request, url);
     if (equipmentResponse) return equipmentResponse;
 
+    if (url.pathname === "/api/daily-log/stats" && request.method === "GET") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!(await hasSectionAccess(user, "recepcion"))) {
+          return Response.json({ error: "No tienes permiso para consultar la bitácora." }, { status: 403 });
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        const fromDate = url.searchParams.get("from") ?? today;
+        const toDate = url.searchParams.get("to") ?? fromDate;
+        const daySpan =
+          (Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) /
+          86_400_000;
+        if (
+          !isValidDateString(fromDate) ||
+          !isValidDateString(toDate) ||
+          fromDate > toDate ||
+          !Number.isInteger(daySpan) ||
+          daySpan > 365
+        ) {
+          return Response.json({ error: "Revisa el rango de fechas solicitado." }, { status: 400 });
+        }
+        return Response.json({
+          stats: await getDailyLogDailyCounts(fromDate, toDate),
+        });
+      } catch (error) {
+        console.error("Failed to load daily log statistics:", error);
+        return Response.json({ error: "No se pudo cargar el resumen de movimientos." }, { status: 500 });
+      }
+    }
+
     const dailyLogPath = url.pathname.match(/^\/api\/daily-log(?:\/(\d+))?$/);
     if (dailyLogPath && ["GET", "POST", "DELETE"].includes(request.method)) {
       try {
@@ -1871,7 +2377,9 @@ const server = Bun.serve({
             );
           }
           const [{ entries, total, hosts }, summary] = await Promise.all([
-            listDailyLogEntries(fromDate, toDate, search, event, category, hostFilters, page, pageSize),
+            listDailyLogEntries(
+              fromDate, toDate, search, event, category, hostFilters, page, pageSize, user.isAdmin,
+            ),
             getDailyLogSummary(fromDate, toDate),
           ]);
           return Response.json({
@@ -2016,18 +2524,6 @@ const server = Bun.serve({
           );
           if (matches[0]) externalStaffId = Number(matches[0].id);
         }
-        if (
-          (input.event === "Ingreso" || input.event === "Retiro") &&
-          input.appointmentId === null &&
-          input.externalStaffId === null &&
-          input.visitorRecordId === null
-        ) {
-          return Response.json(
-            { error: "Para registrar un ingreso o retiro, vincula el movimiento con una cita o ficha de persona." },
-            { status: 400 },
-          );
-        }
-
         const subjectKey = externalStaffId !== null
           ? `external:${externalStaffId}`
           : visitorId !== null
@@ -2068,13 +2564,18 @@ const server = Bun.serve({
           });
         }
 
+        const isManualVisit =
+          input.appointmentId === null &&
+          externalStaffId === null &&
+          visitorId === null;
+        const movementTypes = "('Llegada', 'Ingreso', 'Retiro')";
         const [latestMovementRows] = await pool.execute<RowDataPacket[]>(
           `WITH movements AS (
              SELECT d.id, d.event_type, d.entry_date, d.entry_time,
                     ${dailyLogSubjectKey} AS subject_key
              FROM daily_log_entries d
              ${dailyLogJoins}
-             WHERE d.event_type IN ('Ingreso', 'Retiro')
+             WHERE d.event_type IN ${movementTypes}
            )
            SELECT event_type
            FROM movements
@@ -2087,20 +2588,52 @@ const server = Bun.serve({
         if (input.event === "Ingreso" && latestMovement === "Ingreso") {
           return Response.json({ error: "Esta persona ya tiene un ingreso sin retiro registrado." }, { status: 409 });
         }
-        if (input.event === "Retiro" && latestMovement !== "Ingreso") {
-          return Response.json({ error: "No se puede registrar el retiro: no hay un ingreso activo para esta persona." }, { status: 409 });
+        if (input.event === "Ingreso" && input.appointmentId !== null) {
+          const [equipmentDeclarations] = await pool.execute<RowDataPacket[]>(
+            `SELECT ei.status AS entry_inspection_status
+             FROM equipment_declarations ed
+             LEFT JOIN equipment_inspections ei
+               ON ei.declaration_id = ed.id AND ei.phase = 'Entrada'
+             WHERE ed.appointment_id = ?
+             LIMIT 1`,
+            [input.appointmentId],
+          );
+          if (
+            equipmentDeclarations.length > 0 &&
+            equipmentDeclarations[0].entry_inspection_status !== "Completada"
+          ) {
+            return Response.json(
+              { error: "Completa el checklist de entrada del equipo y las herramientas de esta cita antes de registrar la entrada." },
+              { status: 409 },
+            );
+          }
+        }
+        if (input.event === "Ingreso" && isManualVisit && latestMovement !== "Llegada") {
+          return Response.json(
+            { error: "Registra primero la llegada de esta visita manual antes de permitir su entrada." },
+            { status: 409 },
+          );
+        }
+        if (
+          input.event === "Retiro" &&
+          latestMovement !== "Ingreso" &&
+          latestMovement !== "Llegada"
+        ) {
+          return Response.json({ error: "No se puede registrar la salida: primero registra una llegada o entrada para esta persona." }, { status: 409 });
         }
 
         await pool.execute(
           `INSERT INTO daily_log_entries
-             (entry_date, entry_time, event_type, person_name, details,
+             (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
               appointment_id, external_staff_id, visitor_record_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             input.date,
             input.time,
             input.event,
             personName,
+            user.login,
+            user.name?.trim() || user.login,
             input.details || null,
             input.appointmentId,
             externalStaffId,
@@ -2150,7 +2683,9 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
+        const hasReceptionAccess = await hasSectionAccess(user, "recepcion");
+        const hasHostAccess = await hasHostOnlyAccess(user);
+        if (!user.isAdmin && (hasReceptionAccess || !hasHostAccess)) {
           return Response.json({ error: "No tienes permiso para enviar pases de visita." }, { status: 403 });
         }
         const appointmentId = Number(appointmentQrPath[1]);
@@ -2159,20 +2694,33 @@ const server = Bun.serve({
         }
 
         const [rows] = await pool.execute<AppointmentRow[]>(
-          `SELECT id, business_partner_id,
+          `SELECT a.id, a.business_partner_id, a.visitor_record_id, a.created_by_login, a.reference_code,
+                  p.partner_type,
                   DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                   TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
                   visitor_name, visitor_email, registered_by, company_name, host_name, status
-           FROM appointments WHERE id = ? LIMIT 1`,
+           FROM appointments a
+           LEFT JOIN business_partners p ON p.id = a.business_partner_id
+           WHERE a.id = ? LIMIT 1`,
           [appointmentId],
         );
         const appointment = rows[0];
         if (!appointment) {
           return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
         }
+        if (!user.isAdmin && appointment.created_by_login !== user.login) {
+          return Response.json({ error: "No tienes permiso para enviar el QR de esta cita." }, { status: 403 });
+        }
+        if (!/^\d{8}$/.test(appointment.reference_code ?? "")) {
+          return Response.json(
+            { error: "La cita aún no tiene un código de referencia válido. Ejecuta la migración de base de datos y vuelve a intentarlo." },
+            { status: 409 },
+          );
+        }
         if (appointment.status === "Cancelada" || appointment.status === "Retirado") {
           return Response.json({ error: "No se puede enviar el pase de una cita cancelada o finalizada." }, { status: 409 });
         }
+        const isContractor = appointment.partner_type === "Contratista";
 
         let recipientEmail = appointment.visitor_email.trim();
         if (
@@ -2247,9 +2795,81 @@ const server = Bun.serve({
           );
         }
 
+        let equipmentDeclarationLink = "";
+        if (isContractor) {
+          const configuredAppUrl = Bun.env.PUBLIC_APP_URL?.trim();
+          const origin = configuredAppUrl || request.headers.get("origin") || new URL(request.url).origin;
+          let publicAppOrigin: string;
+          try {
+            const parsedOrigin = new URL(origin);
+            if (parsedOrigin.protocol !== "https:" && parsedOrigin.protocol !== "http:") {
+              throw new Error("Unsupported application URL scheme.");
+            }
+            publicAppOrigin = parsedOrigin.origin;
+          } catch (error) {
+            console.error("Invalid public app URL for appointment email:", error);
+            return Response.json(
+              { error: "No se pudo determinar el enlace público para la declaración de equipo." },
+              { status: 503 },
+            );
+          }
+
+          const [declarationRows] = await pool.execute<RowDataPacket[]>(
+            "SELECT id, status FROM equipment_declarations WHERE appointment_id = ? LIMIT 1",
+            [appointmentId],
+          );
+          if (declarationRows[0]?.status === "Enviada") {
+            return Response.json(
+              { error: "La declaración de equipo de esta cita ya se envió y su enlace de un solo uso fue consumido. No se reenviaron los datos." },
+              { status: 409 },
+            );
+          }
+          const [declarationStaffRows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id
+             FROM external_staff
+             WHERE business_partner_id = ?
+               AND LOWER(TRIM(full_name)) = LOWER(TRIM(?))
+             ORDER BY id DESC
+             LIMIT 1`,
+            [appointment.business_partner_id, appointment.visitor_name],
+          );
+          const declarationExternalStaffId =
+            declarationStaffRows[0] === undefined ? null : Number(declarationStaffRows[0].id);
+          const equipmentToken = randomBytes(32).toString("base64url");
+          const equipmentTokenHash = hashToken(equipmentToken);
+          const declarationId = declarationRows[0]?.id;
+          if (declarationId !== undefined) {
+            await pool.execute(
+              `UPDATE equipment_declarations
+               SET token_hash = ?, token_expires_at = DATE_ADD(NOW(), INTERVAL 30 DAY),
+                   token_revoked_at = NULL
+               WHERE id = ? AND status = 'Pendiente'`,
+              [equipmentTokenHash, declarationId],
+            );
+          } else {
+            await pool.execute(
+              `INSERT INTO equipment_declarations
+                 (business_partner_id, external_staff_id, visitor_record_id, appointment_id, person_name,
+                  created_by, token_hash, token_expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+              [
+                appointment.business_partner_id,
+                declarationExternalStaffId,
+                appointment.visitor_record_id ?? null,
+                appointmentId,
+                appointment.visitor_name,
+                user.login,
+                equipmentTokenHash,
+              ],
+            );
+          }
+          equipmentDeclarationLink =
+            `${publicAppOrigin}/#equipo=${encodeURIComponent(equipmentToken)}`;
+        }
         const qrPayload = JSON.stringify({
           type: "visitas-appointment",
           id: Number(appointment.id),
+          referenceCode: appointment.reference_code,
           visitor: appointment.visitor_name,
           company: appointment.company_name,
           host: appointment.host_name,
@@ -2274,6 +2894,28 @@ const server = Bun.serve({
         const safeVisitorName = escapeEmailHtml(appointment.visitor_name);
         const safeCompanyName = escapeEmailHtml(appointment.company_name);
         const safeHostName = escapeEmailHtml(appointment.host_name);
+        const safeReferenceCode = escapeEmailHtml(appointment.reference_code ?? "");
+        const safeEquipmentDeclarationLink = escapeEmailHtml(equipmentDeclarationLink);
+        const equipmentReminderHtml = isContractor
+          ? `
+                      <tr>
+                        <td class="email-gutter" style="padding:18px 20px 0;">
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#06234a;">
+                            <tr>
+                              <td class="email-reminder-icon" align="center" valign="middle" style="width:120px;padding:18px;">
+                                <span style="display:inline-block;width:54px;height:54px;border:3px solid #1760a4;border-radius:50%;font-size:28px;line-height:54px;font-weight:bold;color:#ffffff;">✓</span>
+                              </td>
+                              <td class="email-reminder-copy" valign="middle" style="padding:18px 18px 18px 0;">
+                                <p class="email-reminder-title" style="margin:0 0 7px;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;">Declara el equipo y las herramientas que llevarás</p>
+                                <p class="email-reminder-text" style="margin:0 0 12px;font-size:13px;line-height:20px;color:#c6d4e5;">Usa el enlace de un solo uso antes de tu visita. Al enviar el formulario quedará desactivado; solo podrás ingresar los artículos que registres aquí y que recepción verifique.</p>
+                                <a href="${safeEquipmentDeclarationLink}" style="display:inline-block;padding:10px 15px;border-radius:6px;background-color:#1760a4;color:#ffffff;text-decoration:none;font-size:13px;line-height:18px;font-weight:bold;">Declarar equipo y herramientas</a>
+                              </td>
+                              <td style="width:12px;background-color:#ef1f32;font-size:0;line-height:0;">&nbsp;</td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>`
+          : "";
         const [visitYear, visitMonth, visitDay] = appointment.visit_date.split("-").map(Number);
         const formattedVisitDate = new Date(visitYear, visitMonth - 1, visitDay).toLocaleDateString(
           "es-MX",
@@ -2411,28 +3053,20 @@ const server = Bun.serve({
                                   <tr>
                                     <td align="center" style="padding:4px 12px 14px;font-size:12px;line-height:17px;color:#e2e9f3;">Muestra este código<br>en recepción al llegar.</td>
                                   </tr>
+                                  <tr>
+                                    <td align="center" style="padding:10px 12px 12px;border-top:1px solid #174a7a;">
+                                      <p style="margin:0 0 5px;font-size:10px;line-height:15px;letter-spacing:.7px;color:#91a5bd;">CÓDIGO DE REFERENCIA</p>
+                                      <p style="margin:0;font-size:24px;line-height:30px;font-weight:bold;letter-spacing:4px;color:#ffffff;">${safeReferenceCode}</p>
+                                      <p style="margin:5px 0 0;font-size:11px;line-height:16px;color:#c6d4e5;">Si no puedes mostrar el QR, proporciona este código en recepción.</p>
+                                    </td>
+                                  </tr>
                                 </table>
                               </td>
                             </tr>
                           </table>
                         </td>
                       </tr>
-                      <tr>
-                        <td class="email-gutter" style="padding:18px 20px 0;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#06234a;">
-                            <tr>
-                              <td class="email-reminder-icon" align="center" valign="middle" style="width:120px;padding:18px;">
-                                <span style="display:inline-block;width:54px;height:54px;border:3px solid #1760a4;border-radius:50%;font-size:28px;line-height:54px;font-weight:bold;color:#ffffff;">✓</span>
-                              </td>
-                              <td class="email-reminder-copy" valign="middle" style="padding:18px 18px 18px 0;">
-                                <p class="email-reminder-title" style="margin:0 0 7px;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;">También encontrarás el QR adjunto como imagen PNG.</p>
-                                <p class="email-reminder-text" style="margin:0;font-size:13px;line-height:20px;color:#c6d4e5;">Te recomendamos conservar este correo y tener tu código listo al momento de ingresar.</p>
-                              </td>
-                              <td style="width:12px;background-color:#ef1f32;font-size:0;line-height:0;">&nbsp;</td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
+                      ${equipmentReminderHtml}
                       <tr>
                         <td class="email-footer" align="center" style="padding:25px 18px 18px;">
                           <table role="presentation" width="82%" cellspacing="0" cellpadding="0" border="0">
@@ -2475,8 +3109,16 @@ const server = Bun.serve({
             `Anfitrión: ${appointment.host_name}`,
             `Fecha: ${appointment.visit_date}`,
             `Hora: ${appointment.visit_time}`,
+            `Código de referencia para recepción: ${appointment.reference_code ?? ""}`,
             "",
-            "El código QR también aparece en el cuerpo de este correo.",
+            ...(isContractor
+              ? [
+                  "Declara el equipo y las herramientas que llevarás usando este enlace de un solo uso. Después de enviar la declaración, el enlace se desactivará y no podrás ingresar artículos que no estén registrados:",
+                  equipmentDeclarationLink,
+                ]
+              : []),
+            "",
+            "El código QR y el código de referencia también aparecen en el cuerpo de este correo.",
           ].join("\n"),
           html,
           attachments: [{
@@ -2493,7 +3135,11 @@ const server = Bun.serve({
             cid: "cymez-logo",
           }],
         });
-        return Response.json({ message: `El pase se envió a ${recipientEmail}.` });
+        return Response.json({
+          message: isContractor
+            ? `El pase, el código ${appointment.reference_code ?? ""} y el enlace de declaración se enviaron a ${recipientEmail}.`
+            : `El pase y el código ${appointment.reference_code ?? ""} se enviaron a ${recipientEmail}.`,
+        });
       } catch (error) {
         const errorCode =
           isRecord(error) && typeof error.code === "string" ? error.code : "UNKNOWN";
@@ -2547,9 +3193,20 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
-          return Response.json({ error: "No tienes permiso para administrar la agenda." }, { status: 403 });
+        const hasReceptionAccess = await hasSectionAccess(user, "recepcion");
+        const hasHostAccess = await hasHostOnlyAccess(user);
+        if (!user.isAdmin && !hasReceptionAccess && !hasHostAccess) {
+          return Response.json({ error: "No tienes permiso para consultar la agenda." }, { status: 403 });
         }
+        const appointmentHostNames = hasHostAccess
+          ? [...new Set([user.name?.trim(), user.login]
+              .filter((name): name is string => Boolean(name))
+              .map((name) => name.trim().toLocaleLowerCase()))]
+          : [];
+        const userAppointmentScope = appointmentHostNames.length > 0
+          ? `(created_by_login = ? OR LOWER(TRIM(host_name)) IN (${appointmentHostNames.map(() => "?").join(", ")}))`
+          : "created_by_login = ?";
+        const userAppointmentScopeParameters = [user.login, ...appointmentHostNames];
 
         const appointmentId = appointmentsPath[1] ? Number(appointmentsPath[1]) : null;
         if (appointmentId !== null && (!Number.isSafeInteger(appointmentId) || appointmentId < 1)) {
@@ -2559,7 +3216,15 @@ const server = Bun.serve({
           if (appointmentId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
-          return Response.json({ appointments: await listAppointments() });
+          return Response.json({
+            appointments: await listAppointments(
+              !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
+              !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
+            ),
+          });
+        }
+        if (!user.isAdmin && (hasReceptionAccess || !hasHostAccess)) {
+          return Response.json({ error: "Recepción tiene acceso de solo lectura a la agenda." }, { status: 403 });
         }
         if (
           (request.method === "POST" && appointmentId !== null) ||
@@ -2570,13 +3235,20 @@ const server = Bun.serve({
 
         if (request.method === "DELETE") {
           const [result] = await pool.execute<ResultSetHeader>(
-            "DELETE FROM appointments WHERE id = ?",
-            [appointmentId],
+            user.isAdmin
+              ? "DELETE FROM appointments WHERE id = ?"
+              : `DELETE FROM appointments WHERE id = ? AND ${userAppointmentScope}`,
+            user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
           );
           if (result.affectedRows === 0) {
             return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
           }
-          return Response.json({ appointments: await listAppointments() });
+          return Response.json({
+            appointments: await listAppointments(
+              !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
+              !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
+            ),
+          });
         }
 
         let body: unknown;
@@ -2590,15 +3262,22 @@ const server = Bun.serve({
             return Response.json({ error: "El cambio de estado de la cita no es válido." }, { status: 400 });
           }
           const [result] = await pool.execute<ResultSetHeader>(
-            `UPDATE appointments
-             SET status = 'Cancelada'
-             WHERE id = ? AND status NOT IN ('Cancelada', 'Retirado')`,
-            [appointmentId],
+            user.isAdmin
+              ? `UPDATE appointments
+                 SET status = 'Cancelada'
+                 WHERE id = ? AND status NOT IN ('Cancelada', 'Retirado')`
+              : `UPDATE appointments
+                 SET status = 'Cancelada'
+                 WHERE id = ? AND ${userAppointmentScope}
+                   AND status NOT IN ('Cancelada', 'Retirado')`,
+            user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
           );
           if (result.affectedRows === 0) {
             const [matches] = await pool.execute<AppointmentRow[]>(
-              "SELECT id, status FROM appointments WHERE id = ? LIMIT 1",
-              [appointmentId],
+              user.isAdmin
+                ? "SELECT id, status FROM appointments WHERE id = ? LIMIT 1"
+                : `SELECT id, status FROM appointments WHERE id = ? AND ${userAppointmentScope} LIMIT 1`,
+              user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
             );
             if (matches.length === 0) {
               return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
@@ -2621,25 +3300,44 @@ const server = Bun.serve({
           if (partners.length === 0) {
             return Response.json({ error: "La empresa seleccionada ya no está disponible." }, { status: 400 });
           }
-          await pool.execute(
-            `INSERT INTO appointments
-              (business_partner_id, visit_date, visit_time, visitor_name, visitor_email, registered_by,
-               company_name, host_name, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
-            [
-              appointment.businessPartnerId,
-              appointment.date,
-              appointment.time,
-              appointment.visitorName,
-              appointment.visitorEmail,
-              user.name?.trim() || user.login,
-              partners[0].name,
-              appointment.hostName,
-            ],
-          );
+          let created = false;
+          for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
+            const referenceCode = await createAppointmentReferenceCode();
+            try {
+              await pool.execute(
+                `INSERT INTO appointments
+                  (business_partner_id, visit_date, visit_time, visitor_name, visitor_email,
+                   reference_code, registered_by, created_by_login, company_name, host_name, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
+                [
+                  appointment.businessPartnerId,
+                  appointment.date,
+                  appointment.time,
+                  appointment.visitorName,
+                  appointment.visitorEmail,
+                  referenceCode,
+                  user.name?.trim() || user.login,
+                  user.login,
+                  partners[0].name,
+                  user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
+                ],
+              );
+              created = true;
+            } catch (error) {
+              const isDuplicateCode =
+                isRecord(error) && error.code === "ER_DUP_ENTRY";
+              if (!isDuplicateCode || attempt === 4) throw error;
+            }
+          }
+          if (!created) throw new Error("No se pudo guardar la cita con su código de referencia.");
         }
 
-        return Response.json({ appointments: await listAppointments() }, {
+        return Response.json({
+          appointments: await listAppointments(
+            !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
+            !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
+          ),
+        }, {
           status: request.method === "POST" ? 201 : 200,
         });
       } catch (error) {
@@ -2661,19 +3359,21 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
-          return Response.json({ error: "No tienes permiso para administrar personal externo." }, { status: 403 });
-        }
-
         const staffId = externalStaffPath[1] ? Number(externalStaffPath[1]) : null;
         if (staffId !== null && (!Number.isSafeInteger(staffId) || staffId < 1)) {
           return Response.json({ error: "La persona seleccionada no es válida." }, { status: 400 });
         }
         if (request.method === "GET") {
+          if (!(await canReadExternalModules(user))) {
+            return Response.json({ error: "No tienes permiso para consultar personal externo." }, { status: 403 });
+          }
           if (staffId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
           return Response.json({ externalStaff: await listExternalStaff() });
+        }
+        if (!(await canManageExternalModules(user))) {
+          return Response.json({ error: "No tienes permiso para modificar personal externo." }, { status: 403 });
         }
         if (
           (request.method === "POST" && staffId !== null) ||
@@ -2765,7 +3465,7 @@ const server = Bun.serve({
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
         const sections = await listUserSectionAccess(user.login, user.isAdmin);
-        if (!sections.includes("recepcion") && !sections.includes("anfitriones")) {
+        if (!user.isAdmin && !sections.includes("recepcion")) {
           return Response.json({ error: "No tienes permiso para consultar departamentos." }, { status: 403 });
         }
         return Response.json({ departments: await listDepartments() });

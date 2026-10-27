@@ -8,6 +8,7 @@ const saving = ref(false);
 const errorMessage = ref("");
 const submitted = ref(false);
 const confirmedReview = ref(false);
+const editingItemIndex = ref(null);
 function emptyItem() {
     return {
         itemType: "Equipo",
@@ -56,13 +57,13 @@ onMounted(async () => {
     }
 });
 function addItem() {
-    if (items.value.length >= 50 || !newItem.value.product.trim())
+    if ((editingItemIndex.value === null && items.value.length >= 50) || !newItem.value.product.trim())
         return;
     if (!Number.isSafeInteger(newItem.value.quantity) || newItem.value.quantity < 1 || newItem.value.quantity > 100000) {
         errorMessage.value = "La cantidad debe ser un número entero entre 1 y 100,000.";
         return;
     }
-    items.value.push({
+    const item = {
         ...newItem.value,
         product: newItem.value.product.trim(),
         brand: newItem.value.brand.trim(),
@@ -70,12 +71,39 @@ function addItem() {
         serialNumber: newItem.value.serialNumber.trim(),
         color: newItem.value.color.trim(),
         notes: newItem.value.notes.trim(),
-    });
+    };
+    if (!item.brand || !item.model || !item.color) {
+        errorMessage.value = "Completa tipo, cantidad, artículo, marca, modelo y color. La serie y las observaciones son opcionales.";
+        return;
+    }
+    if (editingItemIndex.value === null)
+        items.value.push(item);
+    else
+        items.value.splice(editingItemIndex.value, 1, item);
     newItem.value = emptyItem();
+    editingItemIndex.value = null;
+    errorMessage.value = "";
+}
+function editItem(index) {
+    const item = items.value[index];
+    if (!item)
+        return;
+    newItem.value = { ...item };
+    editingItemIndex.value = index;
+    errorMessage.value = "";
+    document.querySelector("#equipment-item-form-title")?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function cancelEdit() {
+    newItem.value = emptyItem();
+    editingItemIndex.value = null;
     errorMessage.value = "";
 }
 function removeItem(index) {
     items.value.splice(index, 1);
+    if (editingItemIndex.value === index)
+        cancelEdit();
+    else if (editingItemIndex.value !== null && index < editingItemIndex.value)
+        editingItemIndex.value -= 1;
 }
 async function submitDeclaration() {
     if (saving.value ||
@@ -215,6 +243,10 @@ else if (__VLS_ctx.declaration) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
             id: "equipment-item-form-title",
         });
+        (__VLS_ctx.editingItemIndex === null ? "Agregar artículo a la lista" : "Editar artículo");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "public-equipment-form-hint" },
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
             ...{ onSubmit: (__VLS_ctx.addItem) },
             ...{ class: "public-equipment-entry-form" },
@@ -223,6 +255,7 @@ else if (__VLS_ctx.declaration) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
             value: (__VLS_ctx.newItem.itemType),
             required: true,
+            disabled: (__VLS_ctx.saving),
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
             value: "Equipo",
@@ -237,6 +270,7 @@ else if (__VLS_ctx.declaration) {
             max: "100000",
             step: "1",
             required: true,
+            disabled: (__VLS_ctx.saving),
         });
         (__VLS_ctx.newItem.quantity);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
@@ -244,48 +278,81 @@ else if (__VLS_ctx.declaration) {
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             maxlength: "180",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
             placeholder: "Ej. Laptop o taladro",
             required: true,
+            disabled: (__VLS_ctx.saving),
         });
         (__VLS_ctx.newItem.product);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             maxlength: "120",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+            required: true,
+            disabled: (__VLS_ctx.saving),
         });
         (__VLS_ctx.newItem.brand);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             maxlength: "120",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+            required: true,
+            disabled: (__VLS_ctx.saving),
         });
         (__VLS_ctx.newItem.model);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             maxlength: "180",
+            disabled: (__VLS_ctx.saving),
         });
         (__VLS_ctx.newItem.serialNumber);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             maxlength: "80",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+            required: true,
+            disabled: (__VLS_ctx.saving),
         });
         (__VLS_ctx.newItem.color);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
             ...{ class: "public-entry-notes" },
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea)({
+            value: (__VLS_ctx.newItem.notes),
             maxlength: "1000",
+            rows: "2",
+            disabled: (__VLS_ctx.saving),
         });
-        (__VLS_ctx.newItem.notes);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "public-equipment-form-actions" },
+        });
+        if (__VLS_ctx.editingItemIndex !== null) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (__VLS_ctx.cancelEdit) },
+                ...{ class: "public-equipment-cancel-edit" },
+                type: "button",
+                disabled: (__VLS_ctx.saving),
+            });
+        }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ class: "public-equipment-add-button" },
             type: "submit",
-            disabled: (__VLS_ctx.items.length >= 50),
+            disabled: (__VLS_ctx.saving || (__VLS_ctx.editingItemIndex === null && __VLS_ctx.items.length >= 50)),
         });
-        (__VLS_ctx.items.length >= 50 ? "Máximo de artículos alcanzado" : "+ Agregar a la lista");
+        (__VLS_ctx.editingItemIndex !== null ? "Guardar cambios" : __VLS_ctx.items.length >= 50 ? "Máximo de artículos alcanzado" : "+ Agregar a la lista");
+        if (__VLS_ctx.errorMessage) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                ...{ class: "public-equipment-error public-equipment-form-error" },
+                role: "alert",
+            });
+            (__VLS_ctx.errorMessage);
+        }
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "sr-only" },
+            'aria-live': "polite",
+        });
+        (__VLS_ctx.editingItemIndex === null ? "" : `Editando artículo ${__VLS_ctx.editingItemIndex + 1}`);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
             ...{ class: "public-equipment-list" },
             'aria-labelledby': "equipment-list-title",
@@ -331,7 +398,28 @@ else if (__VLS_ctx.declaration) {
                 ([item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—");
                 __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
                 (item.notes || "—");
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
+                    ...{ class: "public-equipment-actions-cell" },
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                    ...{ onClick: (...[$event]) => {
+                            if (!!(__VLS_ctx.loading))
+                                return;
+                            if (!!(__VLS_ctx.errorMessage && !__VLS_ctx.declaration))
+                                return;
+                            if (!(__VLS_ctx.declaration))
+                                return;
+                            if (!!(__VLS_ctx.submitted))
+                                return;
+                            if (!(__VLS_ctx.items.length))
+                                return;
+                            __VLS_ctx.editItem(index);
+                        } },
+                    ...{ class: "public-equipment-edit" },
+                    type: "button",
+                    'aria-label': (`Editar ${item.product}`),
+                    disabled: (__VLS_ctx.saving),
+                });
                 __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
                     ...{ onClick: (...[$event]) => {
                             if (!!(__VLS_ctx.loading))
@@ -348,7 +436,8 @@ else if (__VLS_ctx.declaration) {
                         } },
                     ...{ class: "public-equipment-remove" },
                     type: "button",
-                    'aria-label': (`Quitar ${item.product}`),
+                    'aria-label': (`Eliminar ${item.product}`),
+                    disabled: (__VLS_ctx.saving),
                 });
             }
         }
@@ -402,15 +491,23 @@ else if (__VLS_ctx.declaration) {
 /** @type {__VLS_StyleScopedClasses['public-equipment-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-warning']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-entry']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-form-hint']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-entry-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-entry-product']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-entry-notes']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-form-actions']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-cancel-edit']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-add-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-error']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-form-error']} */ ;
+/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-list']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-list-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-table-wrap']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-actions-cell']} */ ;
+/** @type {__VLS_StyleScopedClasses['public-equipment-edit']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-remove']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-empty']} */ ;
 /** @type {__VLS_StyleScopedClasses['public-equipment-submit-form']} */ ;
@@ -430,7 +527,10 @@ const __VLS_self = (await import('vue')).defineComponent({
             errorMessage: errorMessage,
             submitted: submitted,
             confirmedReview: confirmedReview,
+            editingItemIndex: editingItemIndex,
             addItem: addItem,
+            editItem: editItem,
+            cancelEdit: cancelEdit,
             removeItem: removeItem,
             submitDeclaration: submitDeclaration,
         };

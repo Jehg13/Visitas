@@ -77,12 +77,15 @@ const filteredAccounts = computed(() => {
   </div>
   <div v-if="accounts.length > 0" class="workspace-table-scroll">
     <table class="workspace-table access-table">
-      <caption class="workspace-table-caption">
-        Usuarios en accesos · {{ filteredAccounts.length }} de {{ accounts.length }}
+      <caption class="workspace-table-caption access-table-caption">
+        <span class="access-table-caption-title">Usuarios en accesos</span>
+        <span class="access-table-caption-count">
+          {{ filteredAccounts.length }} de {{ accounts.length }} cuentas
+        </span>
       </caption>
       <thead>
         <tr>
-          <th>Foto / Login</th><th>Nombre</th><th>Departamento</th><th>Puesto (rol)</th>
+          <th>Foto / Login</th><th>Nombre</th><th>Puesto (rol)</th>
           <th>Correo electrónico</th><th>Teléfono</th><th>Cuenta</th><th>Acceso</th>
           <th><span class="sr-only">Acciones</span></th>
         </tr>
@@ -99,7 +102,6 @@ const filteredAccounts = computed(() => {
             </div>
           </td>
           <td>{{ account.name || "—" }}</td>
-          <td>Sin vincular</td>
           <td>{{ account.role || "—" }}</td>
           <td>{{ account.email || "—" }}</td>
           <td>{{ account.phone || "—" }}</td>
@@ -112,11 +114,11 @@ const filteredAccounts = computed(() => {
             <div class="host-state-pills">
               <span
                 v-if="account.hasFullAccess || account.sectionAccess.includes('administrador')"
-                class="access-role-pill"
+                class="access-role-pill access-role-admin"
               >Administrador</span>
               <span
                 v-else-if="account.sectionAccess.includes('recepcion')"
-                class="access-role-pill"
+                class="access-role-pill access-role-reception"
               >Recepción</span>
               <span
                 v-else
@@ -137,7 +139,7 @@ const filteredAccounts = computed(() => {
           </td>
         </tr>
         <tr v-if="filteredAccounts.length === 0">
-          <td class="workspace-empty" colspan="9">No hay cuentas que coincidan con la búsqueda.</td>
+          <td class="workspace-empty" colspan="8">No hay cuentas que coincidan con la búsqueda.</td>
         </tr>
       </tbody>
     </table>

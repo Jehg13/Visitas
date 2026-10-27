@@ -1,6 +1,6 @@
 # Visitas
 
-Esqueleto de aplicación con Vue 3 y TypeScript para el frontend, Bun y TypeScript para la API, y MySQL 8.4 como base de datos.
+Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y TypeScript para la API, y MySQL 8.4 como base de datos.
 
 ## Requisitos
 
@@ -34,11 +34,14 @@ Esqueleto de aplicación con Vue 3 y TypeScript para el frontend, Bun y TypeScri
    ```
 
    Crea los catálogos, directorios de visitantes y empresas, personal externo,
-   citas, equipo, bitácora y permisos por sección. La cuenta de MySQL configurada en `backend\.env` debe
+   citas, equipo, bitácora y permisos por sección, además de atribuir las citas existentes a su creador cuando la cuenta puede identificarse sin ambigüedad. La cuenta de MySQL configurada en `backend\.env` debe
    tener permiso para crear tablas. Si ya tienes MySQL instalado, ajusta allí
    `DB_NAME=visitas_recep`, `DB_USER` y `DB_PASSWORD` antes de ejecutar la migración.
    Para enviar pases QR por correo, configura también `SMTP_HOST`, `SMTP_PORT`,
    `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM` en `backend\.env`.
+   La recuperación de contraseña usa el mismo servicio SMTP y requiere
+   `PUBLIC_APP_URL` con la URL pública del frontend en producción. En desarrollo
+   local, si se deja vacío, se utiliza `http://localhost:5173`.
    Para Microsoft 365 normalmente se usa `smtp.office365.com`, puerto `587` y
    STARTTLS (`SMTP_SECURE=false`); el área de TI debe confirmar los datos y
    habilitar SMTP AUTH en la cuenta. POP solo sirve para recibir correo y no
@@ -88,6 +91,16 @@ interfaz. El acceso a Anfitriones se conserva como permiso aparte y se concede
 al registrar una cuenta existente como anfitrión; no se configura desde Accesos.
 El login siempre respeta el estado `active` de la cuenta externa.
 
+El Programador conserva acceso completo. Recepción solo tiene las vistas
+Agenda de citas y Bitácora diaria; en la Agenda puede consultar todas las citas y
+ver sus QR, pero no crearlas, cancelarlas, eliminarlas ni enviarlas. El rol
+Anfitrión tiene acceso a Agenda y a todos los módulos de Externos: contratistas,
+proveedores, visitantes, personal externo y equipo/herramientas. Sus citas se
+filtran por login y puede crear, cancelar, eliminar y enviar el pase únicamente
+de sus propias citas. Los cambios de Externos se protegen también en la API y
+requieren el permiso `anfitriones`; asignar el permiso de Recepción mantiene
+ese rol en modo de solo lectura para la Agenda.
+
 La sección Departamentos lee y guarda sus registros en MySQL (`departments`);
 crear, editar y eliminar requiere una cuenta administradora. Al eliminar un
 departamento con anfitriones vinculados, la interfaz impide la acción. El
@@ -114,8 +127,20 @@ El inicio de sesión se conserva al recargar mediante una cookie HttpOnly de
 duración de ocho horas, también después de reiniciar el backend, mientras la
 cuenta permanezca activa y no cambie su contraseña.
 
+La recuperación de contraseña se abre como ventana emergente desde el login.
+Envía un enlace de un solo uso que vence en 10 minutos; las solicitudes se
+limitan a una por correo cada 2 minutos, con un máximo de 3 por hora y 10 por
+origen por hora. La respuesta no revela si el correo pertenece a una cuenta.
+Las contraseñas nuevas deben tener entre 12 y 128 caracteres y se guardan con
+Argon2id. Para proteger el inicio de sesión, tras 3 contraseñas incorrectas se
+aplica una espera de 5 minutos; cada 2 fallos adicionales aumenta 5 minutos,
+hasta un máximo de 60 minutos. El bloqueo se aplica por cuenta y dirección de
+origen y se limpia al iniciar sesión correctamente o restablecer la contraseña.
+
 Abre <http://localhost:5173>. Vite reenvía las solicitudes `/api` a `http://localhost:3000`.
 La API ofrece `GET /api/health` para comprobar la conexión y `GET /api/visits` para consultar las visitas.
+Vue Router permite navegar directamente a las secciones del dashboard, por ejemplo `/agenda` o
+`/bitacora`; Vite entrega la aplicación también al recargar esas rutas.
 
 ## Comandos
 
@@ -123,7 +148,7 @@ La API ofrece `GET /api/health` para comprobar la conexión y `GET /api/visits` 
 | --- | --- |
 | `bun run dev:frontend` | Inicia Vue con recarga en caliente |
 | `bun run dev:backend` | Inicia la API con reinicio al cambiar archivos |
-| `bun run db:migrate` | Crea las tablas de aplicación que todavía no existen |
+| `bun run db:migrate` | Crea las tablas y actualiza el esquema de aplicación, incluida la propiedad de las citas |
 | `bun run db:seed:test-users` | Inserta usuarios de prueba en `accesos` sin duplicarlos |
 | `bun run typecheck` | Comprueba los tipos de frontend y backend |
 | `bun run build` | Genera el build del frontend y comprueba el backend |
@@ -133,8 +158,11 @@ La API ofrece `GET /api/health` para comprobar la conexión y `GET /api/visits` 
 ## Estructura
 
 ```text
-frontend/              Aplicación Vue 3 + Vite + TypeScript
-  src/App.vue          Restaura la sesión y decide qué vista mostrar
+frontend/              Aplicación Vue 3 + Vite + TypeScript + Vue Router + Pinia
+  src/App.vue          Punto de entrada de las vistas del router
+  src/AppShell.vue     Restaura la sesión y decide qué vista mostrar
+  src/router.ts        Rutas de la aplicación
+  src/dashboardRoutes.ts Mapa entre secciones del dashboard y sus rutas
   src/LoginView.vue    Formulario de acceso
   src/DashboardView.vue Estructura del dashboard, navegación y estado compartido
   src/sections/        Home, Agenda, Anfitriones, Accesos, Departamentos,
@@ -153,20 +181,21 @@ docker-compose.yml     Servicio local de base de datos
 - `business_partners`: contratistas y proveedores, con RFC, categoría, empleados y estado.
 - `general_visitors`: público general, con CURP opcional.
 - `external_staff`: datos básicos del personal vinculado a una empresa de `business_partners`; el formulario selecciona la empresa del catálogo y guarda el vínculo en MySQL.
-- `appointments`: agenda persistente; conserva empresa, anfitrión y correo del visitante. Los pases QR se adjuntan y envían por el SMTP configurado.
+- `appointments`: agenda persistente; conserva empresa, anfitrión, correo del visitante y login del creador para filtrar las citas de cada anfitrión. Los pases QR se adjuntan y envían por el SMTP configurado.
 - `equipment_records`: tabla anterior de equipo que se conserva; el flujo nuevo usa tablas propias de declaraciones y revisiones.
 - `daily_log_entries`: bitácora diaria. Se guarda en MySQL, permite consultar rangos de hasta un año, buscar y filtrar movimientos, y relacionarlos opcionalmente con citas, personal externo o visitantes. Los ingresos y retiros vinculados actualizan el estado de la cita; el indicador de personas dentro considera el último ingreso/retiro de todo el historial, no solo la fecha visible.
 - `equipment_declarations` y `equipment_declaration_items`: declaración de un solo uso, asociada con una empresa y, cuando existe, con su cita, visitante o registro de personal externo. Cada fila conserva si el artículo es equipo o herramienta.
 - `equipment_inspections` y `equipment_inspection_items`: verificaciones separadas de Entrada y Salida, con el inspector, tipo de artículo, cantidades/características revisadas, resultados y observaciones de incidencias.
 - `accesos`: estructura local de usuarios compatible con la tabla externa; conserva exactamente sus 13 columnas y nulabilidad, sin agregar campos.
 - `accesos_secciones`: roles/permisos independientes por usuario (`administrador`, `recepcion`, `anfitriones`); no altera `accesos`. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
+- `password_reset_tokens`, `auth_login_failures` y `auth_recovery_limits`: enlaces de recuperación de un solo uso, bloqueos progresivos de inicio de sesión y límites anti-spam. Los tokens se almacenan como hash.
 - `visits`: tabla original de la aplicación, se conserva.
 
 El módulo Equipo y herramientas crea enlaces públicos de declaración con vencimiento
 a 30 días. El formulario público permite agregar varios artículos en una lista,
 indicando si cada uno es equipo o herramienta. Antes de enviar, la persona confirma
 que revisó la lista completa; al enviarla, los artículos se guardan y el enlace queda
-revocado de inmediato. Recepción puede renovar o revocar enlaces aún pendientes. La
+revocado de inmediato. Programación puede renovar o revocar enlaces aún pendientes. La
 verificación de Salida solo está disponible después de completar Entrada. Las
 diferencias de cantidad o características, así como las incidencias indicadas por el
 inspector, requieren observaciones. Este flujo no genera ni modifica movimientos de
@@ -178,7 +207,8 @@ buscar su nombre y presionar Enter. El sistema registra entrada o salida según
 el estado actual de la cita; también deja disponibles los botones para confirmar
 el movimiento manualmente.
 
-La migración es repetible y crea únicamente las tablas que faltan; no carga
+La migración es repetible, crea las tablas que faltan y actualiza columnas e índices
+de compatibilidad; no carga
 registros de demostración ni crea una tabla separada de puestos o anfitriones.
 Si ejecutaste una versión anterior, la tabla `positions` que ya exista se
 conserva sin utilizarse ni eliminarse.

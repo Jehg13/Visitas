@@ -121,7 +121,12 @@ const emit = defineEmits<{
           <tbody>
             <tr v-for="partner in paginatedBusinessPartners" :key="partner.id">
               <td><strong>{{ partner.name }}</strong><small>{{ partner.type }}</small></td>
-              <td>{{ partner.description || "—" }}</td>
+              <td>
+                <span
+                  class="business-partner-description"
+                  :title="partner.description || undefined"
+                >{{ partner.description || "—" }}</span>
+              </td>
               <td>{{ partner.rfc }}</td>
               <td>{{ partner.category }}</td>
               <td>{{ partner.employeeCount }}</td>

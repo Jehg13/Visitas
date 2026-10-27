@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS appointments (
   visit_time TIME NOT NULL,
   visitor_name VARCHAR(180) NOT NULL,
   visitor_email VARCHAR(254) NOT NULL DEFAULT '',
+  reference_code CHAR(8) NOT NULL,
   registered_by VARCHAR(180) NOT NULL,
+  created_by_login VARCHAR(255) NULL,
   company_name VARCHAR(180) NOT NULL DEFAULT '',
   host_name VARCHAR(180) NOT NULL,
   status ENUM('Dentro', 'En proceso', 'Pendiente', 'Retirado', 'Cancelada')
@@ -72,6 +74,8 @@ CREATE TABLE IF NOT EXISTS appointments (
   PRIMARY KEY (id),
   KEY idx_appointments_visit_date_time (visit_date, visit_time),
   KEY idx_appointments_status (status),
+  KEY idx_appointments_created_by_login (created_by_login),
+  UNIQUE KEY uq_appointments_reference_code (reference_code),
   KEY idx_appointments_visitor_record_id (visitor_record_id),
   KEY idx_appointments_business_partner_id (business_partner_id),
   CONSTRAINT fk_appointments_general_visitor
@@ -102,6 +106,8 @@ CREATE TABLE IF NOT EXISTS daily_log_entries (
   entry_time TIME NOT NULL,
   event_type ENUM('Llegada', 'Ingreso', 'Retiro', 'Observaciones') NOT NULL,
   person_name VARCHAR(180) NOT NULL,
+  recorded_by_login VARCHAR(255) NULL,
+  recorded_by_name VARCHAR(255) NULL,
   details TEXT NULL,
   appointment_id BIGINT UNSIGNED NULL,
   external_staff_id BIGINT UNSIGNED NULL,
@@ -146,6 +152,39 @@ CREATE TABLE IF NOT EXISTS accesos_secciones (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (login, seccion),
   KEY idx_accesos_secciones_seccion (seccion)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS auth_login_failures (
+  principal_hash CHAR(64) NOT NULL,
+  source_hash CHAR(64) NOT NULL,
+  failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  locked_until DATETIME NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (principal_hash, source_hash),
+  KEY idx_auth_login_failures_updated_at (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS auth_recovery_limits (
+  rate_key CHAR(64) NOT NULL,
+  attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+  window_started_at DATETIME NOT NULL,
+  last_attempt_at DATETIME NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (rate_key),
+  KEY idx_auth_recovery_limits_updated_at (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  login VARCHAR(255) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_password_reset_tokens_hash (token_hash),
+  KEY idx_password_reset_tokens_login_expiry (login, expires_at),
+  KEY idx_password_reset_tokens_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 ALTER TABLE accesos_secciones

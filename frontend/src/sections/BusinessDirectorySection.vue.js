@@ -158,6 +158,10 @@ for (const [partner] of __VLS_getVForSourceType((__VLS_ctx.paginatedBusinessPart
     __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
     (partner.type);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "business-partner-description" },
+        title: (partner.description || undefined),
+    });
     (partner.description || "—");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     (partner.rfc);
@@ -438,6 +442,7 @@ if (__VLS_ctx.filteredGeneralVisitors.length > __VLS_ctx.partnerRowsPerPage) {
 /** @type {__VLS_StyleScopedClasses['workspace-table-scroll']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['business-partner-table']} */ ;
+/** @type {__VLS_StyleScopedClasses['business-partner-description']} */ ;
 /** @type {__VLS_StyleScopedClasses['partner-status-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;

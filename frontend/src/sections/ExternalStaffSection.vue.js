@@ -3,10 +3,14 @@ const props = defineProps();
 const selectedCompanyId = ref(null);
 const searchQuery = computed(() => props.search.trim().toLocaleLowerCase());
 const companiesWithStaffCount = computed(() => props.companies
-    .map((company) => ({
-    ...company,
-    staffCount: props.staff.filter((person) => person.businessPartnerId === company.id).length,
-}))
+    .map((company) => {
+    const staffCount = props.staff.filter((person) => person.businessPartnerId === company.id).length;
+    return {
+        ...company,
+        staffCount,
+        employeeCount: Math.max(company.employeeCount, staffCount),
+    };
+})
     .filter((company) => {
     if (!searchQuery.value)
         return true;
@@ -36,10 +40,10 @@ const __VLS_ctx = {};
 let __VLS_components;
 let __VLS_directives;
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-    ...{ class: "workspace-grid" },
+    ...{ class: "workspace-grid external-staff-workspace" },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-    ...{ class: "panel workspace-panel" },
+    ...{ class: "panel workspace-panel external-staff-panel" },
     'aria-labelledby': "external-staff-title",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
@@ -54,10 +58,19 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.s
 __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
     href: "#i-users",
 });
+__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+    ...{ class: "external-company-title" },
+});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
     id: "external-staff-title",
 });
 (__VLS_ctx.selectedCompany ? __VLS_ctx.selectedCompany.name : "Personal por empresa");
+if (__VLS_ctx.selectedCompany) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "external-type-pill" },
+    });
+    (__VLS_ctx.selectedCompany.type);
+}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "workspace-heading-actions" },
 });
@@ -100,15 +113,6 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
     href: "#i-plus",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-if (__VLS_ctx.selectedCompany) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "external-company-detail" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "external-type-pill" },
-    });
-    (__VLS_ctx.selectedCompany.type);
-}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "external-staff-toolbar" },
 });
@@ -164,9 +168,14 @@ if (!__VLS_ctx.selectedCompany) {
             ...{ class: "department-card-count" },
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        (company.staffCount);
+        (company.employeeCount);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-        (company.staffCount === 1 ? "empleado registrado" : "empleados registrados");
+        (company.employeeCount === 1 ? "contemplado" : "contemplados");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "external-staff-registered-count" },
+        });
+        (company.staffCount);
+        (company.staffCount === 1 ? "registrado" : "registrados");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({
             ...{ class: "external-company-name" },
         });
@@ -206,7 +215,7 @@ if (!__VLS_ctx.selectedCompany) {
 }
 else {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "workspace-table-scroll" },
+        ...{ class: "workspace-table-scroll external-staff-table-scroll" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements.table)({
         ...{ class: "workspace-table external-staff-table" },
@@ -228,10 +237,16 @@ else {
             key: (person.id),
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({
+            ...{ class: "external-staff-person-name" },
+        });
         (person.fullName);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         (person.phone || "—");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "external-staff-email" },
+        });
         (person.email || "—");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
@@ -239,6 +254,9 @@ else {
         });
         (person.relationshipType);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "external-staff-company" },
+        });
         (person.companyName);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -274,20 +292,22 @@ else {
     }
 }
 /** @type {__VLS_StyleScopedClasses['workspace-grid']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-workspace']} */ ;
 /** @type {__VLS_StyleScopedClasses['panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-panel']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['panel-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['panel-title']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-company-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-type-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-heading-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-count']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-count']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['external-company-detail']} */ ;
-/** @type {__VLS_StyleScopedClasses['external-type-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-toolbar']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-search']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
@@ -298,6 +318,7 @@ else {
 /** @type {__VLS_StyleScopedClasses['department-card-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['department-card-count']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-registered-count']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-company-name']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-company-meta']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-company-view']} */ ;
@@ -306,10 +327,14 @@ else {
 /** @type {__VLS_StyleScopedClasses['department-card-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table-scroll']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-table-scroll']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-person-name']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-email']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-type-pill']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-staff-company']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;

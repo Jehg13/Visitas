@@ -32,6 +32,7 @@ const saving = ref(false);
 const errorMessage = ref("");
 const submitted = ref(false);
 const confirmedReview = ref(false);
+const editingItemIndex = ref<number | null>(null);
 
 function emptyItem(): DeclaredItem {
   return {
@@ -81,12 +82,12 @@ onMounted(async () => {
 });
 
 function addItem() {
-  if (items.value.length >= 50 || !newItem.value.product.trim()) return;
+  if ((editingItemIndex.value === null && items.value.length >= 50) || !newItem.value.product.trim()) return;
   if (!Number.isSafeInteger(newItem.value.quantity) || newItem.value.quantity < 1 || newItem.value.quantity > 100000) {
     errorMessage.value = "La cantidad debe ser un número entero entre 1 y 100,000.";
     return;
   }
-  items.value.push({
+  const item = {
     ...newItem.value,
     product: newItem.value.product.trim(),
     brand: newItem.value.brand.trim(),
@@ -94,13 +95,37 @@ function addItem() {
     serialNumber: newItem.value.serialNumber.trim(),
     color: newItem.value.color.trim(),
     notes: newItem.value.notes.trim(),
-  });
+  };
+  if (!item.brand || !item.model || !item.color) {
+    errorMessage.value = "Completa tipo, cantidad, artículo, marca, modelo y color. La serie y las observaciones son opcionales.";
+    return;
+  }
+  if (editingItemIndex.value === null) items.value.push(item);
+  else items.value.splice(editingItemIndex.value, 1, item);
   newItem.value = emptyItem();
+  editingItemIndex.value = null;
+  errorMessage.value = "";
+}
+
+function editItem(index: number) {
+  const item = items.value[index];
+  if (!item) return;
+  newItem.value = { ...item };
+  editingItemIndex.value = index;
+  errorMessage.value = "";
+  document.querySelector("#equipment-item-form-title")?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function cancelEdit() {
+  newItem.value = emptyItem();
+  editingItemIndex.value = null;
   errorMessage.value = "";
 }
 
 function removeItem(index: number) {
   items.value.splice(index, 1);
+  if (editingItemIndex.value === index) cancelEdit();
+  else if (editingItemIndex.value !== null && index < editingItemIndex.value) editingItemIndex.value -= 1;
 }
 
 async function submitDeclaration() {
@@ -182,46 +207,66 @@ async function submitDeclaration() {
           </div>
 
           <section class="public-equipment-entry" aria-labelledby="equipment-item-form-title">
-            <h2 id="equipment-item-form-title">Agregar artículo</h2>
+            <h2 id="equipment-item-form-title">{{ editingItemIndex === null ? "Agregar artículo a la lista" : "Editar artículo" }}</h2>
+            <p class="public-equipment-form-hint">Todos los datos son obligatorios, excepto la serie y las observaciones.</p>
             <form class="public-equipment-entry-form" @submit.prevent="addItem">
               <label>
                 Tipo
-                <select v-model="newItem.itemType" required>
+                <select v-model="newItem.itemType" required :disabled="saving">
                   <option value="Equipo">Equipo</option>
                   <option value="Herramienta">Herramienta</option>
                 </select>
               </label>
               <label>
                 Cantidad
-                <input v-model.number="newItem.quantity" type="number" min="1" max="100000" step="1" required />
+                <input v-model.number="newItem.quantity" type="number" min="1" max="100000" step="1" required :disabled="saving" />
               </label>
               <label class="public-entry-product">
                 Artículo
-                <input v-model.trim="newItem.product" maxlength="180" placeholder="Ej. Laptop o taladro" required />
+                <input v-model.trim="newItem.product" maxlength="180" pattern=".*\S.*" placeholder="Ej. Laptop o taladro" required :disabled="saving" />
               </label>
               <label>
-                Marca <span>(opcional)</span>
-                <input v-model.trim="newItem.brand" maxlength="120" />
+                Marca
+                <input v-model.trim="newItem.brand" maxlength="120" pattern=".*\S.*" required :disabled="saving" />
               </label>
               <label>
-                Modelo <span>(opcional)</span>
-                <input v-model.trim="newItem.model" maxlength="120" />
+                Modelo
+                <input v-model.trim="newItem.model" maxlength="120" pattern=".*\S.*" required :disabled="saving" />
               </label>
               <label>
                 Serie <span>(opcional)</span>
-                <input v-model.trim="newItem.serialNumber" maxlength="180" />
+                <input v-model.trim="newItem.serialNumber" maxlength="180" :disabled="saving" />
               </label>
               <label>
-                Color <span>(opcional)</span>
-                <input v-model.trim="newItem.color" maxlength="80" />
+                Color
+                <input v-model.trim="newItem.color" maxlength="80" pattern=".*\S.*" required :disabled="saving" />
               </label>
               <label class="public-entry-notes">
-                Observaciones <span>(opcional)</span>
-                <input v-model.trim="newItem.notes" maxlength="1000" />
+                Observaciones
+                <textarea v-model.trim="newItem.notes" maxlength="1000" rows="2" :disabled="saving" />
               </label>
-              <button class="public-equipment-add-button" type="submit" :disabled="items.length >= 50">
-                {{ items.length >= 50 ? "Máximo de artículos alcanzado" : "+ Agregar a la lista" }}
-              </button>
+              <div class="public-equipment-form-actions">
+                <button
+                  v-if="editingItemIndex !== null"
+                  class="public-equipment-cancel-edit"
+                  type="button"
+                  :disabled="saving"
+                  @click="cancelEdit"
+                >Cancelar edición</button>
+                <button
+                  class="public-equipment-add-button"
+                  type="submit"
+                  :disabled="saving || (editingItemIndex === null && items.length >= 50)"
+                >
+                  {{ editingItemIndex !== null ? "Guardar cambios" : items.length >= 50 ? "Máximo de artículos alcanzado" : "+ Agregar a la lista" }}
+                </button>
+              </div>
+              <p v-if="errorMessage" class="public-equipment-error public-equipment-form-error" role="alert">
+                {{ errorMessage }}
+              </p>
+              <span class="sr-only" aria-live="polite">
+                {{ editingItemIndex === null ? "" : `Editando artículo ${editingItemIndex + 1}` }}
+              </span>
             </form>
           </section>
 
@@ -242,7 +287,10 @@ async function submitDeclaration() {
                     <td>{{ item.product }}</td>
                     <td>{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
                     <td>{{ item.notes || "—" }}</td>
-                    <td><button class="public-equipment-remove" type="button" :aria-label="`Quitar ${item.product}`" @click="removeItem(index)">Quitar</button></td>
+                    <td class="public-equipment-actions-cell">
+                      <button class="public-equipment-edit" type="button" :aria-label="`Editar ${item.product}`" :disabled="saving" @click="editItem(index)">Editar</button>
+                      <button class="public-equipment-remove" type="button" :aria-label="`Eliminar ${item.product}`" :disabled="saving" @click="removeItem(index)">Eliminar</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>

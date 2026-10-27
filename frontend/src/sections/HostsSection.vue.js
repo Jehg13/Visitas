@@ -57,7 +57,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.d
     ...{ class: "external-staff-toolbar" },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-    ...{ class: "agenda-search" },
+    ...{ class: "agenda-search host-search" },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
     ...{ class: "icon" },
@@ -156,6 +156,7 @@ if (__VLS_ctx.filteredHosts.length === 0) {
 /** @type {__VLS_StyleScopedClasses['workspace-hint']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-toolbar']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-search']} */ ;
+/** @type {__VLS_StyleScopedClasses['host-search']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table-scroll']} */ ;

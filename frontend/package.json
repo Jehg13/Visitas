@@ -9,8 +9,11 @@
     "typecheck": "vue-tsc -b --pretty"
   },
   "dependencies": {
+    "@zxing/browser": "^0.2.1",
+    "pinia": "^4.1.0",
     "qrcode": "^1.5.4",
-    "vue": "^3.5.13"
+    "vue": "^3.5.13",
+    "vue-router": "^5.4.0"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",

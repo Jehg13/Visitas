@@ -82,13 +82,18 @@ if (__VLS_ctx.accounts.length > 0) {
         ...{ class: "workspace-table access-table" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.caption, __VLS_intrinsicElements.caption)({
-        ...{ class: "workspace-table-caption" },
+        ...{ class: "workspace-table-caption access-table-caption" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "access-table-caption-title" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "access-table-caption-count" },
     });
     (__VLS_ctx.filteredAccounts.length);
     (__VLS_ctx.accounts.length);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.thead, __VLS_intrinsicElements.thead)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
@@ -132,7 +137,6 @@ if (__VLS_ctx.accounts.length > 0) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         (account.name || "—");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         (account.role || "—");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         (account.email || "—");
@@ -150,12 +154,12 @@ if (__VLS_ctx.accounts.length > 0) {
         });
         if (account.hasFullAccess || account.sectionAccess.includes('administrador')) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                ...{ class: "access-role-pill" },
+                ...{ class: "access-role-pill access-role-admin" },
             });
         }
         else if (account.sectionAccess.includes('recepcion')) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                ...{ class: "access-role-pill" },
+                ...{ class: "access-role-pill access-role-reception" },
             });
         }
         else {
@@ -183,7 +187,7 @@ if (__VLS_ctx.accounts.length > 0) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
             ...{ class: "workspace-empty" },
-            colspan: "9",
+            colspan: "8",
         });
     }
 }
@@ -207,6 +211,9 @@ else {
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table-caption']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-table-caption']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-table-caption-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-table-caption-count']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['host-identity']} */ ;
 /** @type {__VLS_StyleScopedClasses['host-picture-avatar']} */ ;
@@ -216,7 +223,9 @@ else {
 /** @type {__VLS_StyleScopedClasses['partner-status-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['host-state-pills']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-role-pill']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-role-admin']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-role-pill']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-role-reception']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-role-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-role-none']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;

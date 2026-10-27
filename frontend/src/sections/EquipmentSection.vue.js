@@ -1,4 +1,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { notifyUser } from "../notifications";
+const props = defineProps();
 const declarations = ref([]);
 const partners = ref([]);
 const staff = ref([]);
@@ -6,7 +8,6 @@ const appointments = ref([]);
 const loading = ref(true);
 const saving = ref(false);
 const errorMessage = ref("");
-const notice = ref("");
 const search = ref("");
 const createOpen = ref(false);
 const businessPartnerId = ref(null);
@@ -21,16 +22,14 @@ const inspectionPhase = ref(null);
 const inspectionItems = ref([]);
 const linkMessage = ref("");
 let searchTimer;
+let refreshTimer;
+let declarationRefreshInProgress = false;
 const matchingStaff = computed(() => staff.value.filter((person) => person.businessPartnerId === businessPartnerId.value));
 const matchingAppointments = computed(() => appointments.value.filter((appointment) => appointment.businessPartnerId === businessPartnerId.value));
 const inspectionLabel = computed(() => inspectionPhase.value === "entrada" ? "entrada" : "salida");
 const checkedInspectionItems = computed(() => inspectionItems.value.filter((item) => item.checked).length);
 function setNotice(message) {
-    notice.value = message;
-    window.setTimeout(() => {
-        if (notice.value === message)
-            notice.value = "";
-    }, 3500);
+    notifyUser(message, "success");
 }
 async function parseResponse(response) {
     if (!response.headers.get("content-type")?.includes("application/json")) {
@@ -68,23 +67,40 @@ async function loadDeclarations() {
     }
     declarations.value = result.declarations;
 }
-async function refreshDeclarations() {
+async function refreshDeclarations(silent = false) {
+    if (declarationRefreshInProgress)
+        return;
+    declarationRefreshInProgress = true;
     try {
         await loadDeclarations();
         errorMessage.value = "";
     }
     catch (error) {
         console.error("No se pudo actualizar el historial de equipo:", error);
-        errorMessage.value = error instanceof Error ? error.message : "No se pudo actualizar el historial.";
+        errorMessage.value = "";
+        if (!silent)
+            notifyUser(error instanceof Error ? error.message : "No se pudo actualizar el historial.");
+    }
+    finally {
+        declarationRefreshInProgress = false;
     }
 }
 onMounted(async () => {
+    refreshTimer = window.setInterval(() => {
+        if (document.visibilityState === "visible" && !loading.value) {
+            void refreshDeclarations(true);
+            void loadOptions().catch((error) => {
+                console.error("No se pudieron actualizar las opciones de equipo:", error);
+            });
+        }
+    }, 30000);
     try {
         await Promise.all([loadOptions(), loadDeclarations()]);
     }
     catch (error) {
         console.error("No se pudo cargar el módulo de equipo:", error);
-        errorMessage.value = error instanceof Error ? error.message : "No se pudo cargar el módulo de equipo.";
+        errorMessage.value = "";
+        notifyUser(error instanceof Error ? error.message : "No se pudo cargar el módulo de equipo.");
     }
     finally {
         loading.value = false;
@@ -93,6 +109,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
     if (searchTimer)
         clearTimeout(searchTimer);
+    if (refreshTimer !== undefined)
+        window.clearInterval(refreshTimer);
 });
 watch(search, () => {
     if (searchTimer)
@@ -161,7 +179,8 @@ async function createDeclaration() {
     }
     catch (error) {
         console.error("No se pudo crear la declaración de equipo:", error);
-        createError.value = error instanceof Error ? error.message : "No se pudo crear la declaración.";
+        createError.value = "";
+        notifyUser(error instanceof Error ? error.message : "No se pudo crear la declaración.");
     }
     finally {
         saving.value = false;
@@ -170,11 +189,13 @@ async function createDeclaration() {
 async function copyLink(link) {
     try {
         await navigator.clipboard.writeText(link);
-        linkMessage.value = "Enlace copiado.";
+        linkMessage.value = "";
+        notifyUser("Enlace copiado.", "success");
     }
     catch (error) {
         console.error("No se pudo copiar el enlace de equipo:", error);
-        linkMessage.value = "No se pudo copiar. Selecciona y copia el enlace manualmente.";
+        linkMessage.value = "";
+        notifyUser("No se pudo copiar. Selecciona y copia el enlace manualmente.");
     }
 }
 async function openDetails(id) {
@@ -191,7 +212,8 @@ async function openDetails(id) {
     }
     catch (error) {
         console.error("No se pudo consultar la declaración:", error);
-        errorMessage.value = error instanceof Error ? error.message : "No se pudo abrir la declaración.";
+        errorMessage.value = "";
+        notifyUser(error instanceof Error ? error.message : "No se pudo abrir la declaración.");
     }
     finally {
         detailLoading.value = false;
@@ -250,12 +272,12 @@ async function saveInspection() {
     const uncheckedItem = inspectionItems.value.find((item) => !item.checked);
     if (uncheckedItem) {
         const declared = selectedDeclaration.value.items?.find((item) => item.id === uncheckedItem.declarationItemId);
-        errorMessage.value = `Marca la verificación física de “${declared?.product ?? "cada artículo"}” antes de completar la revisión.`;
+        notifyUser(`Marca la verificación física de “${declared?.product ?? "cada artículo"}” antes de completar la revisión.`);
         return;
     }
     const missingNote = inspectionItems.value.find((item) => inspectionNeedsNote(item) && !item.notes.trim());
     if (missingNote) {
-        errorMessage.value = "Describe la incidencia antes de guardar la revisión.";
+        notifyUser("Describe la incidencia antes de guardar la revisión.");
         return;
     }
     saving.value = true;
@@ -275,7 +297,8 @@ async function saveInspection() {
     }
     catch (error) {
         console.error("No se pudo guardar la verificación de equipo:", error);
-        errorMessage.value = error instanceof Error ? error.message : "No se pudo guardar la revisión.";
+        errorMessage.value = "";
+        notifyUser(error instanceof Error ? error.message : "No se pudo guardar la revisión.");
     }
     finally {
         saving.value = false;
@@ -290,10 +313,12 @@ async function refreshLink(declarationId) {
             throw new Error(result.error ?? "No se pudo generar el enlace.");
         }
         linkMessage.value = `${window.location.origin}/#equipo=${encodeURIComponent(result.token)}`;
+        notifyUser("Se generó un nuevo enlace de declaración.", "success");
     }
     catch (error) {
         console.error("No se pudo renovar el enlace de equipo:", error);
-        linkMessage.value = error instanceof Error ? error.message : "No se pudo generar el enlace.";
+        linkMessage.value = "";
+        notifyUser(error instanceof Error ? error.message : "No se pudo generar el enlace.");
     }
 }
 async function revokeLink(declarationId) {
@@ -304,12 +329,13 @@ async function revokeLink(declarationId) {
         const result = await parseResponse(response);
         if (!response.ok)
             throw new Error(result.error ?? "No se pudo revocar el enlace.");
-        linkMessage.value = "Enlace revocado. Puedes generar uno nuevo cuando lo necesites.";
+        linkMessage.value = "";
         setNotice("Enlace revocado.");
     }
     catch (error) {
         console.error("No se pudo revocar el enlace de equipo:", error);
-        linkMessage.value = error instanceof Error ? error.message : "No se pudo revocar el enlace.";
+        linkMessage.value = "";
+        notifyUser(error instanceof Error ? error.message : "No se pudo revocar el enlace.");
     }
 }
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
@@ -382,7 +408,9 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
 });
 (__VLS_ctx.search);
 __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-    ...{ onClick: (__VLS_ctx.refreshDeclarations) },
+    ...{ onClick: (...[$event]) => {
+            __VLS_ctx.refreshDeclarations();
+        } },
     ...{ class: "button-secondary equipment-refresh" },
     type: "button",
     disabled: (__VLS_ctx.loading),
@@ -462,6 +490,16 @@ else if (__VLS_ctx.declarations.length === 0) {
         ...{ class: "workspace-empty" },
     });
 }
+const __VLS_0 = {}.Teleport;
+/** @type {[typeof __VLS_components.Teleport, typeof __VLS_components.Teleport, ]} */ ;
+// @ts-ignore
+const __VLS_1 = __VLS_asFunctionalComponent(__VLS_0, new __VLS_0({
+    to: "body",
+}));
+const __VLS_2 = __VLS_1({
+    to: "body",
+}, ...__VLS_functionalComponentArgsRest(__VLS_1));
+__VLS_3.slots.default;
 if (__VLS_ctx.createOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ onClick: (...[$event]) => {
@@ -469,7 +507,8 @@ if (__VLS_ctx.createOpen) {
                     return;
                 __VLS_ctx.createOpen = false;
             } },
-        ...{ class: "modal-backdrop" },
+        ...{ class: "dashboard-app modal-backdrop equipment-create-backdrop" },
+        'data-theme': (props.theme),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
         ...{ class: "dialog workspace-dialog equipment-dialog" },
@@ -578,6 +617,7 @@ if (__VLS_ctx.createOpen) {
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
                 maxlength: "180",
+                pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
                 autocomplete: "name",
                 required: true,
             });
@@ -628,6 +668,17 @@ if (__VLS_ctx.createOpen) {
         }
     }
 }
+var __VLS_3;
+const __VLS_4 = {}.Teleport;
+/** @type {[typeof __VLS_components.Teleport, typeof __VLS_components.Teleport, ]} */ ;
+// @ts-ignore
+const __VLS_5 = __VLS_asFunctionalComponent(__VLS_4, new __VLS_4({
+    to: "body",
+}));
+const __VLS_6 = __VLS_5({
+    to: "body",
+}, ...__VLS_functionalComponentArgsRest(__VLS_5));
+__VLS_7.slots.default;
 if (__VLS_ctx.selectedDeclaration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ onClick: (...[$event]) => {
@@ -635,7 +686,8 @@ if (__VLS_ctx.selectedDeclaration) {
                     return;
                 __VLS_ctx.selectedDeclaration = null;
             } },
-        ...{ class: "modal-backdrop" },
+        ...{ class: "dashboard-app modal-backdrop equipment-detail-backdrop" },
+        'data-theme': (props.theme),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
         ...{ class: "dialog workspace-dialog equipment-detail-dialog" },
@@ -835,25 +887,50 @@ if (__VLS_ctx.selectedDeclaration) {
                 key: (inspection.phase),
                 ...{ class: "equipment-inspection-history" },
             });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
+                ...{ class: "equipment-inspection-history-heading" },
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                ...{ class: "equipment-inspection-history-icon" },
+                'aria-hidden': "true",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({});
             (inspection.phase.toLowerCase());
-            (inspection.inspectorName);
             __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+            (inspection.inspectorName);
             (inspection.completedAt);
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                ...{ class: "equipment-inspection-history-count" },
+                ...{ class: ({ 'has-incidents': inspection.items.some((item) => item.result === 'Incidencia') }) },
+            });
             (inspection.items.filter((item) => item.result === "Incidencia").length);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.ul, __VLS_intrinsicElements.ul)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                ...{ class: "equipment-inspection-history-list" },
+            });
             for (const [item] of __VLS_getVForSourceType((inspection.items))) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.li, __VLS_intrinsicElements.li)({
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.article, __VLS_intrinsicElements.article)({
                     key: (item.declarationItemId),
                 });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                    ...{ class: "equipment-inspection-history-item-copy" },
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
                 (item.declaredItemType);
                 (item.checkedQuantity);
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
                 (item.checkedProduct);
-                (item.result);
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+                ([item.checkedBrand, item.checkedModel, item.checkedSerialNumber, item.checkedColor].filter(Boolean).join(" · ") || "Sin identificación adicional");
                 if (item.notes) {
-                    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
                     (item.notes);
                 }
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                    ...{ class: "equipment-inspection-result" },
+                    ...{ class: (item.result === 'Conforme' ? 'is-complete' : 'has-incident') },
+                });
+                (item.result);
             }
         }
     }
@@ -895,117 +972,50 @@ if (__VLS_ctx.selectedDeclaration) {
             (item.itemType);
             (__VLS_ctx.selectedDeclaration.items?.find((declared) => declared.id === item.declarationItemId)?.product);
             __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                ...{ class: "equipment-check-grid" },
+                ...{ class: "equipment-check-readonly-grid" },
             });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                value: (item.itemType),
-                readonly: true,
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
-                type: "number",
-                min: "0",
-                max: "100000",
-                step: "1",
-                required: true,
-            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+            (item.itemType);
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
             (item.quantity);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
-                maxlength: "180",
-                required: true,
-            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
             (item.product);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
-                maxlength: "120",
-            });
-            (item.brand);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
-                maxlength: "120",
-            });
-            (item.model);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
-                maxlength: "180",
-            });
-            (item.serialNumber);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
-                maxlength: "80",
-            });
-            (item.color);
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+            (item.brand || "—");
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+            (item.model || "—");
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+            (item.serialNumber || "—");
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+            (item.color || "—");
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
                 ...{ class: "equipment-notes-label" },
             });
-            (__VLS_ctx.inspectionNeedsNote(item) ? " (obligatorias por incidencia)" : " (opcional)");
+            (item.incident ? " (obligatorias por incidencia)" : " (opcional)");
             __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea)({
-                ...{ onInput: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
                 value: (item.notes),
                 maxlength: "1000",
                 rows: "2",
+                required: (item.incident),
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
                 ...{ class: "equipment-incident-toggle" },
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-                ...{ onChange: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedDeclaration))
-                            return;
-                        if (!(__VLS_ctx.inspectionPhase))
-                            return;
-                        item.checked = false;
-                    } },
                 type: "checkbox",
             });
             (item.incident);
@@ -1043,13 +1053,7 @@ if (__VLS_ctx.selectedDeclaration) {
         (__VLS_ctx.saving ? "Guardando…" : `Completar checklist (${__VLS_ctx.checkedInspectionItems}/${__VLS_ctx.inspectionItems.length})`);
     }
 }
-if (__VLS_ctx.notice) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "toast-message" },
-        role: "status",
-    });
-    (__VLS_ctx.notice);
-}
+var __VLS_7;
 /** @type {__VLS_StyleScopedClasses['workspace-grid']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-workspace']} */ ;
 /** @type {__VLS_StyleScopedClasses['panel']} */ ;
@@ -1082,7 +1086,9 @@ if (__VLS_ctx.notice) {
 /** @type {__VLS_StyleScopedClasses['equipment-open-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-empty']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['dashboard-app']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-create-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-dialog']} */ ;
@@ -1107,7 +1113,9 @@ if (__VLS_ctx.notice) {
 /** @type {__VLS_StyleScopedClasses['equipment-link-result']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-link-message']} */ ;
+/** @type {__VLS_StyleScopedClasses['dashboard-app']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-detail-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-detail-dialog']} */ ;
@@ -1136,13 +1144,20 @@ if (__VLS_ctx.notice) {
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-detail-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-inspection-history']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-history-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-history-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-history-count']} */ ;
+/** @type {__VLS_StyleScopedClasses['has-incidents']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-history-list']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-history-item-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-result']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-inspection-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-checklist-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-checklist-progress']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-checklist-progress-track']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-check-item']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-checked']} */ ;
-/** @type {__VLS_StyleScopedClasses['equipment-check-grid']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-check-readonly-grid']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-notes-label']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-incident-toggle']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-checked-toggle']} */ ;
@@ -1150,7 +1165,6 @@ if (__VLS_ctx.notice) {
 /** @type {__VLS_StyleScopedClasses['equipment-inspection-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
-/** @type {__VLS_StyleScopedClasses['toast-message']} */ ;
 var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
@@ -1160,7 +1174,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             loading: loading,
             saving: saving,
             errorMessage: errorMessage,
-            notice: notice,
             search: search,
             createOpen: createOpen,
             businessPartnerId: businessPartnerId,
@@ -1186,16 +1199,17 @@ const __VLS_self = (await import('vue')).defineComponent({
             openDetails: openDetails,
             getInspection: getInspection,
             startInspection: startInspection,
-            inspectionNeedsNote: inspectionNeedsNote,
             saveInspection: saveInspection,
             refreshLink: refreshLink,
             revokeLink: revokeLink,
         };
     },
+    __typeProps: {},
 });
 export default (await import('vue')).defineComponent({
     setup() {
         return {};
     },
+    __typeProps: {},
 });
 ; /* PartiallyEnd: #4569/main.vue */

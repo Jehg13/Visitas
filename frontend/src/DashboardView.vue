@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
+import { useRoute, useRouter } from "vue-router";
 import QRCode from "qrcode";
+import { confirmUser, notifyUser, type AppAlertType } from "./notifications";
 import DepartmentSection from "./sections/DepartmentSection.vue";
 import DailyLogSection from "./sections/DailyLogSection.vue";
 import EquipmentSection from "./sections/EquipmentSection.vue";
@@ -10,95 +13,48 @@ import AppointmentsSection from "./sections/AppointmentsSection.vue";
 import HomeSection from "./sections/HomeSection.vue";
 import BusinessDirectorySection from "./sections/BusinessDirectorySection.vue";
 import AccessSection from "./sections/AccessSection.vue";
+import { useAuthStore } from "./stores/auth";
+import { useDashboardStore } from "./stores/dashboard";
+import { dashboardSectionForPath, dashboardSectionPaths } from "./dashboardRoutes";
+import type {
+  AccessAccount,
+  Appointment,
+  BusinessPartner,
+  BusinessPartnerStatus,
+  BusinessPartnerType,
+  Department,
+  ExternalStaff,
+  ExternalStaffType,
+  GeneralVisitor,
+  Host,
+  HostAccountOption,
+  SectionAccess,
+  SystemAccessRole,
+} from "./stores/types";
 
-type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
-type Appointment = {
-  id: number;
-  date: string;
-  time: string;
-  visitor: string;
-  email: string;
-  registeredBy: string;
-  company: string;
-  host: string;
-  status: AppointmentStatus;
-};
-type ExternalStaffType = "Contratista" | "Proveedor";
-type ExternalStaff = {
-  id: number;
-  businessPartnerId: number;
-  fullName: string;
-  phone: string;
-  email: string;
-  relationshipType: ExternalStaffType;
-  companyName: string;
-};
-type Department = {
-  id: number;
-  name: string;
-};
-type SectionAccess = "recepcion" | "anfitriones" | "administrador";
 type AccessRoleDraft = "administrador" | "recepcion" | "";
-type SystemAccessRole = "Administrador" | "Recepción" | "Anfitriones";
-type Host = {
-  id: number;
-  login: string;
-  name: string;
-  departmentId: number;
-  role: string;
-  email: string;
-  phone: string;
-  accessRoles: SystemAccessRole[];
-};
-type HostAccountOption = {
-  login: string;
-  name: string | null;
-  email: string | null;
-  role: string | null;
-  phone: string | null;
-};
-type AccessAccount = {
-  login: string;
-  name: string | null;
-  email: string | null;
-  active: string | null;
-  role: string | null;
-  phone: string | null;
-  hasFullAccess: boolean;
-  picture: string;
-  sectionAccess: SectionAccess[];
-};
-type AuthenticatedUser = {
-  login: string;
-  name: string | null;
-  email: string | null;
-  role: string | null;
-  isAdmin: boolean;
-  sectionAccess: SectionAccess[];
-};
-type BusinessPartnerType = "Contratista" | "Proveedor";
-type BusinessPartnerStatus = "Activa" | "Inactiva";
 const otherAppointmentVisitor = "__otro__";
-type BusinessPartner = {
-  id: number;
-  name: string;
-  description: string;
-  rfc: string;
-  category: string;
-  employeeCount: number;
-  type: BusinessPartnerType;
-  status: BusinessPartnerStatus;
-};
-type GeneralVisitor = {
-  id: number;
-  fullName: string;
-  curp: string;
-  phone: string;
-  email: string;
-};
 
-const props = defineProps<{ user: AuthenticatedUser; accounts: AccessAccount[] }>();
-const currentUser = computed(() => props.user);
+const emit = defineEmits<{ logout: [] }>();
+const route = useRoute();
+const router = useRouter();
+const authStore = useAuthStore();
+const dashboardStore = useDashboardStore();
+const {
+  activeSection,
+  dashboardTheme,
+  selectedAppointmentDate,
+  appointmentFilter,
+  appointments,
+  externalStaff,
+  departments,
+  hosts,
+  hostAccountOptions,
+  businessPartners,
+  generalVisitors,
+} = storeToRefs(dashboardStore);
+const { accounts: accessAccounts } = storeToRefs(authStore);
+const currentUser = computed(() => authStore.user!);
 const otherHostAccountOption = "__otro__";
 const dashboardSections = [
   "Inicio",
@@ -172,15 +128,39 @@ function getStoredHosts(): Host[] {
   }
 }
 
-const activeSection = ref(getStoredDashboardSection(props.user.login));
-const dashboardTheme = ref<"dark" | "light">(getStoredDashboardTheme(props.user.login));
+activeSection.value =
+  dashboardSectionForPath(route.path) ?? getStoredDashboardSection(currentUser.value.login);
+dashboardTheme.value = getStoredDashboardTheme(currentUser.value.login);
+selectedAppointmentDate.value = getLocalDate();
+hosts.value = getStoredHosts();
 const allowedDashboardSections = computed(() => {
-  if (props.user.isAdmin || props.user.sectionAccess.includes("recepcion")) {
-    return dashboardSections.filter((section) => section !== "Accesos" || props.user.isAdmin);
+  if (currentUser.value.isAdmin) return dashboardSections;
+  if (currentUser.value.sectionAccess.includes("recepcion")) {
+    return ["Agenda de citas", "Bitácora diaria"];
   }
-  if (props.user.sectionAccess.includes("anfitriones")) return ["Anfitriones"];
+  if (currentUser.value.sectionAccess.includes("anfitriones")) {
+    return [
+      "Agenda de citas",
+      "Personal de externos",
+      "Contratistas, proveedores y visitantes",
+      "Equipo y herramientas",
+    ];
+  }
   return [];
 });
+const isReception = computed(
+  () => !currentUser.value.isAdmin && currentUser.value.sectionAccess.includes("recepcion"),
+);
+const isHost = computed(
+  () =>
+    !currentUser.value.isAdmin &&
+    currentUser.value.sectionAccess.includes("anfitriones") &&
+    !currentUser.value.sectionAccess.includes("recepcion"),
+);
+if (isHost.value) appointmentFilter.value = "all";
+const currentRoleLabel = computed(() =>
+  currentUser.value.isAdmin ? "Programador" : isReception.value ? "Recepción" : "Anfitrión",
+);
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
 const appointmentDialogOpen = ref(false);
@@ -199,7 +179,6 @@ const businessPartnerDialogOpen = ref(false);
 const editingBusinessPartnerId = ref<number | null>(null);
 const generalVisitorDialogOpen = ref(false);
 const editingGeneralVisitorId = ref<number | null>(null);
-const toast = ref("");
 const visitorName = ref("");
 const visitorEmail = ref("");
 const visitorSelection = ref("");
@@ -209,13 +188,10 @@ const visitorDate = ref(getLocalDate());
 const visitorTime = ref("18:00");
 const appointmentSaving = ref(false);
 const appointmentLoading = ref(false);
-const selectedAppointmentDate = ref(getLocalDate());
-const appointmentFilter = ref<"day" | "all">("day");
 const appointmentSearch = ref("");
 const appointmentsPage = ref(1);
 const appointmentsPerPage = 5;
 const calendarMonth = ref(getLocalDate().slice(0, 7));
-const externalStaff = ref<ExternalStaff[]>([]);
 const externalStaffSearch = ref("");
 const externalStaffName = ref("");
 const externalStaffPhone = ref("");
@@ -224,18 +200,14 @@ const externalStaffRelationshipType = ref<ExternalStaffType>("Contratista");
 const externalStaffBusinessPartnerId = ref<number | null>(null);
 const departmentDialogOpen = ref(false);
 const editingDepartmentId = ref<number | null>(null);
-const departments = ref<Department[]>([]);
 const departmentName = ref("");
 const departmentSaving = ref(false);
 const hostRole = ref("");
 const hostDialogOpen = ref(false);
 const editingHostId = ref<number | null>(null);
 const hostSaving = ref(false);
-const hosts = ref<Host[]>(getStoredHosts());
 const nextHostId = ref(Math.max(0, ...hosts.value.map((host) => host.id)));
-const hostAccountOptions = ref<HostAccountOption[]>([]);
 const hostAccountSelection = ref("");
-const accessAccounts = ref<AccessAccount[]>(props.accounts);
 const editingAccessAccount = ref<AccessAccount | null>(null);
 const accessAccountRoleDraft = ref<AccessRoleDraft>("");
 const accessAccountSaving = ref(false);
@@ -246,7 +218,6 @@ const hostName = ref("");
 const hostDepartmentId = ref<number | null>(null);
 const hostEmail = ref("");
 const hostPhone = ref("");
-const businessPartners = ref<BusinessPartner[]>([]);
 const businessDirectoryLoading = ref(false);
 const businessPartnerSaving = ref(false);
 const generalVisitorSaving = ref(false);
@@ -264,7 +235,6 @@ const businessPartnerCategory = ref("");
 const businessPartnerEmployeeCount = ref(0);
 const businessPartnerType = ref<BusinessPartnerType>("Contratista");
 const businessPartnerStatus = ref<BusinessPartnerStatus>("Activa");
-const generalVisitors = ref<GeneralVisitor[]>([]);
 const nextGeneralVisitorId = ref(0);
 const generalVisitorSearch = ref("");
 const generalVisitorCurpFilter = ref<"Todas" | "Con CURP" | "Sin CURP">("Todas");
@@ -274,15 +244,28 @@ const generalVisitorCurp = ref("");
 const generalVisitorPhone = ref("");
 const generalVisitorEmail = ref("");
 
-watch(() => props.accounts, (accounts) => {
-  accessAccounts.value = accounts;
-}, { immediate: true });
-
 watch(allowedDashboardSections, (sections) => {
   if (!sections.includes(activeSection.value)) {
     activeSection.value = sections[0] ?? "";
   }
 }, { immediate: true });
+
+watch(
+  () => route.path,
+  (path) => {
+    const section = dashboardSectionForPath(path);
+    if (section) {
+      if (allowedDashboardSections.value.includes(section)) {
+        activeSection.value = section;
+      } else {
+        void router.replace(dashboardSectionPaths[allowedDashboardSections.value[0] as keyof typeof dashboardSectionPaths] ?? "/");
+      }
+      return;
+    }
+    if (path !== "/") void router.replace("/");
+  },
+  { immediate: true },
+);
 
 watch(accessAccounts, (accounts) => {
   const sectionsByLogin = new Map(
@@ -305,13 +288,14 @@ watch(accessAccounts, (accounts) => {
 watch(activeSection, (section) => {
   try {
     localStorage.setItem(
-      `visitas:${encodeURIComponent(props.user.login)}:active-section`,
+      `visitas:${encodeURIComponent(currentUser.value.login)}:active-section`,
       section,
     );
   } catch (error) {
     console.error("No se pudo guardar la sección del dashboard:", error);
     showToast("No se pudo recordar la sección para la próxima visita.");
   }
+  if (section === "Bitácora diaria") void loadAppointments();
 }, { flush: "sync" });
 
 watch(hosts, (storedHosts) => {
@@ -337,27 +321,61 @@ const externalStaffPartnerOptions = computed(() =>
   ),
 );
 
+let liveRefreshTimer: number | undefined;
+
+function refreshVisibleSection() {
+  if (document.visibilityState !== "visible") return;
+  if (
+    activeSection.value === "Inicio" ||
+    activeSection.value === "Agenda de citas" ||
+    activeSection.value === "Bitácora diaria"
+  ) {
+    void loadAppointments(true);
+  }
+  if (
+    activeSection.value === "Personal de externos" ||
+    activeSection.value === "Contratistas, proveedores y visitantes" ||
+    activeSection.value === "Agenda de citas" ||
+    activeSection.value === "Bitácora diaria"
+  ) {
+    void loadBusinessDirectory(true);
+  }
+  if (activeSection.value === "Departamento" && (currentUser.value.isAdmin || isReception.value)) {
+    void loadDepartments(true);
+  }
+  if (activeSection.value === "Anfitriones" && currentUser.value.isAdmin) {
+    void loadHostAccounts(true);
+  }
+}
+
 onMounted(() => {
-  if (allowedDashboardSections.value.length > 0) void loadDepartments();
-  if (currentUser.value.isAdmin || currentUser.value.sectionAccess.includes("recepcion")) {
+  if (currentUser.value.isAdmin || isReception.value) void loadDepartments();
+  if (currentUser.value.isAdmin || isReception.value || isHost.value) {
     void loadBusinessDirectory();
     void loadAppointments();
   }
-  if (currentUser.value.isAdmin || currentUser.value.sectionAccess.includes("recepcion")) {
+  if (currentUser.value.isAdmin) {
     void loadHostAccounts();
   }
+  liveRefreshTimer = window.setInterval(refreshVisibleSection, 30000);
+});
+
+onBeforeUnmount(() => {
+  if (liveRefreshTimer !== undefined) window.clearInterval(liveRefreshTimer);
 });
 
 watch(dashboardTheme, (theme) => {
   try {
-    localStorage.setItem(`visitas:${encodeURIComponent(props.user.login)}:theme`, theme);
+    localStorage.setItem(`visitas:${encodeURIComponent(currentUser.value.login)}:theme`, theme);
   } catch (error) {
     console.error("No se pudo guardar la preferencia del tema:", error);
   }
 });
 
-async function loadAppointments() {
-  appointmentLoading.value = true;
+async function loadAppointments(silent = false) {
+  if (appointmentsRequestInProgress) return;
+  appointmentsRequestInProgress = true;
+  if (!silent) appointmentLoading.value = true;
   try {
     const response = await fetch("/api/appointments");
     const result = await response.json() as {
@@ -365,25 +383,30 @@ async function loadAppointments() {
       error?: string;
     };
     if (!response.ok) {
-      showToast(result.error ?? "No se pudo cargar la agenda.");
+      const message = result.error ?? "No se pudo cargar la agenda.";
+      if (silent) console.error(message);
+      else showToast(message);
       return;
     }
     if (!Array.isArray(result.appointments)) {
       console.error("La API devolvió una lista de citas con formato inválido.");
-      showToast("No se pudo cargar la agenda.");
+      if (!silent) showToast("No se pudo cargar la agenda.");
       return;
     }
     appointments.value = result.appointments;
   } catch (error) {
     console.error("Failed to load appointments:", error);
-    showToast("No se pudo conectar con el servidor para cargar la agenda.");
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar la agenda.");
   } finally {
-    appointmentLoading.value = false;
+    appointmentsRequestInProgress = false;
+    if (!silent) appointmentLoading.value = false;
   }
 }
 
-async function loadBusinessDirectory() {
-  businessDirectoryLoading.value = true;
+async function loadBusinessDirectory(silent = false) {
+  if (businessDirectoryRequestInProgress) return;
+  businessDirectoryRequestInProgress = true;
+  if (!silent) businessDirectoryLoading.value = true;
   try {
     const [partnersResponse, visitorsResponse, externalStaffResponse] = await Promise.all([
       fetch("/api/business-partners"),
@@ -405,30 +428,36 @@ async function loadBusinessDirectory() {
       }>,
     ]);
     if (!partnersResponse.ok) {
-      showToast(partnersResult.error ?? "No se pudieron cargar los contratistas y proveedores.");
+      const message = partnersResult.error ?? "No se pudieron cargar los contratistas y proveedores.";
+      if (silent) console.error(message);
+      else showToast(message);
       return;
     }
     if (!Array.isArray(partnersResult.businessPartners)) {
       console.error("La API devolvió una lista de empresas con formato inválido.");
-      showToast("No se pudo cargar el directorio de empresas.");
+      if (!silent) showToast("No se pudo cargar el directorio de empresas.");
       return;
     }
     if (!visitorsResponse.ok) {
-      showToast(visitorsResult.error ?? "No se pudo cargar el público general.");
+      const message = visitorsResult.error ?? "No se pudo cargar el público general.";
+      if (silent) console.error(message);
+      else showToast(message);
       return;
     }
     if (!Array.isArray(visitorsResult.generalVisitors)) {
       console.error("La API devolvió una lista de personas con formato inválido.");
-      showToast("No se pudo cargar el público general.");
+      if (!silent) showToast("No se pudo cargar el público general.");
       return;
     }
     if (!externalStaffResponse.ok) {
-      showToast(externalStaffResult.error ?? "No se pudo cargar el personal externo.");
+      const message = externalStaffResult.error ?? "No se pudo cargar el personal externo.";
+      if (silent) console.error(message);
+      else showToast(message);
       return;
     }
     if (!Array.isArray(externalStaffResult.externalStaff)) {
       console.error("La API devolvió una lista de personal externo con formato inválido.");
-      showToast("No se pudo cargar el personal externo.");
+      if (!silent) showToast("No se pudo cargar el personal externo.");
       return;
     }
     businessPartners.value = partnersResult.businessPartners;
@@ -436,9 +465,10 @@ async function loadBusinessDirectory() {
     externalStaff.value = externalStaffResult.externalStaff;
   } catch (error) {
     console.error("Failed to load business directory:", error);
-    showToast("No se pudo conectar con el servidor para cargar el directorio.");
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar el directorio.");
   } finally {
-    businessDirectoryLoading.value = false;
+    businessDirectoryRequestInProgress = false;
+    if (!silent) businessDirectoryLoading.value = false;
   }
 }
 
@@ -476,7 +506,7 @@ async function saveAccessAccount() {
     }
     accessAccounts.value = result.accounts;
     editingAccessAccount.value = null;
-    showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`);
+    showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`, "success");
   } catch (error) {
     console.error("Failed to save account section access:", error);
     showToast("No se pudo conectar con el servidor para actualizar el acceso.");
@@ -517,64 +547,8 @@ const navigationGroups = [
   },
 ];
 
-const appointments = ref<Appointment[]>([]);
-
-const activities = [
-  {
-    time: "10:42",
-    title: "Llegada",
-    visitor: "Ana Torres",
-    company: "Tech Solutions",
-    detail: "Visitante llegó a recepción.",
-    icon: "arrival",
-    tone: "green",
-  },
-  {
-    time: "10:45",
-    title: "Ingreso",
-    visitor: "Ana Torres",
-    company: "Tech Solutions",
-    detail: "Acceso autorizado por María López.",
-    icon: "entry",
-    tone: "blue",
-  },
-  {
-    time: "12:17",
-    title: "Retiro",
-    visitor: "Carlos Méndez",
-    company: "Servicios Globales S.A.",
-    detail: "Visitante se retiró de la empresa.",
-    icon: "exit",
-    tone: "red",
-  },
-  {
-    time: "13:03",
-    title: "Llegada",
-    visitor: "Roberto Valdez",
-    company: "Construcciones del Norte",
-    detail: "Visitante llegó a recepción.",
-    icon: "arrival",
-    tone: "green",
-  },
-  {
-    time: "13:07",
-    title: "Ingreso",
-    visitor: "Roberto Valdez",
-    company: "Construcciones del Norte",
-    detail: "Acceso autorizado por Javier García.",
-    icon: "entry",
-    tone: "blue",
-  },
-  {
-    time: "16:20",
-    title: "Observaciones",
-    visitor: "Visita fuera de horario",
-    company: "",
-    detail: "Registro manual por recepción.",
-    icon: "note",
-    tone: "slate",
-  },
-];
+let appointmentsRequestInProgress = false;
+let businessDirectoryRequestInProgress = false;
 
 const summaryItems = [
   {
@@ -613,7 +587,18 @@ const appointmentCompanyOptions = computed(() =>
   ),
 );
 const appointmentHostOptions = computed(() =>
-  [...hosts.value].sort((first, second) => first.name.localeCompare(second.name, "es")),
+  isHost.value
+    ? [{
+        id: 0,
+        login: currentUser.value.login,
+        name: currentUser.value.name?.trim() || currentUser.value.login,
+        departmentId: 0,
+        role: currentUser.value.role ?? "",
+        email: currentUser.value.email ?? "",
+        phone: "",
+        accessRoles: [],
+      }]
+    : [...hosts.value].sort((first, second) => first.name.localeCompare(second.name, "es")),
 );
 const appointmentVisitorOptions = computed(() =>
   externalStaff.value
@@ -823,29 +808,33 @@ function selectSection(label: string) {
   if (!allowedDashboardSections.value.includes(label)) return;
   activeSection.value = label;
   drawerOpen.value = false;
+  const path = dashboardSectionPaths[label as keyof typeof dashboardSectionPaths];
+  if (path && route.path !== path) void router.push(path);
 }
 
-async function loadDepartments() {
+async function loadDepartments(silent = false) {
   try {
     const response = await fetch("/api/departments");
     const result = await response.json() as { departments?: Department[]; error?: string };
     if (!response.ok) {
-      showToast(result.error ?? "No se pudieron cargar los departamentos.");
+      const message = result.error ?? "No se pudieron cargar los departamentos.";
+      if (silent) console.error(message);
+      else showToast(message);
       return;
     }
     if (!Array.isArray(result.departments)) {
       console.error("La API devolvió una lista de departamentos con formato inválido.");
-      showToast("No se pudieron cargar los departamentos.");
+      if (!silent) showToast("No se pudieron cargar los departamentos.");
       return;
     }
     departments.value = result.departments;
   } catch (error) {
     console.error("Failed to load departments:", error);
-    showToast("No se pudo conectar con el servidor para cargar los departamentos.");
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar los departamentos.");
   }
 }
 
-async function loadHostAccounts() {
+async function loadHostAccounts(silent = false) {
   try {
     const response = await fetch("/api/host-accounts");
     const result = await response.json() as {
@@ -853,32 +842,46 @@ async function loadHostAccounts() {
       error?: string;
     };
     if (!response.ok) {
-      showToast(result.error ?? "No se pudieron cargar las cuentas de Accesos.");
+      const message = result.error ?? "No se pudieron cargar las cuentas de Accesos.";
+      if (silent) console.error(message);
+      else showToast(message);
       return;
     }
     if (!Array.isArray(result.accounts)) {
       console.error("La API devolvió opciones de anfitrión con formato inválido.");
-      showToast("No se pudieron cargar las cuentas de Accesos.");
+      if (!silent) showToast("No se pudieron cargar las cuentas de Accesos.");
       return;
     }
     hostAccountOptions.value = result.accounts;
   } catch (error) {
     console.error("Failed to load host account options:", error);
-    showToast("No se pudo conectar con el servidor para cargar las cuentas de Accesos.");
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar las cuentas de Accesos.");
   }
 }
 
-function showToast(message: string) {
-  toast.value = message;
-  window.setTimeout(() => {
-    toast.value = "";
-  }, 3200);
+function showToast(message: string, type: AppAlertType = "error") {
+  notifyUser(message, type);
+}
+
+async function logout() {
+  try {
+    const response = await fetch("/api/auth/logout", { method: "POST" });
+    if (!response.ok) {
+      showToast("No se pudo cerrar la sesión. Inténtalo de nuevo.");
+      return;
+    }
+    emit("logout");
+  } catch (error) {
+    console.error("Failed to log out:", error);
+    showToast("No se pudo conectar con el servidor para cerrar la sesión.");
+  }
 }
 
 async function createAppointmentQr(appointment: Appointment) {
   return QRCode.toDataURL(JSON.stringify({
     type: "visitas-appointment",
     id: appointment.id,
+    referenceCode: appointment.referenceCode,
     visitor: appointment.visitor,
     company: appointment.company,
     host: appointment.host,
@@ -914,7 +917,7 @@ function openAppointmentDialog() {
   visitorEmail.value = "";
   visitorSelection.value = "";
   visitorCompanyId.value = null;
-  visitorHostLogin.value = "";
+  visitorHostLogin.value = isHost.value ? currentUser.value.login : "";
   appointmentDialogOpen.value = true;
 }
 
@@ -991,7 +994,7 @@ async function submitDepartment() {
     departmentDialogOpen.value = false;
     editingDepartmentId.value = null;
     departmentName.value = "";
-    showToast(departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.");
+    showToast(departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.", "success");
   } catch (error) {
     console.error("Failed to save department:", error);
     showToast("No se pudo conectar con el servidor para guardar el departamento.");
@@ -1018,7 +1021,7 @@ async function removeDepartment(id: number) {
       return;
     }
     departments.value = result.departments;
-    showToast("El departamento se eliminó.");
+    showToast("El departamento se eliminó.", "success");
   } catch (error) {
     console.error("Failed to delete department:", error);
     showToast("No se pudo conectar con el servidor para eliminar el departamento.");
@@ -1186,7 +1189,7 @@ async function submitHost() {
 
   if (editingHostId.value === null) {
     hosts.value.unshift({ id: ++nextHostId.value, ...hostData });
-    showToast("El anfitrión se registró con los datos de Accesos.");
+    showToast("El anfitrión se registró con los datos de Accesos.", "success");
   } else {
     const hostIndex = hosts.value.findIndex((host) => host.id === editingHostId.value);
     if (hostIndex === -1) {
@@ -1195,7 +1198,7 @@ async function submitHost() {
       return;
     }
     hosts.value[hostIndex] = { id: editingHostId.value, ...hostData };
-    showToast("Los datos del anfitrión se actualizaron.");
+    showToast("Los datos del anfitrión se actualizaron.", "success");
   }
 
   hostDialogOpen.value = false;
@@ -1210,7 +1213,7 @@ async function submitHost() {
 
 function removeHost(id: number) {
   hosts.value = hosts.value.filter((host) => host.id !== id);
-  showToast("El anfitrión se eliminó del registro de demostración.");
+  showToast("El anfitrión se eliminó del registro de demostración.", "success");
 }
 
 function selectCalendarDay(date: string) {
@@ -1227,7 +1230,12 @@ async function submitAppointment() {
   const company = businessPartners.value.find(
     (partner) => partner.id === visitorCompanyId.value,
   );
-  const host = hosts.value.find((candidate) => candidate.login === visitorHostLogin.value);
+  const host = isHost.value
+    ? {
+        login: currentUser.value.login,
+        name: currentUser.value.name?.trim() || currentUser.value.login,
+      }
+    : hosts.value.find((candidate) => candidate.login === visitorHostLogin.value);
   const selectedVisitor =
     visitorSelection.value === otherAppointmentVisitor
       ? null
@@ -1286,7 +1294,7 @@ async function submitAppointment() {
     appointments.value = result.appointments;
     appointmentDialogOpen.value = false;
     selectedAppointmentDate.value = visitorDate.value;
-    showToast("La cita se guardó en la agenda.");
+    showToast("La cita se guardó en la agenda.", "success");
     visitorName.value = "";
     visitorEmail.value = "";
     visitorSelection.value = "";
@@ -1302,9 +1310,13 @@ async function submitAppointment() {
   }
 }
 
-function sendAppointmentQr(appointment: Appointment) {
-  qrAppointment.value = appointment;
-  void sendAppointmentQrEmail(appointment);
+async function sendAppointmentQr(appointment: Appointment) {
+  const isContractor = appointment.partnerType === "Contratista";
+  const message = isContractor
+    ? `Se enviará el código QR de visita y el código de referencia a ${appointment.email || "su correo"}. También recibirá el enlace de un solo uso para declarar el equipo y las herramientas que llevará. Al enviar el formulario, el enlace se desactivará; en recepción solo podrá ingresar lo registrado y verificado. Comparte esta condición con la persona visitante.`
+    : `Se enviará únicamente el código QR de visita y su código de referencia a ${appointment.email || "su correo"}. Para proveedores no se envía formulario ni enlace de equipo.`;
+  if (!await confirmUser(message, "Enviar QR")) return;
+  await sendAppointmentQrEmail(appointment);
 }
 
 async function sendAppointmentQrEmail(appointment: Appointment) {
@@ -1340,7 +1352,12 @@ async function sendAppointmentQrEmailTo(appointment: Appointment, email?: string
     }
     qrEmailRecoveryOpen.value = false;
     qrDialogOpen.value = false;
-    showToast(result.message ?? `El pase se envió a ${appointment.email}.`);
+    showToast(
+      result.message ?? (appointment.partnerType === "Contratista"
+        ? `El pase, el código de referencia y el enlace de declaración se enviaron a ${appointment.email}.`
+        : `El pase y el código de referencia se enviaron a ${appointment.email}.`),
+      "success",
+    );
   } catch (error) {
     console.error("Failed to email appointment QR:", error);
     showToast("No se pudo conectar con el servidor para enviar el pase.");
@@ -1396,7 +1413,7 @@ async function deleteAppointment(appointment: Appointment) {
       return;
     }
     appointments.value = result.appointments;
-    showToast("La cita se eliminó de la agenda.");
+    showToast("La cita se eliminó de la agenda.", "success");
   } catch (error) {
     console.error("Failed to delete appointment:", error);
     showToast("No se pudo conectar con el servidor para eliminar la cita.");
@@ -1428,7 +1445,7 @@ async function cancelAppointment(appointment: Appointment) {
       return;
     }
     appointments.value = result.appointments;
-    showToast(`Se canceló la cita de ${appointment.visitor}.`);
+    showToast(`Se canceló la cita de ${appointment.visitor}.`, "success");
   } catch (error) {
     console.error("Failed to cancel appointment:", error);
     showToast("No se pudo conectar con el servidor para cancelar la cita.");
@@ -1504,6 +1521,7 @@ async function submitExternalStaff() {
       editingId === null
         ? "El trabajador externo se registró."
         : "Los datos del trabajador externo se actualizaron.",
+      "success",
     );
   } catch (error) {
     console.error("Failed to save external staff:", error);
@@ -1530,7 +1548,7 @@ async function removeExternalStaff(id: number) {
       return;
     }
     externalStaff.value = result.externalStaff;
-    showToast("El trabajador externo se eliminó.");
+    showToast("El trabajador externo se eliminó.", "success");
   } catch (error) {
     console.error("Failed to delete external staff:", error);
     showToast("No se pudo conectar con el servidor para eliminar al trabajador externo.");
@@ -1552,9 +1570,18 @@ function openBusinessPartnerDialog(partner?: BusinessPartner) {
 async function submitBusinessPartner() {
   if (businessPartnerSaving.value) return;
   const name = businessPartnerName.value.trim();
+  const description = businessPartnerDescription.value.trim();
   const rfc = businessPartnerRfc.value.trim().toLocaleUpperCase();
   const category = businessPartnerCategory.value.trim();
-  if (!name || !rfc || !category || businessPartnerEmployeeCount.value < 0) return;
+  const employeeCount = businessPartnerEmployeeCount.value;
+  if (!name || !description || !rfc || !category) {
+    showToast("Completa el nombre, la descripción, el RFC y la categoría.");
+    return;
+  }
+  if (!Number.isSafeInteger(employeeCount) || employeeCount < 0 || employeeCount > 4294967295) {
+    showToast("El número de empleados debe ser un entero entre 0 y 4,294,967,295.");
+    return;
+  }
 
   const duplicateRfc = businessPartners.value.some(
     (partner) =>
@@ -1568,7 +1595,7 @@ async function submitBusinessPartner() {
 
   const partnerData = {
     name,
-    description: businessPartnerDescription.value.trim(),
+    description,
     rfc,
     category,
     employeeCount: businessPartnerEmployeeCount.value,
@@ -1602,7 +1629,7 @@ async function submitBusinessPartner() {
     }
     businessPartners.value = result.businessPartners;
     businessPartnerDialogOpen.value = false;
-    showToast(partnerId === null ? "La empresa se registró correctamente." : "Los datos de la empresa se actualizaron.");
+    showToast(partnerId === null ? "La empresa se registró correctamente." : "Los datos de la empresa se actualizaron.", "success");
   } catch (error) {
     console.error("Failed to save business partner:", error);
     showToast("No se pudo conectar con el servidor para guardar la empresa.");
@@ -1634,7 +1661,7 @@ async function removeBusinessPartner(id: number) {
       return;
     }
     businessPartners.value = result.businessPartners;
-    showToast("La empresa se eliminó.");
+    showToast("La empresa se eliminó.", "success");
   } catch (error) {
     console.error("Failed to delete business partner:", error);
     showToast("No se pudo conectar con el servidor para eliminar la empresa.");
@@ -1654,10 +1681,19 @@ async function submitGeneralVisitor() {
   if (generalVisitorSaving.value) return;
   const fullName = generalVisitorName.value.trim();
   const curp = generalVisitorCurp.value.trim().toLocaleUpperCase();
-  if (!fullName) return;
+  const phone = generalVisitorPhone.value.trim();
+  const email = generalVisitorEmail.value.trim();
+  if (!fullName || !phone || !email) {
+    showToast("Completa el nombre, la CURP, el teléfono y el correo electrónico.");
+    return;
+  }
 
-  if (curp && !/^[A-Z0-9]{18}$/.test(curp)) {
+  if (!/^[A-Z0-9]{18}$/.test(curp)) {
     showToast("La CURP debe contener 18 letras o números.");
+    return;
+  }
+  if (phone.length > 30 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showToast("Revisa que el teléfono y el correo electrónico sean válidos.");
     return;
   }
 
@@ -1676,8 +1712,8 @@ async function submitGeneralVisitor() {
   const visitorData = {
     fullName,
     curp,
-    phone: generalVisitorPhone.value.trim(),
-    email: generalVisitorEmail.value.trim(),
+    phone,
+    email,
   };
 
   generalVisitorSaving.value = true;
@@ -1706,7 +1742,7 @@ async function submitGeneralVisitor() {
     }
     generalVisitors.value = result.generalVisitors;
     generalVisitorDialogOpen.value = false;
-    showToast(visitorId === null ? "La persona se registró correctamente." : "Los datos de la persona se actualizaron.");
+    showToast(visitorId === null ? "La persona se registró correctamente." : "Los datos de la persona se actualizaron.", "success");
   } catch (error) {
     console.error("Failed to save general visitor:", error);
     showToast("No se pudo conectar con el servidor para guardar a la persona.");
@@ -1737,7 +1773,7 @@ async function removeGeneralVisitor(id: number) {
       return;
     }
     generalVisitors.value = result.generalVisitors;
-    showToast("La persona se eliminó.");
+    showToast("La persona se eliminó.", "success");
   } catch (error) {
     console.error("Failed to delete general visitor:", error);
     showToast("No se pudo conectar con el servidor para eliminar a la persona.");
@@ -1880,12 +1916,20 @@ async function removeGeneralVisitor(id: number) {
           @click="privateMenuOpen = !privateMenuOpen"
         >
           <span class="avatar"><svg class="icon"><use href="#i-user" /></svg></span>
-          <span>Área privada</span>
+          <span class="account-menu-identity">
+            <strong>{{ currentUser.name || currentUser.login }}</strong>
+            <small>{{ currentRoleLabel }}</small>
+          </span>
           <svg class="icon account-chevron"><use href="#i-down" /></svg>
         </button>
         <div v-if="privateMenuOpen" class="account-dropdown">
-          <strong>{{ currentUser.name || currentUser.login }}</strong>
-          <span>Acceso corporativo</span>
+          <div class="account-dropdown-profile">
+            <span class="avatar"><svg class="icon"><use href="#i-user" /></svg></span>
+            <span class="account-dropdown-identity">
+              <strong>{{ currentUser.name || currentUser.login }}</strong>
+              <small>{{ currentRoleLabel }} · Acceso corporativo</small>
+            </span>
+          </div>
           <span class="theme-toggle-label">Apariencia</span>
           <button
             class="theme-toggle"
@@ -1903,6 +1947,10 @@ async function removeGeneralVisitor(id: number) {
             </svg>
             <span>{{ dashboardTheme === "dark" ? "Modo oscuro" : "Modo claro" }}</span>
             <span class="theme-toggle-switch" aria-hidden="true"><span></span></span>
+          </button>
+          <button class="logout-button" type="button" @click="logout">
+            <svg class="icon"><use href="#i-exit" /></svg>
+            Cerrar sesión
           </button>
         </div>
       </div>
@@ -1975,7 +2023,7 @@ async function removeGeneralVisitor(id: number) {
 
       <div class="sidebar-footer">
         <svg class="icon"><use href="#i-shield" /></svg>
-        <span>{{ currentUser.isAdmin || currentUser.sectionAccess.includes("recepcion") ? "RECEPCIÓN" : "ANFITRIONES" }}<br /><small>Acceso corporativo</small></span>
+        <span>{{ currentRoleLabel.toLocaleUpperCase("es-MX") }}<br /><small>Acceso corporativo</small></span>
       </div>
     </aside>
 
@@ -1984,6 +2032,7 @@ async function removeGeneralVisitor(id: number) {
       :class="{
         'dashboard-main-departments': activeSection === 'Departamento',
         'dashboard-main-daily-log': activeSection === 'Bitácora diaria',
+        'dashboard-main-home': activeSection === 'Inicio',
       }"
     >
       <div class="dashboard-heading">
@@ -1991,13 +2040,10 @@ async function removeGeneralVisitor(id: number) {
           <h1>{{ pageTitle }}</h1>
           <span class="heading-accent"></span>
           <p v-if="activeSection === 'Equipo y herramientas'">
-            Registro de equipo y herramienta · datos de demostración
+            Declaraciones y revisiones vinculadas a las visitas registradas
           </p>
           <p v-else-if="activeSection === 'Contratistas, proveedores y visitantes'">
             Registros de empresas y personas guardados en MySQL
-          </p>
-          <p v-else-if="activeSection === 'Bitácora diaria'">
-            Control y seguimiento de movimientos de acceso · historial persistente
           </p>
           <p v-else-if="activeSection === 'Agenda de citas'">
             {{ activeAppointmentCount }} citas activas
@@ -2027,16 +2073,14 @@ async function removeGeneralVisitor(id: number) {
             aria-label="Filtrar agenda por fecha"
           />
         </label>
-        <button
+        <div
           v-else-if="activeSection === 'Inicio'"
           class="date-selector"
-          type="button"
-          @click="showToast('Mostrando la agenda del 24 de octubre de 2026.')"
+          aria-label="Fecha actual"
         >
           <svg class="icon"><use href="#i-calendar" /></svg>
-          <span>24 de octubre de 2026</span>
-          <svg class="icon"><use href="#i-down" /></svg>
-        </button>
+          <span>{{ new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "long", year: "numeric" }).format(new Date()) }}</span>
+        </div>
       </div>
 
       <AppointmentsSection
@@ -2054,6 +2098,8 @@ async function removeGeneralVisitor(id: number) {
         :selected-appointment-date="selectedAppointmentDate"
         :today="getLocalDate()"
         :loading="appointmentLoading"
+        :can-create-appointments="currentUser.isAdmin || isHost"
+        :can-manage-appointments="currentUser.isAdmin || isHost"
         @update:page="appointmentsPage = $event"
         @create="openAppointmentDialog"
         @cancel="cancelAppointment"
@@ -2138,10 +2184,12 @@ async function removeGeneralVisitor(id: number) {
 
       <EquipmentSection
         v-else-if="activeSection === 'Equipo y herramientas'"
+        :theme="dashboardTheme"
       />
 
       <DailyLogSection
         v-else-if="activeSection === 'Bitácora diaria'"
+        :is-admin="currentUser.isAdmin"
         :appointments="appointments"
         :appointments-loading="appointmentLoading"
         :external-staff="externalStaff"
@@ -2149,17 +2197,19 @@ async function removeGeneralVisitor(id: number) {
         :hosts="hosts"
         :departments="departments"
         @movement-saved="loadAppointments"
+        @open-qr="openQrDialog"
       />
 
       <HomeSection
         v-else-if="activeSection === 'Inicio'"
         :appointments="appointments"
-        :activities="activities"
         :summary-items="summaryItems"
         @create-appointment="openAppointmentDialog"
         @open-qr="openQrDialog"
         @show-toast="showToast"
         @open-log="selectSection('Bitácora diaria')"
+        @open-appointments="selectSection('Agenda de citas')"
+        @open-equipment="selectSection('Equipo y herramientas')"
       />
       <div v-else class="panel workspace-panel access-none-panel">
         <h2>Sin secciones asignadas</h2>
@@ -2217,6 +2267,7 @@ async function removeGeneralVisitor(id: number) {
               type="text"
               autocomplete="name"
               maxlength="180"
+              pattern=".*\S.*"
               placeholder="Nombre completo del visitante"
               required
             />
@@ -2229,14 +2280,16 @@ async function removeGeneralVisitor(id: number) {
           </label>
           <label>
             Anfitrión
-            <select v-model="visitorHostLogin" required>
+            <select v-model="visitorHostLogin" required :disabled="isHost">
               <option value="" disabled>Selecciona un anfitrión</option>
               <option
                 v-for="host in appointmentHostOptions"
                 :key="host.login"
                 :value="host.login"
               >
-                {{ host.name }} · {{ departments.find((department) => department.id === host.departmentId)?.name ?? "Sin departamento" }}
+                {{ isHost
+                  ? host.name
+                  : `${host.name} · ${departments.find((department) => department.id === host.departmentId)?.name ?? "Sin departamento"}` }}
               </option>
             </select>
           </label>
@@ -2287,9 +2340,10 @@ async function removeGeneralVisitor(id: number) {
         </div>
         <p v-if="qrAppointment" class="qr-appointment-details">
           {{ qrAppointment.company }}<br />
-          {{ qrAppointment.date }} · {{ qrAppointment.time }} · Anfitrión: {{ qrAppointment.host }}
+          {{ qrAppointment.date }} · {{ qrAppointment.time }} · Anfitrión: {{ qrAppointment.host }}<br />
+          Código de referencia: <strong>{{ qrAppointment.referenceCode }}</strong>
         </p>
-        <div class="qr-dialog-actions">
+        <div v-if="!isReception" class="qr-dialog-actions">
           <button
             class="button-primary dialog-submit"
             type="button"
@@ -2308,7 +2362,11 @@ async function removeGeneralVisitor(id: number) {
           </button>
         </div>
         <p class="qr-placeholder-note">
-          El correo se enviará automáticamente al correo guardado del visitante.
+          {{ isReception
+            ? "Recepción puede consultar el pase; el anfitrión o Programación puede enviarlo."
+            : qrAppointment?.partnerType === "Contratista"
+              ? "Contratistas: recibirán un enlace de un solo uso para declarar su equipo; lo que no se registre no podrá ingresar."
+              : "Proveedores: recibirán solamente el QR y código de referencia." }}
         </p>
         <button class="button-secondary dialog-submit" type="button" @click="qrDialogOpen = false">Cerrar</button>
       </section>
@@ -2390,23 +2448,23 @@ async function removeGeneralVisitor(id: number) {
           </label>
           <label>
             Nombre de la empresa
-            <input v-model.trim="businessPartnerName" type="text" autocomplete="organization" required />
+            <input v-model.trim="businessPartnerName" type="text" autocomplete="organization" maxlength="180" pattern=".*\S.*" required />
           </label>
           <label class="directory-form-full">
             Descripción breve
-            <textarea v-model.trim="businessPartnerDescription" rows="3" placeholder="Describe a qué se dedica la empresa" required></textarea>
+            <textarea v-model.trim="businessPartnerDescription" rows="3" maxlength="65535" placeholder="Describe a qué se dedica la empresa" required></textarea>
           </label>
           <label>
             RFC
-            <input v-model.trim="businessPartnerRfc" type="text" maxlength="13" required />
+            <input v-model.trim="businessPartnerRfc" type="text" maxlength="13" pattern=".*\S.*" required />
           </label>
           <label>
             Categoría
-            <input v-model.trim="businessPartnerCategory" type="text" placeholder="Ej. Construcción, limpieza" required />
+            <input v-model.trim="businessPartnerCategory" type="text" maxlength="120" pattern=".*\S.*" placeholder="Ej. Construcción, limpieza" required />
           </label>
           <label>
             Número de empleados
-            <input v-model.number="businessPartnerEmployeeCount" type="number" min="0" step="1" required />
+            <input v-model.number="businessPartnerEmployeeCount" type="number" min="0" max="4294967295" step="1" required />
           </label>
           <label>
             Estado
@@ -2441,14 +2499,14 @@ async function removeGeneralVisitor(id: number) {
         <h2 id="general-visitor-dialog-title">
           {{ editingGeneralVisitorId === null ? "Registrar persona" : "Editar persona" }}
         </h2>
-        <p class="dialog-description">Datos básicos de público general. La CURP es opcional.</p>
+        <p class="dialog-description">Registra nombre, CURP, teléfono y correo electrónico para identificar y contactar a la persona.</p>
         <form class="workspace-form modal-workspace-form directory-form" @submit.prevent="submitGeneralVisitor">
           <label class="directory-form-full">
             Nombre completo
-            <input v-model.trim="generalVisitorName" type="text" autocomplete="name" required />
+            <input v-model.trim="generalVisitorName" type="text" maxlength="180" pattern=".*\S.*" autocomplete="name" required />
           </label>
           <label class="directory-form-full">
-            CURP <span class="optional-field">(opcional)</span>
+            CURP
             <input
               v-model.trim="generalVisitorCurp"
               type="text"
@@ -2456,16 +2514,17 @@ async function removeGeneralVisitor(id: number) {
               pattern="[A-Za-z0-9]{18}"
               autocomplete="off"
               placeholder="18 caracteres"
+              required
               @input="generalVisitorCurp = generalVisitorCurp.toLocaleUpperCase()"
             />
           </label>
           <label>
-            Teléfono <span class="optional-field">(opcional)</span>
-            <input v-model.trim="generalVisitorPhone" type="tel" autocomplete="tel" />
+            Teléfono
+            <input v-model.trim="generalVisitorPhone" type="tel" maxlength="30" autocomplete="tel" pattern=".*\S.*" required />
           </label>
           <label>
-            Correo electrónico <span class="optional-field">(opcional)</span>
-            <input v-model.trim="generalVisitorEmail" type="email" autocomplete="email" />
+            Correo electrónico
+            <input v-model.trim="generalVisitorEmail" type="email" maxlength="254" autocomplete="email" required />
           </label>
           <button class="button-primary workspace-submit" type="submit" :disabled="generalVisitorSaving">
             <svg class="icon"><use href="#i-plus" /></svg>
@@ -2591,7 +2650,7 @@ async function removeGeneralVisitor(id: number) {
             </label>
             <label v-if="hostAccountSelection === otherHostAccountOption">
               Escribe el nombre completo
-              <input v-model.trim="hostName" type="text" autocomplete="name" required />
+              <input v-model.trim="hostName" type="text" autocomplete="name" maxlength="180" pattern=".*\S.*" required />
             </label>
             <label>
               Login (usuario)
@@ -2599,6 +2658,8 @@ async function removeGeneralVisitor(id: number) {
                 v-model.trim="hostLogin"
                 type="text"
                 autocomplete="username"
+                maxlength="180"
+                pattern=".*\S.*"
                 :readonly="hostAccountSelection !== otherHostAccountOption"
                 required
               />
@@ -2609,6 +2670,7 @@ async function removeGeneralVisitor(id: number) {
                 v-model.trim="hostEmail"
                 type="email"
                 autocomplete="email"
+                maxlength="254"
                 :readonly="hostAccountSelection !== otherHostAccountOption"
               />
             </label>
@@ -2626,6 +2688,7 @@ async function removeGeneralVisitor(id: number) {
                 v-model.trim="hostRole"
                 type="text"
                 autocomplete="organization-title"
+                maxlength="120"
                 :readonly="hostAccountSelection !== otherHostAccountOption"
               />
             </label>
@@ -2635,6 +2698,7 @@ async function removeGeneralVisitor(id: number) {
                 v-model.trim="hostPhone"
                 type="tel"
                 autocomplete="tel"
+                maxlength="30"
                 :readonly="hostAccountSelection !== otherHostAccountOption"
               />
             </label>
@@ -2668,7 +2732,7 @@ async function removeGeneralVisitor(id: number) {
         <form class="workspace-form modal-workspace-form" @submit.prevent="submitDepartment">
           <label>
             Nombre del departamento
-            <input v-model.trim="departmentName" type="text" maxlength="120" autocomplete="organization-title" required />
+            <input v-model.trim="departmentName" type="text" maxlength="120" pattern=".*\S.*" autocomplete="organization-title" required />
           </label>
           <button class="button-primary workspace-submit" type="submit" :disabled="departmentSaving">
             {{ departmentSaving ? "Guardando..." : editingDepartmentId === null ? "Registrar departamento" : "Guardar cambios" }}
@@ -2707,6 +2771,8 @@ async function removeGeneralVisitor(id: number) {
               v-model.trim="externalStaffName"
               type="text"
               autocomplete="name"
+              maxlength="180"
+              pattern=".*\S.*"
               placeholder="Nombre y apellidos"
               required
             />
@@ -2717,6 +2783,7 @@ async function removeGeneralVisitor(id: number) {
               v-model.trim="externalStaffPhone"
               type="tel"
               autocomplete="tel"
+              maxlength="30"
               placeholder="Número de contacto"
             />
           </label>
@@ -2726,6 +2793,7 @@ async function removeGeneralVisitor(id: number) {
               v-model.trim="externalStaffEmail"
               type="email"
               autocomplete="email"
+              maxlength="254"
               placeholder="correo@empresa.com"
             />
           </label>
@@ -2767,6 +2835,5 @@ async function removeGeneralVisitor(id: number) {
       </section>
     </div>
 
-    <div v-if="toast" class="toast-message" role="status">{{ toast }}</div>
   </main>
 </template>

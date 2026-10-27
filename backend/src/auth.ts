@@ -1,4 +1,5 @@
 import type { RowDataPacket } from "mysql2";
+import type { PoolConnection as PromisePoolConnection } from "mysql2/promise";
 import pool from "./db";
 
 type AccessRow = RowDataPacket & {
@@ -64,18 +65,23 @@ export async function getActiveUser(login: string): Promise<AuthenticatedUser | 
 export async function authenticateUser(
   identifier: string,
   password: string,
+  connection?: PromisePoolConnection,
 ): Promise<AuthenticatedUser | null> {
-  const [rows] = await pool.execute<AccessRow[]>(
-    `SELECT login, pswd, name, email, active, role, priv_admin,
-            EXISTS (
-              SELECT 1 FROM accesos_secciones s
-              WHERE s.login = accesos.login AND s.seccion = 'administrador'
-            ) AS section_admin
-     FROM accesos
-     WHERE login = ? OR email = ?
-     LIMIT 1`,
-    [identifier, identifier],
-  );
+  const query = `SELECT login, pswd, name, email, active, role, priv_admin,
+          EXISTS (
+            SELECT 1 FROM accesos_secciones s
+            WHERE s.login = accesos.login AND s.seccion = 'administrador'
+          ) AS section_admin
+   FROM accesos
+   WHERE login = ? OR email = ?
+   LIMIT 1`;
+  const values = [identifier, identifier];
+  const [rows] = connection
+    ? await connection.execute<AccessRow[]>(query, values)
+    : await pool.execute<AccessRow[]>(
+        query,
+        values,
+      );
   const user = rows[0];
   const hash = user?.pswd.startsWith("$argon2id$")
     ? user.pswd

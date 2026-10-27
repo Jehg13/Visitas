@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 type BusinessPartner = {
   id: number;
   name: string;
+  employeeCount: number;
   type: "Contratista" | "Proveedor";
 };
 
@@ -28,10 +29,14 @@ const selectedCompanyId = ref<number | null>(null);
 const searchQuery = computed(() => props.search.trim().toLocaleLowerCase());
 const companiesWithStaffCount = computed(() =>
   props.companies
-    .map((company) => ({
-      ...company,
-      staffCount: props.staff.filter((person) => person.businessPartnerId === company.id).length,
-    }))
+    .map((company) => {
+      const staffCount = props.staff.filter((person) => person.businessPartnerId === company.id).length;
+      return {
+        ...company,
+        staffCount,
+        employeeCount: Math.max(company.employeeCount, staffCount),
+      };
+    })
     .filter((company) => {
       if (!searchQuery.value) return true;
       return [
@@ -71,14 +76,17 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <section class="workspace-grid">
-    <section class="panel workspace-panel" aria-labelledby="external-staff-title">
+  <section class="workspace-grid external-staff-workspace">
+    <section class="panel workspace-panel external-staff-panel" aria-labelledby="external-staff-title">
       <header class="panel-heading workspace-heading">
         <div class="panel-title">
           <svg class="icon"><use href="#i-users" /></svg>
-          <h2 id="external-staff-title">
-            {{ selectedCompany ? selectedCompany.name : "Personal por empresa" }}
-          </h2>
+          <div class="external-company-title">
+            <h2 id="external-staff-title">
+              {{ selectedCompany ? selectedCompany.name : "Personal por empresa" }}
+            </h2>
+            <span v-if="selectedCompany" class="external-type-pill">{{ selectedCompany.type }}</span>
+          </div>
         </div>
         <div class="workspace-heading-actions">
           <span v-if="selectedCompany" class="workspace-count">
@@ -101,10 +109,6 @@ const emit = defineEmits<{
           </button>
         </div>
       </header>
-      <p v-if="selectedCompany" class="external-company-detail">
-        <span class="external-type-pill">{{ selectedCompany.type }}</span>
-        Personal externo registrado para esta empresa.
-      </p>
       <div class="external-staff-toolbar">
         <label class="agenda-search">
           <svg class="icon"><use href="#i-search" /></svg>
@@ -131,8 +135,11 @@ const emit = defineEmits<{
               <svg class="icon"><use href="#i-building" /></svg>
             </span>
             <span class="department-card-count">
-              <strong>{{ company.staffCount }}</strong>
-              <span>{{ company.staffCount === 1 ? "empleado registrado" : "empleados registrados" }}</span>
+              <strong>{{ company.employeeCount }}</strong>
+              <span>{{ company.employeeCount === 1 ? "contemplado" : "contemplados" }}</span>
+              <span class="external-staff-registered-count">
+                {{ company.staffCount }} {{ company.staffCount === 1 ? "registrado" : "registrados" }}
+              </span>
             </span>
           </span>
           <strong class="external-company-name">{{ company.name }}</strong>
@@ -151,7 +158,7 @@ const emit = defineEmits<{
           </p>
         </div>
       </div>
-      <div v-else class="workspace-table-scroll">
+      <div v-else class="workspace-table-scroll external-staff-table-scroll">
         <table class="workspace-table external-staff-table">
           <thead>
             <tr>
@@ -161,11 +168,11 @@ const emit = defineEmits<{
           </thead>
           <tbody>
             <tr v-for="person in selectedCompanyStaff" :key="person.id">
-              <td>{{ person.fullName }}</td>
+              <td><strong class="external-staff-person-name">{{ person.fullName }}</strong></td>
               <td>{{ person.phone || "—" }}</td>
-              <td>{{ person.email || "—" }}</td>
+              <td><span class="external-staff-email">{{ person.email || "—" }}</span></td>
               <td><span class="external-type-pill">{{ person.relationshipType }}</span></td>
-              <td>{{ person.companyName }}</td>
+              <td><span class="external-staff-company">{{ person.companyName }}</span></td>
               <td>
                 <div class="staff-actions">
                   <button class="staff-edit-button" type="button" @click="emit('edit', person)">
