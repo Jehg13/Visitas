@@ -1095,12 +1095,6 @@
   max-width: 100%;
 }
 
-.dashboard-app :is(.agenda-search, .equipment-search, .daily-log-search, .daily-log-quick-search, .host-search) input[type="search"]:focus-visible {
-  outline: 0;
-  outline-offset: 0;
-  box-shadow: none;
-}
-
 .dashboard-app .dashboard-main :is(.table-scroll, .workspace-table-scroll, .daily-log-table-scroll) {
   width: 100%;
   max-width: 100%;
@@ -1885,6 +1879,34 @@
 
 .dashboard-app .agenda-table :is(th, td):nth-child(6) {
   width: 36%;
+}
+
+.dashboard-app .agenda-table-readonly {
+  table-layout: fixed;
+}
+
+.dashboard-app .agenda-table-readonly :is(th, td):nth-child(1) {
+  width: 8%;
+}
+
+.dashboard-app .agenda-table-readonly :is(th, td):nth-child(2) {
+  width: 21%;
+}
+
+.dashboard-app .agenda-table-readonly :is(th, td):nth-child(3) {
+  width: 25%;
+}
+
+.dashboard-app .agenda-table-readonly :is(th, td):nth-child(4) {
+  width: 18%;
+}
+
+.dashboard-app .agenda-table-readonly :is(th, td):nth-child(5) {
+  width: 16%;
+}
+
+.dashboard-app .agenda-table-readonly :is(th, td):nth-child(6) {
+  width: 12%;
 }
 
 .dashboard-app .agenda-actions-readonly {
@@ -4339,4 +4361,10 @@
 .dashboard-app.equipment-detail-backdrop .equipment-detail-table th:nth-child(5),
 .dashboard-app.equipment-detail-backdrop .equipment-detail-table td:nth-child(5) {
   width: 25%;
+}
+
+.dashboard-app[data-theme] .dashboard-main :is(.agenda-search, .equipment-search, .daily-log-search, .daily-log-quick-search, .host-search) input[type="search"]:focus-visible {
+  outline: 0;
+  outline-offset: 0;
+  box-shadow: none;
 }

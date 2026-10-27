@@ -109,6 +109,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.d
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements.table)({
     ...{ class: "workspace-table agenda-table" },
+    ...{ class: ({ 'agenda-table-readonly': !__VLS_ctx.canManageAppointments }) },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.thead, __VLS_intrinsicElements.thead)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
@@ -363,6 +364,7 @@ for (const [day] of __VLS_getVForSourceType((__VLS_ctx.calendarDays))) {
 /** @type {__VLS_StyleScopedClasses['workspace-table-scroll']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-table']} */ ;
+/** @type {__VLS_StyleScopedClasses['agenda-table-readonly']} */ ;
 /** @type {__VLS_StyleScopedClasses['status-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-actions-readonly']} */ ;

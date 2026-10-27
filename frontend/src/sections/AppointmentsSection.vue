@@ -107,7 +107,7 @@ const emit = defineEmits<{
         </span>
       </div>
       <div class="workspace-table-scroll">
-        <table class="workspace-table agenda-table">
+        <table class="workspace-table agenda-table" :class="{ 'agenda-table-readonly': !canManageAppointments }">
           <thead>
             <tr>
               <th>Hora</th><th>Visitante</th><th>Empresa</th><th>Anfitrión</th><th>Estado</th><th>Acciones</th>
