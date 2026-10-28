@@ -46,6 +46,7 @@ const emit = defineEmits<{
   sendQr: [appointment: Appointment];
   openQr: [appointment: Appointment];
   delete: [appointment: Appointment];
+  edit: [appointment: Appointment];
   changeMonth: [delta: number];
   selectDay: [date: string];
 }>();
@@ -127,6 +128,12 @@ const emit = defineEmits<{
               <td>
                 <div class="agenda-actions" :class="{ 'agenda-actions-readonly': !canManageAppointments }">
                   <button
+                    v-if="canManageAppointments && appointment.status !== 'Retirado' && appointment.status !== 'Cancelada'"
+                    class="staff-edit-button"
+                    type="button"
+                    @click="emit('edit', appointment)"
+                  >Editar</button>
+                  <button
                     v-if="canManageAppointments"
                     class="workspace-remove"
                     type="button"
@@ -153,6 +160,8 @@ const emit = defineEmits<{
                     class="workspace-remove agenda-delete-action"
                     type="button"
                     :aria-label="`Eliminar cita de ${appointment.visitor}`"
+                    :title="appointment.status === 'Cancelada' ? 'Eliminar cita cancelada' : 'Primero cancela la cita para poder eliminarla'"
+                    :disabled="appointment.status !== 'Cancelada'"
                     @click="emit('delete', appointment)"
                   >Eliminar</button>
                 </div>

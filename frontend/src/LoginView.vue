@@ -177,7 +177,12 @@ async function resetPassword() {
 <template>
   <main class="login-page">
     <section class="image-panel" aria-label="CyMEZ Recep Visitantes">
-      <img class="brand-image" src="/images/cymez-recep-logo.png" alt="CyMEZ Recep Visitantes" />
+      <img
+        class="brand-image"
+        src="/images/cymez-recep-logo-v2.webp"
+        alt="CyMEZ Recep Visitantes"
+        fetchpriority="high"
+      />
     </section>
 
     <section class="login-panel" aria-labelledby="welcome-title">

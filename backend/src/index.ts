@@ -12,6 +12,7 @@ const secureCookieAttribute = Bun.env.NODE_ENV === "production" ? "; Secure" : "
 const sectionAccessValues = ["recepcion", "anfitriones", "administrador"] as const;
 const managedAccessValues = ["recepcion", "administrador"] as const;
 type SectionAccess = (typeof sectionAccessValues)[number];
+type DatabaseConnection = Awaited<ReturnType<typeof pool.getConnection>>;
 
 type AccessAccountRow = RowDataPacket & {
   login: string;
@@ -99,6 +100,70 @@ type AppointmentRow = RowDataPacket & {
   equipment_checklist_required: number | boolean;
   equipment_entry_checklist_complete: number | boolean;
 };
+
+type AppointmentSnapshot = {
+  businessPartnerId: number | null;
+  date: string;
+  time: string;
+  visitor: string;
+  email: string;
+  referenceCode: string;
+  registeredBy: string;
+  createdByLogin: string | null;
+  company: string;
+  host: string;
+  status: AppointmentRow["status"];
+};
+
+function appointmentSnapshot(row: AppointmentRow): AppointmentSnapshot {
+  return {
+    businessPartnerId: row.business_partner_id === null ? null : Number(row.business_partner_id),
+    date: row.visit_date,
+    time: row.visit_time,
+    visitor: row.visitor_name,
+    email: row.visitor_email,
+    referenceCode: row.reference_code ?? "",
+    registeredBy: row.registered_by,
+    createdByLogin: row.created_by_login ?? null,
+    company: row.company_name,
+    host: row.host_name,
+    status: row.status,
+  };
+}
+
+async function recordAppointmentHistory(
+  connection: DatabaseConnection,
+  appointmentId: number,
+  action: "Creada" | "Actualizada" | "Cancelada" | "Eliminada",
+  user: AuthenticatedUser,
+  snapshot: AppointmentSnapshot,
+  details: string,
+  previousSnapshot: AppointmentSnapshot | null = null,
+) {
+  await connection.execute(
+    `INSERT INTO appointment_history
+       (appointment_id, action, actor_login, actor_name, created_by_login, host_name,
+        visit_date, visit_time, visitor_name, company_name, appointment_status, details,
+        previous_data, current_data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      appointmentId,
+      action,
+      user.login,
+      user.name?.trim() || user.login,
+      snapshot.createdByLogin,
+      snapshot.host,
+      snapshot.date,
+      snapshot.time,
+      snapshot.visitor,
+      snapshot.company,
+      snapshot.status,
+      details,
+      previousSnapshot === null ? null : JSON.stringify(previousSnapshot),
+      JSON.stringify(snapshot),
+    ],
+  );
+}
 
 type DailyLogRow = RowDataPacket & {
   id: number;
@@ -406,7 +471,7 @@ function parseBusinessPartner(value: unknown): BusinessPartnerInput | null {
     typeof rfc !== "string" || !rfc.trim() || rfc.trim().length > 13 ||
     typeof category !== "string" || !category.trim() || category.trim().length > 120 ||
     typeof employeeCount !== "number" || !Number.isSafeInteger(employeeCount) ||
-    employeeCount < 0 || employeeCount > 4294967295 ||
+    employeeCount < 1 || employeeCount > 4294967295 ||
     (type !== "Contratista" && type !== "Proveedor") ||
     (status !== "Activa" && status !== "Inactiva")
   ) {
@@ -601,7 +666,7 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
     );
     visibilityParameters.push(...hostNames.map((name) => name.trim().toLocaleLowerCase()));
   }
-  const query = `SELECT appointments.id, DATE_FORMAT(appointments.visit_date, '%Y-%m-%d') AS visit_date,
+  const query = `SELECT appointments.id, appointments.business_partner_id, DATE_FORMAT(appointments.visit_date, '%Y-%m-%d') AS visit_date,
             TIME_FORMAT(appointments.visit_time, '%H:%i') AS visit_time,
             appointments.visitor_name, appointments.visitor_email, appointments.reference_code, appointments.registered_by,
             appointments.company_name, appointments.host_name, appointments.status,
@@ -621,13 +686,15 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
             ) AS equipment_entry_checklist_complete
      FROM appointments
      LEFT JOIN business_partners ON business_partners.id = appointments.business_partner_id
-     ${visibilityConditions.length === 0 ? "" : `WHERE (${visibilityConditions.join(" OR ")})`}
+     WHERE appointments.deleted_at IS NULL
+       ${visibilityConditions.length === 0 ? "" : `AND (${visibilityConditions.join(" OR ")})`}
      ORDER BY appointments.visit_date DESC, appointments.visit_time, appointments.id DESC`;
   const [rows] = visibilityParameters.length === 0
     ? await pool.query<AppointmentRow[]>(query)
     : await pool.execute<AppointmentRow[]>(query, visibilityParameters);
   return rows.map((row) => ({
     id: Number(row.id),
+    businessPartnerId: row.business_partner_id === null ? null : Number(row.business_partner_id),
     date: row.visit_date,
     time: row.visit_time,
     visitor: row.visitor_name,
@@ -2118,24 +2185,50 @@ const server = Bun.serve({
         }
 
         if (request.method === "PATCH") {
-          const [result] = await pool.execute<ResultSetHeader>(
-            `UPDATE business_partners
-             SET name = ?, description = ?, rfc = ?, category = ?, employee_count = ?,
-                 partner_type = ?, is_active = ?
-             WHERE id = ?`,
-            [
-              partner.name, partner.description, partner.rfc, partner.category,
-              partner.employeeCount, partner.type, partner.status === "Activa", partnerId,
-            ],
-          );
-          if (result.affectedRows === 0) {
-            const [matches] = await pool.execute<BusinessPartnerRow[]>(
-              "SELECT id FROM business_partners WHERE id = ? LIMIT 1",
+          const connection = await pool.getConnection();
+          try {
+            await connection.beginTransaction();
+            const [currentPartners] = await connection.execute<BusinessPartnerRow[]>(
+              `SELECT id, name, description, rfc, category, employee_count, partner_type, is_active
+               FROM business_partners
+               WHERE id = ?
+               LIMIT 1
+               FOR UPDATE`,
               [partnerId],
             );
-            if (matches.length === 0) {
+            if (!currentPartners[0]) {
+              await connection.rollback();
               return Response.json({ error: "No se encontró la empresa seleccionada." }, { status: 404 });
             }
+            const [staffCounts] = await connection.execute<RowDataPacket[]>(
+              "SELECT COUNT(*) AS staff_count FROM external_staff WHERE business_partner_id = ?",
+              [partnerId],
+            );
+            const registeredStaff = Number(staffCounts[0]?.staff_count ?? 0);
+            if (partner.employeeCount < registeredStaff) {
+              await connection.rollback();
+              const type = currentPartners[0].partner_type.toLocaleLowerCase();
+              return Response.json(
+                { error: `No puedes establecer menos empleados que el personal externo ya registrado para este ${type} (${registeredStaff}).` },
+                { status: 409 },
+              );
+            }
+            await connection.execute(
+              `UPDATE business_partners
+               SET name = ?, description = ?, rfc = ?, category = ?, employee_count = ?,
+                   partner_type = ?, is_active = ?
+               WHERE id = ?`,
+              [
+                partner.name, partner.description, partner.rfc, partner.category,
+                partner.employeeCount, partner.type, partner.status === "Activa", partnerId,
+              ],
+            );
+            await connection.commit();
+          } catch (error) {
+            await connection.rollback();
+            throw error;
+          } finally {
+            connection.release();
           }
         } else {
           await pool.execute(
@@ -2701,7 +2794,7 @@ const server = Bun.serve({
                   visitor_name, visitor_email, registered_by, company_name, host_name, status
            FROM appointments a
            LEFT JOIN business_partners p ON p.id = a.business_partner_id
-           WHERE a.id = ? LIMIT 1`,
+           WHERE a.id = ? AND a.deleted_at IS NULL LIMIT 1`,
           [appointmentId],
         );
         const appointment = rows[0];
@@ -3183,6 +3276,82 @@ const server = Bun.serve({
       }
     }
 
+    if (url.pathname === "/api/appointments/history" && request.method === "GET") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        const hasReceptionAccess = await hasSectionAccess(user, "recepcion");
+        const hasHostAccess = await hasHostOnlyAccess(user);
+        if (!user.isAdmin && !hasReceptionAccess && !hasHostAccess) {
+          return Response.json({ error: "No tienes permiso para consultar la agenda." }, { status: 403 });
+        }
+        const hostNames = hasHostAccess
+          ? [...new Set([user.name?.trim(), user.login]
+              .filter((name): name is string => Boolean(name))
+              .map((name) => name.trim().toLocaleLowerCase()))]
+          : [];
+        const visibilityConditions: string[] = [];
+        const parameters: string[] = [];
+        if (!user.isAdmin && !hasReceptionAccess) {
+          visibilityConditions.push("created_by_login = ?");
+          parameters.push(user.login);
+          if (hostNames.length > 0) {
+            visibilityConditions.push(
+              `LOWER(TRIM(host_name)) IN (${hostNames.map(() => "?").join(", ")})`,
+            );
+            parameters.push(...hostNames);
+          }
+        }
+        const [rows] = visibilityConditions.length === 0
+          ? await pool.query<RowDataPacket[]>(
+              `SELECT id, appointment_id, action, actor_name,
+                      DATE_FORMAT(created_at, '%Y-%m-%d') AS changed_date,
+                      TIME_FORMAT(created_at, '%H:%i') AS changed_time,
+                      DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                      TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
+                      visitor_name, company_name, host_name, appointment_status, details
+               FROM appointment_history
+               ORDER BY created_at DESC, id DESC
+               LIMIT 50`,
+            )
+          : await pool.execute<RowDataPacket[]>(
+              `SELECT id, appointment_id, action, actor_name,
+                      DATE_FORMAT(created_at, '%Y-%m-%d') AS changed_date,
+                      TIME_FORMAT(created_at, '%H:%i') AS changed_time,
+                      DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                      TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
+                      visitor_name, company_name, host_name, appointment_status, details
+               FROM appointment_history
+               WHERE (${visibilityConditions.join(" OR ")})
+               ORDER BY created_at DESC, id DESC
+               LIMIT 50`,
+              parameters,
+            );
+        return Response.json({
+          history: rows.map((row) => ({
+            id: Number(row.id),
+            appointmentId: Number(row.appointment_id),
+            action: row.action,
+            actorName: row.actor_name,
+            date: row.changed_date,
+            time: row.changed_time,
+            appointmentDate: row.visit_date,
+            appointmentTime: row.visit_time,
+            visitor: row.visitor_name,
+            company: row.company_name,
+            host: row.host_name,
+            status: row.appointment_status,
+            details: row.details,
+          })),
+        });
+      } catch (error) {
+        console.error("Failed to load appointment history:", error);
+        return Response.json({ error: "No se pudo cargar el historial de citas." }, { status: 500 });
+      }
+    }
+
     const appointmentsPath = url.pathname.match(/^\/api\/appointments(?:\/(\d+))?$/);
     if (
       appointmentsPath &&
@@ -3232,16 +3401,63 @@ const server = Bun.serve({
         ) {
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
+        const targetAppointmentId = appointmentId ?? 0;
 
         if (request.method === "DELETE") {
-          const [result] = await pool.execute<ResultSetHeader>(
-            user.isAdmin
-              ? "DELETE FROM appointments WHERE id = ?"
-              : `DELETE FROM appointments WHERE id = ? AND ${userAppointmentScope}`,
-            user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
-          );
-          if (result.affectedRows === 0) {
-            return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
+          const connection = await pool.getConnection();
+          try {
+            await connection.beginTransaction();
+            const [matches] = await connection.execute<AppointmentRow[]>(
+              user.isAdmin
+                ? `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                          TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
+                          reference_code, registered_by, created_by_login, company_name, host_name, status,
+                          0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
+                   FROM appointments
+                   WHERE id = ? AND deleted_at IS NULL
+                   LIMIT 1
+                   FOR UPDATE`
+                : `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                          TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
+                          reference_code, registered_by, created_by_login, company_name, host_name, status,
+                          0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
+                   FROM appointments
+                   WHERE id = ? AND deleted_at IS NULL AND ${userAppointmentScope}
+                   LIMIT 1
+                   FOR UPDATE`,
+              user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
+            );
+            const appointmentRow = matches[0];
+            if (!appointmentRow) {
+              await connection.rollback();
+              return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
+            }
+            if (appointmentRow.status !== "Cancelada") {
+              await connection.rollback();
+              return Response.json(
+                { error: "Para eliminar una cita, primero debes cancelarla." },
+                { status: 409 },
+              );
+            }
+            const snapshot = appointmentSnapshot(appointmentRow);
+            await recordAppointmentHistory(
+              connection,
+              Number(appointmentRow.id),
+              "Eliminada",
+              user,
+              snapshot,
+              "Cita eliminada después de cancelarse.",
+            );
+            await connection.execute(
+              "UPDATE appointments SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL",
+              [appointmentId],
+            );
+            await connection.commit();
+          } catch (error) {
+            await connection.rollback();
+            throw error;
+          } finally {
+            connection.release();
           }
           return Response.json({
             appointments: await listAppointments(
@@ -3258,31 +3474,172 @@ const server = Bun.serve({
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
         if (request.method === "PATCH") {
-          if (!isRecord(body) || body.status !== "Cancelada") {
-            return Response.json({ error: "El cambio de estado de la cita no es válido." }, { status: 400 });
-          }
-          const [result] = await pool.execute<ResultSetHeader>(
-            user.isAdmin
-              ? `UPDATE appointments
-                 SET status = 'Cancelada'
-                 WHERE id = ? AND status NOT IN ('Cancelada', 'Retirado')`
-              : `UPDATE appointments
-                 SET status = 'Cancelada'
-                 WHERE id = ? AND ${userAppointmentScope}
-                   AND status NOT IN ('Cancelada', 'Retirado')`,
-            user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
-          );
-          if (result.affectedRows === 0) {
-            const [matches] = await pool.execute<AppointmentRow[]>(
-              user.isAdmin
-                ? "SELECT id, status FROM appointments WHERE id = ? LIMIT 1"
-                : `SELECT id, status FROM appointments WHERE id = ? AND ${userAppointmentScope} LIMIT 1`,
-              user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
-            );
-            if (matches.length === 0) {
-              return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
+          if (isRecord(body) && body.status === "Cancelada") {
+            const connection = await pool.getConnection();
+            try {
+              await connection.beginTransaction();
+              const [matches] = await connection.execute<AppointmentRow[]>(
+                user.isAdmin
+                  ? `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                            TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
+                            reference_code, registered_by, created_by_login, company_name, host_name, status,
+                            0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
+                     FROM appointments
+                     WHERE id = ? AND deleted_at IS NULL
+                     LIMIT 1
+                     FOR UPDATE`
+                  : `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                            TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
+                            reference_code, registered_by, created_by_login, company_name, host_name, status,
+                            0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
+                     FROM appointments
+                     WHERE id = ? AND deleted_at IS NULL AND ${userAppointmentScope}
+                     LIMIT 1
+                     FOR UPDATE`,
+                user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
+              );
+              const previousRow = matches[0];
+              if (!previousRow) {
+                await connection.rollback();
+                return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
+              }
+              if (previousRow.status === "Cancelada" || previousRow.status === "Retirado") {
+                await connection.rollback();
+                return Response.json({ error: "La cita ya no se puede cancelar." }, { status: 409 });
+              }
+              const previousSnapshot = appointmentSnapshot(previousRow);
+              const currentSnapshot: AppointmentSnapshot = {
+                ...previousSnapshot,
+                status: "Cancelada",
+              };
+              await connection.execute(
+                "UPDATE appointments SET status = 'Cancelada' WHERE id = ? AND deleted_at IS NULL",
+                [targetAppointmentId],
+              );
+              await recordAppointmentHistory(
+                connection,
+                targetAppointmentId,
+                "Cancelada",
+                user,
+                currentSnapshot,
+                "Cita cancelada.",
+                previousSnapshot,
+              );
+              await connection.commit();
+            } catch (error) {
+              await connection.rollback();
+              throw error;
+            } finally {
+              connection.release();
             }
-            return Response.json({ error: "La cita ya no se puede cancelar." }, { status: 409 });
+          } else {
+            const appointment = parseAppointment(body);
+            if (!appointment) {
+              return Response.json(
+                { error: "Revisa el nombre y correo del visitante, la empresa, el anfitrión, la fecha y la hora." },
+                { status: 400 },
+              );
+            }
+            const [partners] = await pool.execute<BusinessPartnerRow[]>(
+              `SELECT id, name, description, rfc, category, employee_count, partner_type, is_active
+               FROM business_partners WHERE id = ? LIMIT 1`,
+              [appointment.businessPartnerId],
+            );
+            if (partners.length === 0) {
+              return Response.json({ error: "La empresa seleccionada ya no está disponible." }, { status: 400 });
+            }
+            const connection = await pool.getConnection();
+            try {
+              await connection.beginTransaction();
+              const [matches] = await connection.execute<AppointmentRow[]>(
+                user.isAdmin
+                  ? `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                            TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
+                            reference_code, registered_by, created_by_login, company_name, host_name, status,
+                            0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
+                     FROM appointments
+                     WHERE id = ? AND deleted_at IS NULL
+                     LIMIT 1
+                     FOR UPDATE`
+                  : `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                            TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
+                            reference_code, registered_by, created_by_login, company_name, host_name, status,
+                            0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
+                     FROM appointments
+                     WHERE id = ? AND deleted_at IS NULL AND ${userAppointmentScope}
+                     LIMIT 1
+                     FOR UPDATE`,
+                user.isAdmin ? [appointmentId] : [appointmentId, ...userAppointmentScopeParameters],
+              );
+              const previousRow = matches[0];
+              if (!previousRow) {
+                await connection.rollback();
+                return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
+              }
+              if (previousRow.status === "Cancelada" || previousRow.status === "Retirado") {
+                await connection.rollback();
+                return Response.json({ error: "No se puede editar una cita cancelada o retirada." }, { status: 409 });
+              }
+              const previousSnapshot = appointmentSnapshot(previousRow);
+              const currentSnapshot: AppointmentSnapshot = {
+                ...previousSnapshot,
+                businessPartnerId: appointment.businessPartnerId,
+                date: appointment.date,
+                time: appointment.time,
+                visitor: appointment.visitorName,
+                email: appointment.visitorEmail,
+                company: partners[0].name,
+                host: user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
+              };
+              const changedFields: string[] = [];
+              if (previousSnapshot.date !== currentSnapshot.date) changedFields.push("fecha");
+              if (previousSnapshot.time !== currentSnapshot.time) changedFields.push("hora");
+              if (previousSnapshot.visitor !== currentSnapshot.visitor) changedFields.push("visitante");
+              if (previousSnapshot.email !== currentSnapshot.email) changedFields.push("correo");
+              if (previousSnapshot.businessPartnerId !== currentSnapshot.businessPartnerId) changedFields.push("empresa");
+              if (previousSnapshot.host !== currentSnapshot.host) changedFields.push("anfitrión");
+              if (changedFields.length === 0) {
+                await connection.rollback();
+                return Response.json({
+                  message: "No se detectaron cambios en la cita.",
+                  appointments: await listAppointments(
+                    !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
+                    !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
+                  ),
+                });
+              }
+              await connection.execute(
+                `UPDATE appointments
+                 SET business_partner_id = ?, visit_date = ?, visit_time = ?, visitor_name = ?,
+                     visitor_email = ?, company_name = ?, host_name = ?
+                 WHERE id = ? AND deleted_at IS NULL`,
+                [
+                  appointment.businessPartnerId,
+                  appointment.date,
+                  appointment.time,
+                  appointment.visitorName,
+                  appointment.visitorEmail,
+                  partners[0].name,
+                  currentSnapshot.host,
+                  targetAppointmentId,
+                ],
+              );
+              await recordAppointmentHistory(
+                connection,
+                targetAppointmentId,
+                "Actualizada",
+                user,
+                currentSnapshot,
+                `Se actualizaron: ${changedFields.join(", ")}.`,
+                previousSnapshot,
+              );
+              await connection.commit();
+            } catch (error) {
+              await connection.rollback();
+              throw error;
+            } finally {
+              connection.release();
+            }
           }
         } else {
           const appointment = parseAppointment(body);
@@ -3300,36 +3657,66 @@ const server = Bun.serve({
           if (partners.length === 0) {
             return Response.json({ error: "La empresa seleccionada ya no está disponible." }, { status: 400 });
           }
-          let created = false;
-          for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
-            const referenceCode = await createAppointmentReferenceCode();
-            try {
-              await pool.execute(
-                `INSERT INTO appointments
-                  (business_partner_id, visit_date, visit_time, visitor_name, visitor_email,
-                   reference_code, registered_by, created_by_login, company_name, host_name, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
-                [
-                  appointment.businessPartnerId,
-                  appointment.date,
-                  appointment.time,
-                  appointment.visitorName,
-                  appointment.visitorEmail,
+          const connection = await pool.getConnection();
+          try {
+            await connection.beginTransaction();
+            let created = false;
+            for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
+              const referenceCode = await createAppointmentReferenceCode();
+              try {
+                const [result] = await connection.execute<ResultSetHeader>(
+                  `INSERT INTO appointments
+                    (business_partner_id, visit_date, visit_time, visitor_name, visitor_email,
+                     reference_code, registered_by, created_by_login, company_name, host_name, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
+                  [
+                    appointment.businessPartnerId,
+                    appointment.date,
+                    appointment.time,
+                    appointment.visitorName,
+                    appointment.visitorEmail,
+                    referenceCode,
+                    user.name?.trim() || user.login,
+                    user.login,
+                    partners[0].name,
+                    user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
+                  ],
+                );
+                const snapshot: AppointmentSnapshot = {
+                  businessPartnerId: appointment.businessPartnerId,
+                  date: appointment.date,
+                  time: appointment.time,
+                  visitor: appointment.visitorName,
+                  email: appointment.visitorEmail,
                   referenceCode,
-                  user.name?.trim() || user.login,
-                  user.login,
-                  partners[0].name,
-                  user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
-                ],
-              );
-              created = true;
-            } catch (error) {
-              const isDuplicateCode =
-                isRecord(error) && error.code === "ER_DUP_ENTRY";
-              if (!isDuplicateCode || attempt === 4) throw error;
+                  registeredBy: user.name?.trim() || user.login,
+                  createdByLogin: user.login,
+                  company: partners[0].name,
+                  host: user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
+                  status: "Pendiente",
+                };
+                await recordAppointmentHistory(
+                  connection,
+                  Number(result.insertId),
+                  "Creada",
+                  user,
+                  snapshot,
+                  "Cita registrada.",
+                );
+                created = true;
+              } catch (error) {
+                const isDuplicateCode = isRecord(error) && error.code === "ER_DUP_ENTRY";
+                if (!isDuplicateCode || attempt === 4) throw error;
+              }
             }
+            if (!created) throw new Error("No se pudo guardar la cita con su código de referencia.");
+            await connection.commit();
+          } catch (error) {
+            await connection.rollback();
+            throw error;
+          } finally {
+            connection.release();
           }
-          if (!created) throw new Error("No se pudo guardar la cita con su código de referencia.");
         }
 
         return Response.json({
@@ -3405,43 +3792,78 @@ const server = Bun.serve({
             { status: 400 },
           );
         }
-        const [partners] = await pool.execute<BusinessPartnerRow[]>(
-          `SELECT id, name, description, rfc, category, employee_count, partner_type, is_active
-           FROM business_partners WHERE id = ? LIMIT 1`,
-          [staff.businessPartnerId],
-        );
-        if (partners.length === 0) {
-          return Response.json({ error: "Selecciona una empresa registrada." }, { status: 400 });
-        }
-
-        if (request.method === "PATCH") {
-          const [result] = await pool.execute<ResultSetHeader>(
-            `UPDATE external_staff
-             SET business_partner_id = ?, full_name = ?, phone = ?, email = ?
-             WHERE id = ?`,
-            [
-              staff.businessPartnerId,
-              staff.fullName,
-              staff.phone,
-              staff.email,
-              staffId,
-            ],
+        const connection = await pool.getConnection();
+        try {
+          await connection.beginTransaction();
+          const [partners] = await connection.execute<BusinessPartnerRow[]>(
+            `SELECT id, name, description, rfc, category, employee_count, partner_type, is_active
+             FROM business_partners
+             WHERE id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [staff.businessPartnerId],
           );
-          if (result.affectedRows === 0) {
-            const [matches] = await pool.execute<RowDataPacket[]>(
-              "SELECT id FROM external_staff WHERE id = ? LIMIT 1",
+          const partner = partners[0];
+          if (!partner) {
+            await connection.rollback();
+            return Response.json({ error: "Selecciona una empresa registrada." }, { status: 400 });
+          }
+
+          let previousPartnerId: number | null = null;
+          if (request.method === "PATCH") {
+            const [staffRows] = await connection.execute<RowDataPacket[]>(
+              "SELECT business_partner_id FROM external_staff WHERE id = ? LIMIT 1",
               [staffId],
             );
-            if (matches.length === 0) {
+            if (!staffRows[0]) {
+              await connection.rollback();
               return Response.json({ error: "No se encontró la persona seleccionada." }, { status: 404 });
             }
+            previousPartnerId = Number(staffRows[0].business_partner_id);
           }
-        } else {
-          await pool.execute(
-            `INSERT INTO external_staff (business_partner_id, full_name, phone, email)
-             VALUES (?, ?, ?, ?)`,
-            [staff.businessPartnerId, staff.fullName, staff.phone, staff.email],
-          );
+
+          if (request.method === "POST" || previousPartnerId !== staff.businessPartnerId) {
+            const [staffCounts] = await connection.execute<RowDataPacket[]>(
+              "SELECT COUNT(*) AS staff_count FROM external_staff WHERE business_partner_id = ?",
+              [staff.businessPartnerId],
+            );
+            const registeredStaff = Number(staffCounts[0]?.staff_count ?? 0);
+            if (registeredStaff >= Number(partner.employee_count)) {
+              await connection.rollback();
+              const type = partner.partner_type.toLocaleLowerCase();
+              return Response.json(
+                { error: `Modifica el número de empleados de este ${type} en Contratistas y proveedores antes de registrar más personal.` },
+                { status: 409 },
+              );
+            }
+          }
+
+          if (request.method === "PATCH") {
+            await connection.execute(
+              `UPDATE external_staff
+               SET business_partner_id = ?, full_name = ?, phone = ?, email = ?
+               WHERE id = ?`,
+              [
+                staff.businessPartnerId,
+                staff.fullName,
+                staff.phone,
+                staff.email,
+                staffId,
+              ],
+            );
+          } else {
+            await connection.execute(
+              `INSERT INTO external_staff (business_partner_id, full_name, phone, email)
+               VALUES (?, ?, ?, ?)`,
+              [staff.businessPartnerId, staff.fullName, staff.phone, staff.email],
+            );
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
         }
 
         return Response.json(
@@ -3702,6 +4124,13 @@ const server = Bun.serve({
 
     if (request.method === "GET" && url.pathname === "/api/visits") {
       try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!(await hasSectionAccess(user, "recepcion"))) {
+          return Response.json({ error: "No tienes permiso para consultar las visitas." }, { status: 403 });
+        }
         const [visits] = await pool.query(
           "SELECT id, visitor_name, visited_at FROM visits ORDER BY visited_at DESC",
         );

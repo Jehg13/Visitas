@@ -162,8 +162,9 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElemen
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
     ...{ class: "brand-image" },
-    src: "/images/cymez-recep-logo.png",
+    src: "/images/cymez-recep-logo-v2.webp",
     alt: "CyMEZ Recep Visitantes",
+    fetchpriority: "high",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
     ...{ class: "login-panel" },

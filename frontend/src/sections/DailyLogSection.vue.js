@@ -3,8 +3,8 @@ import { notifyUser } from "../notifications";
 const props = defineProps();
 const emit = defineEmits();
 const today = ref(getLocalDate());
-const fromDate = ref(today.value);
-const toDate = ref(today.value);
+const fromDate = ref(props.initialRange?.from ?? today.value);
+const toDate = ref(props.initialRange?.to ?? today.value);
 const search = ref("");
 const eventFilter = ref("");
 const categoryFilter = ref("");
@@ -1586,9 +1586,30 @@ if (__VLS_ctx.selectedPerson) {
         }
     }
     else if (__VLS_ctx.selectedEntry && __VLS_ctx.selectedEntry.date !== __VLS_ctx.today) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "daily-log-selection-complete" },
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "daily-log-readonly-notice" },
+            role: "status",
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "daily-log-readonly-icon" },
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "12",
+            cy: "12",
+            r: "9",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M12 7v5l3 2",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "daily-log-readonly-copy" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
     }
     else {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
@@ -1641,8 +1662,18 @@ for (const [entry] of __VLS_getVForSourceType((__VLS_ctx.recentEntries))) {
             } },
         key: (`recent-${entry.id}`),
         ...{ class: "daily-log-recent-entry" },
-        ...{ class: ({ 'is-selected': __VLS_ctx.selectedEntryId === entry.id }) },
+        ...{ class: ([`is-${entry.event.toLocaleLowerCase('es')}`, { 'is-selected': __VLS_ctx.selectedEntryId === entry.id }]) },
         type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-recent-marker" },
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: (__VLS_ctx.eventIcon(entry.event)),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "daily-log-recent-time" },
@@ -1662,9 +1693,27 @@ for (const [entry] of __VLS_getVForSourceType((__VLS_ctx.recentEntries))) {
     (entry.details || __VLS_ctx.eventVerb(entry.event));
 }
 if (__VLS_ctx.recentEntries.length === 0) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "daily-log-quick-empty" },
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "daily-log-recent-empty" },
+        role: "status",
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-recent-empty-icon" },
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "M12 8v4l2.5 1.5",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+        cx: "12",
+        cy: "12",
+        r: "9",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
 }
 if (__VLS_ctx.dialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -1902,7 +1951,9 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-exit']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-readonly-notice']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-readonly-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-readonly-copy']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-notice']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
@@ -1913,9 +1964,11 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-link']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-entry']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-marker']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-time']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-copy']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-empty-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-dialog']} */ ;

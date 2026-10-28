@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS appointment_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  appointment_id BIGINT UNSIGNED NOT NULL,
+  action ENUM('Creada', 'Actualizada', 'Cancelada', 'Eliminada') NOT NULL,
+  actor_login VARCHAR(255) NOT NULL,
+  actor_name VARCHAR(255) NOT NULL,
+  created_by_login VARCHAR(255) NULL,
+  host_name VARCHAR(180) NOT NULL,
+  visit_date DATE NOT NULL,
+  visit_time TIME NOT NULL,
+  visitor_name VARCHAR(180) NOT NULL,
+  company_name VARCHAR(180) NOT NULL,
+  appointment_status VARCHAR(30) NOT NULL,
+  details TEXT NOT NULL,
+  previous_data JSON NULL,
+  current_data JSON NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_appointment_history_created_at (created_at, id),
+  KEY idx_appointment_history_appointment (appointment_id, created_at),
+  KEY idx_appointment_history_created_by (created_by_login),
+  KEY idx_appointment_history_host (host_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

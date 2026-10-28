@@ -8,7 +8,6 @@ const companiesWithStaffCount = computed(() => props.companies
     return {
         ...company,
         staffCount,
-        employeeCount: Math.max(company.employeeCount, staffCount),
     };
 })
     .filter((company) => {

@@ -77,6 +77,7 @@ const props = defineProps<{
   generalVisitors: GeneralVisitor[];
   hosts: Host[];
   departments: Department[];
+  initialRange: { from: string; to: string } | null;
 }>();
 const emit = defineEmits<{
   movementSaved: [];
@@ -84,8 +85,8 @@ const emit = defineEmits<{
 }>();
 
 const today = ref(getLocalDate());
-const fromDate = ref(today.value);
-const toDate = ref(today.value);
+const fromDate = ref(props.initialRange?.from ?? today.value);
+const toDate = ref(props.initialRange?.to ?? today.value);
 const search = ref("");
 const eventFilter = ref("");
 const categoryFilter = ref("");
@@ -1287,9 +1288,22 @@ onBeforeUnmount(() => {
                 Completa primero el checklist de entrada del equipo y las herramientas de esta cita.
               </p>
             </div>
-            <p v-else-if="selectedEntry && selectedEntry.date !== today" class="daily-log-selection-complete">
-              El historial se consulta en modo lectura. Solo puedes registrar movimientos del día actual.
-            </p>
+            <div
+              v-else-if="selectedEntry && selectedEntry.date !== today"
+              class="daily-log-readonly-notice"
+              role="status"
+            >
+              <span class="daily-log-readonly-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 7v5l3 2" />
+                </svg>
+              </span>
+              <span class="daily-log-readonly-copy">
+                <strong>Historial en modo lectura</strong>
+                <span>Solo puedes registrar movimientos del día actual.</span>
+              </span>
+            </div>
             <p v-else class="daily-log-selection-complete">La visita ya está finalizada.</p>
             <p v-if="quickActionNotice" class="daily-log-quick-notice" role="status">{{ quickActionNotice }}</p>
             <p v-if="quickActionError" class="daily-log-quick-error" role="alert">{{ quickActionError }}</p>
@@ -1311,10 +1325,13 @@ onBeforeUnmount(() => {
             v-for="entry in recentEntries"
             :key="`recent-${entry.id}`"
             class="daily-log-recent-entry"
-            :class="{ 'is-selected': selectedEntryId === entry.id }"
+            :class="[`is-${entry.event.toLocaleLowerCase('es')}`, { 'is-selected': selectedEntryId === entry.id }]"
             type="button"
             @click="selectEntry(entry)"
           >
+            <span class="daily-log-recent-marker" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path :d="eventIcon(entry.event)" /></svg>
+            </span>
             <span class="daily-log-recent-time">{{ entry.time }}</span>
             <span class="daily-log-recent-copy">
               <strong>{{ entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event }}</strong>
@@ -1322,7 +1339,13 @@ onBeforeUnmount(() => {
               <small>{{ entry.details || eventVerb(entry.event) }}</small>
             </span>
           </button>
-          <p v-if="recentEntries.length === 0" class="daily-log-quick-empty">Los movimientos recientes aparecerán aquí.</p>
+          <div v-if="recentEntries.length === 0" class="daily-log-recent-empty" role="status">
+            <span class="daily-log-recent-empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 8v4l2.5 1.5" /><circle cx="12" cy="12" r="9" /></svg>
+            </span>
+            <strong>Aún no hay movimientos</strong>
+            <p>Los movimientos recientes aparecerán aquí cuando registres una llegada, entrada o salida.</p>
+          </div>
         </section>
       </aside>
     </div>

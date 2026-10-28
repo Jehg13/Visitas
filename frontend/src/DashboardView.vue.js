@@ -121,6 +121,7 @@ const currentRoleLabel = computed(() => currentUser.value.isAdmin ? "Programador
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
 const appointmentDialogOpen = ref(false);
+const editingAppointmentId = ref(null);
 const qrDialogOpen = ref(false);
 const qrAppointment = ref(null);
 const qrDataUrl = ref("");
@@ -129,6 +130,7 @@ const qrEmailSending = ref(false);
 const qrEmailRecoveryOpen = ref(false);
 const qrEmailRecoveryValue = ref("");
 const deletingAppointmentId = ref(null);
+const dailyLogInitialRange = ref(null);
 const externalStaffDialogOpen = ref(false);
 const editingExternalStaffId = ref(null);
 const externalStaffSaving = ref(false);
@@ -189,7 +191,7 @@ const businessPartnerName = ref("");
 const businessPartnerDescription = ref("");
 const businessPartnerRfc = ref("");
 const businessPartnerCategory = ref("");
-const businessPartnerEmployeeCount = ref(0);
+const businessPartnerEmployeeCount = ref(1);
 const businessPartnerType = ref("Contratista");
 const businessPartnerStatus = ref("Activa");
 const nextGeneralVisitorId = ref(0);
@@ -690,6 +692,10 @@ function selectSection(label) {
     if (path && route.path !== path)
         void router.push(path);
 }
+function openDailyLogRange(from, to) {
+    dailyLogInitialRange.value = { from, to };
+    selectSection("Bitácora diaria");
+}
 async function loadDepartments(silent = false) {
     try {
         const response = await fetch("/api/departments");
@@ -793,14 +799,26 @@ async function openQrDialog(appointment) {
         qrGenerating.value = false;
     }
 }
-function openAppointmentDialog() {
-    visitorDate.value = selectedAppointmentDate.value;
-    visitorName.value = "";
-    visitorEmail.value = "";
-    visitorSelection.value = "";
-    visitorCompanyId.value = null;
-    visitorHostLogin.value = isHost.value ? currentUser.value.login : "";
+function openAppointmentDialog(appointment) {
+    editingAppointmentId.value = appointment?.id ?? null;
+    visitorDate.value = appointment?.date ?? selectedAppointmentDate.value;
+    visitorTime.value = appointment?.time ?? "18:00";
+    visitorName.value = appointment?.visitor ?? "";
+    visitorEmail.value = appointment?.email ?? "";
+    visitorSelection.value = appointment ? otherAppointmentVisitor : "";
+    visitorCompanyId.value = appointment
+        ? appointment.businessPartnerId ??
+            businessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
+            null
+        : null;
+    visitorHostLogin.value = isHost.value
+        ? currentUser.value.login
+        : hosts.value.find((host) => host.name === appointment?.host)?.login ?? "";
     appointmentDialogOpen.value = true;
+}
+function openHomeAppointmentDialog(date) {
+    openAppointmentDialog();
+    visitorDate.value = date;
 }
 function changeAppointmentCompany() {
     visitorSelection.value = "";
@@ -1090,8 +1108,9 @@ async function submitAppointment() {
     }
     appointmentSaving.value = true;
     try {
-        const response = await fetch("/api/appointments", {
-            method: "POST",
+        const appointmentId = editingAppointmentId.value;
+        const response = await fetch(appointmentId === null ? "/api/appointments" : `/api/appointments/${appointmentId}`, {
+            method: appointmentId === null ? "POST" : "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 visitorName: appointmentVisitorName,
@@ -1114,8 +1133,9 @@ async function submitAppointment() {
         }
         appointments.value = result.appointments;
         appointmentDialogOpen.value = false;
+        editingAppointmentId.value = null;
         selectedAppointmentDate.value = visitorDate.value;
-        showToast("La cita se guardó en la agenda.", "success");
+        showToast(result.message ?? (appointmentId === null ? "La cita se guardó en la agenda." : "La cita se actualizó en la agenda."), "success");
         visitorName.value = "";
         visitorEmail.value = "";
         visitorSelection.value = "";
@@ -1202,8 +1222,12 @@ function downloadAppointmentQr(appointment, dataUrl = qrDataUrl.value) {
     link.click();
 }
 async function deleteAppointment(appointment) {
+    if (appointment.status !== "Cancelada") {
+        showToast("Para eliminar una cita, primero debes cancelarla.");
+        return;
+    }
     if (deletingAppointmentId.value !== null ||
-        !window.confirm(`¿Eliminar definitivamente la cita de ${appointment.visitor}?`)) {
+        !window.confirm(`¿Quitar de la agenda la cita cancelada de ${appointment.visitor}? Se conservará en el historial.`)) {
         return;
     }
     deletingAppointmentId.value = appointment.id;
@@ -1234,6 +1258,8 @@ async function deleteAppointment(appointment) {
 }
 async function cancelAppointment(appointment) {
     if (appointment.status === "Cancelada" || appointment.status === "Retirado")
+        return;
+    if (!await confirmUser(`¿Cancelar la cita de ${appointment.visitor}?`, "Cancelar cita"))
         return;
     try {
         const response = await fetch(`/api/appointments/${appointment.id}`, {
@@ -1286,6 +1312,17 @@ async function submitExternalStaff() {
     if (!fullName || businessPartnerId === null)
         return;
     const editingId = editingExternalStaffId.value;
+    const selectedPartner = businessPartners.value.find((partner) => partner.id === businessPartnerId);
+    const currentStaffPartnerId = editingId === null
+        ? null
+        : externalStaff.value.find((person) => person.id === editingId)?.businessPartnerId ?? null;
+    if (selectedPartner && (editingId === null || currentStaffPartnerId !== businessPartnerId)) {
+        const registeredStaff = externalStaff.value.filter((person) => person.businessPartnerId === businessPartnerId).length;
+        if (registeredStaff >= selectedPartner.employeeCount) {
+            showToast(`Modifica el número de empleados de este ${selectedPartner.type.toLocaleLowerCase()} en Contratistas y proveedores antes de registrar más personal.`);
+            return;
+        }
+    }
     externalStaffSaving.value = true;
     try {
         const response = await fetch(editingId === null
@@ -1352,7 +1389,7 @@ function openBusinessPartnerDialog(partner) {
     businessPartnerDescription.value = partner?.description ?? "";
     businessPartnerRfc.value = partner?.rfc ?? "";
     businessPartnerCategory.value = partner?.category ?? "";
-    businessPartnerEmployeeCount.value = partner?.employeeCount ?? 0;
+    businessPartnerEmployeeCount.value = partner?.employeeCount ?? 1;
     businessPartnerType.value = partner?.type ?? "Contratista";
     businessPartnerStatus.value = partner?.status ?? "Activa";
     businessPartnerDialogOpen.value = true;
@@ -1369,9 +1406,17 @@ async function submitBusinessPartner() {
         showToast("Completa el nombre, la descripción, el RFC y la categoría.");
         return;
     }
-    if (!Number.isSafeInteger(employeeCount) || employeeCount < 0 || employeeCount > 4294967295) {
-        showToast("El número de empleados debe ser un entero entre 0 y 4,294,967,295.");
+    if (!Number.isSafeInteger(employeeCount) || employeeCount < 1 || employeeCount > 4294967295) {
+        showToast("El número de empleados debe ser un entero entre 1 y 4,294,967,295.");
         return;
+    }
+    const existingPartner = businessPartners.value.find((partner) => partner.id === editingBusinessPartnerId.value);
+    if (existingPartner) {
+        const registeredStaff = externalStaff.value.filter((person) => person.businessPartnerId === existingPartner.id).length;
+        if (employeeCount < registeredStaff) {
+            showToast(`No puedes establecer menos empleados que el personal externo ya registrado para este ${existingPartner.type.toLocaleLowerCase()} (${registeredStaff}).`);
+            return;
+        }
     }
     const duplicateRfc = businessPartners.value.some((partner) => partner.rfc.toLocaleUpperCase() === rfc &&
         partner.id !== editingBusinessPartnerId.value);
@@ -1422,7 +1467,7 @@ async function submitBusinessPartner() {
     businessPartnerDescription.value = "";
     businessPartnerRfc.value = "";
     businessPartnerCategory.value = "";
-    businessPartnerEmployeeCount.value = 0;
+    businessPartnerEmployeeCount.value = 1;
 }
 async function removeBusinessPartner(id) {
     try {
@@ -2224,6 +2269,7 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         ...{ 'onSendQr': {} },
         ...{ 'onOpenQr': {} },
         ...{ 'onDelete': {} },
+        ...{ 'onEdit': {} },
         ...{ 'onChangeMonth': {} },
         ...{ 'onSelectDay': {} },
         filter: (__VLS_ctx.appointmentFilter),
@@ -2249,6 +2295,7 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         ...{ 'onSendQr': {} },
         ...{ 'onOpenQr': {} },
         ...{ 'onDelete': {} },
+        ...{ 'onEdit': {} },
         ...{ 'onChangeMonth': {} },
         ...{ 'onSelectDay': {} },
         filter: (__VLS_ctx.appointmentFilter),
@@ -2293,9 +2340,12 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         onDelete: (__VLS_ctx.deleteAppointment)
     };
     const __VLS_12 = {
-        onChangeMonth: (__VLS_ctx.changeCalendarMonth)
+        onEdit: (__VLS_ctx.openAppointmentDialog)
     };
     const __VLS_13 = {
+        onChangeMonth: (__VLS_ctx.changeCalendarMonth)
+    };
+    const __VLS_14 = {
         onSelectDay: (__VLS_ctx.selectCalendarDay)
     };
     var __VLS_2;
@@ -2303,7 +2353,7 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
 else if (__VLS_ctx.activeSection === 'Anfitriones') {
     /** @type {[typeof HostsSection, ]} */ ;
     // @ts-ignore
-    const __VLS_14 = __VLS_asFunctionalComponent(HostsSection, new HostsSection({
+    const __VLS_15 = __VLS_asFunctionalComponent(HostsSection, new HostsSection({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2313,7 +2363,7 @@ else if (__VLS_ctx.activeSection === 'Anfitriones') {
         departments: (__VLS_ctx.departments),
         eligibleDepartmentCount: (__VLS_ctx.hostEligibleDepartments.length),
     }));
-    const __VLS_15 = __VLS_14({
+    const __VLS_16 = __VLS_15({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2322,11 +2372,11 @@ else if (__VLS_ctx.activeSection === 'Anfitriones') {
         filteredHosts: (__VLS_ctx.filteredHosts),
         departments: (__VLS_ctx.departments),
         eligibleDepartmentCount: (__VLS_ctx.hostEligibleDepartments.length),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_14));
-    let __VLS_17;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_15));
     let __VLS_18;
     let __VLS_19;
-    const __VLS_20 = {
+    let __VLS_20;
+    const __VLS_21 = {
         onCreate: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2335,41 +2385,41 @@ else if (__VLS_ctx.activeSection === 'Anfitriones') {
             __VLS_ctx.openHostDialog();
         }
     };
-    const __VLS_21 = {
+    const __VLS_22 = {
         onEdit: (__VLS_ctx.openHostDialog)
     };
-    const __VLS_22 = {
+    const __VLS_23 = {
         onRemove: (__VLS_ctx.removeHost)
     };
-    var __VLS_16;
+    var __VLS_17;
 }
 else if (__VLS_ctx.activeSection === 'Accesos') {
     /** @type {[typeof AccessSection, ]} */ ;
     // @ts-ignore
-    const __VLS_23 = __VLS_asFunctionalComponent(AccessSection, new AccessSection({
+    const __VLS_24 = __VLS_asFunctionalComponent(AccessSection, new AccessSection({
         ...{ 'onEditAccount': {} },
         search: (__VLS_ctx.accessSearch),
         accounts: (__VLS_ctx.accessAccounts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
     }));
-    const __VLS_24 = __VLS_23({
+    const __VLS_25 = __VLS_24({
         ...{ 'onEditAccount': {} },
         search: (__VLS_ctx.accessSearch),
         accounts: (__VLS_ctx.accessAccounts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_23));
-    let __VLS_26;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_24));
     let __VLS_27;
     let __VLS_28;
-    const __VLS_29 = {
+    let __VLS_29;
+    const __VLS_30 = {
         onEditAccount: (__VLS_ctx.openAccessAccountEditor)
     };
-    var __VLS_25;
+    var __VLS_26;
 }
 else if (__VLS_ctx.activeSection === 'Departamento') {
     /** @type {[typeof DepartmentSection, ]} */ ;
     // @ts-ignore
-    const __VLS_30 = __VLS_asFunctionalComponent(DepartmentSection, new DepartmentSection({
+    const __VLS_31 = __VLS_asFunctionalComponent(DepartmentSection, new DepartmentSection({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2377,18 +2427,18 @@ else if (__VLS_ctx.activeSection === 'Departamento') {
         hosts: (__VLS_ctx.hosts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
     }));
-    const __VLS_31 = __VLS_30({
+    const __VLS_32 = __VLS_31({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
         departments: (__VLS_ctx.departments),
         hosts: (__VLS_ctx.hosts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_30));
-    let __VLS_33;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_31));
     let __VLS_34;
     let __VLS_35;
-    const __VLS_36 = {
+    let __VLS_36;
+    const __VLS_37 = {
         onCreate: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2401,18 +2451,18 @@ else if (__VLS_ctx.activeSection === 'Departamento') {
             __VLS_ctx.openDepartmentDialog();
         }
     };
-    const __VLS_37 = {
+    const __VLS_38 = {
         onEdit: (__VLS_ctx.openDepartmentDialog)
     };
-    const __VLS_38 = {
+    const __VLS_39 = {
         onRemove: (__VLS_ctx.removeDepartment)
     };
-    var __VLS_32;
+    var __VLS_33;
 }
 else if (__VLS_ctx.activeSection === 'Personal de externos') {
     /** @type {[typeof ExternalStaffSection, ]} */ ;
     // @ts-ignore
-    const __VLS_39 = __VLS_asFunctionalComponent(ExternalStaffSection, new ExternalStaffSection({
+    const __VLS_40 = __VLS_asFunctionalComponent(ExternalStaffSection, new ExternalStaffSection({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2421,7 +2471,7 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
         staff: (__VLS_ctx.externalStaff),
         loading: (__VLS_ctx.businessDirectoryLoading),
     }));
-    const __VLS_40 = __VLS_39({
+    const __VLS_41 = __VLS_40({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2429,11 +2479,11 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
         companies: (__VLS_ctx.businessPartners),
         staff: (__VLS_ctx.externalStaff),
         loading: (__VLS_ctx.businessDirectoryLoading),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_39));
-    let __VLS_42;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_40));
     let __VLS_43;
     let __VLS_44;
-    const __VLS_45 = {
+    let __VLS_45;
+    const __VLS_46 = {
         onCreate: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2448,18 +2498,18 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
             __VLS_ctx.openExternalStaffDialog(undefined, $event);
         }
     };
-    const __VLS_46 = {
+    const __VLS_47 = {
         onEdit: (__VLS_ctx.openExternalStaffDialog)
     };
-    const __VLS_47 = {
+    const __VLS_48 = {
         onRemove: (__VLS_ctx.removeExternalStaff)
     };
-    var __VLS_41;
+    var __VLS_42;
 }
 else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
     /** @type {[typeof BusinessDirectorySection, ]} */ ;
     // @ts-ignore
-    const __VLS_48 = __VLS_asFunctionalComponent(BusinessDirectorySection, new BusinessDirectorySection({
+    const __VLS_49 = __VLS_asFunctionalComponent(BusinessDirectorySection, new BusinessDirectorySection({
         ...{ 'onCreatePartner': {} },
         ...{ 'onEditPartner': {} },
         ...{ 'onRemovePartner': {} },
@@ -2488,7 +2538,7 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
         paginatedGeneralVisitors: (__VLS_ctx.paginatedGeneralVisitors),
         generalVisitorPages: (__VLS_ctx.generalVisitorPages),
     }));
-    const __VLS_49 = __VLS_48({
+    const __VLS_50 = __VLS_49({
         ...{ 'onCreatePartner': {} },
         ...{ 'onEditPartner': {} },
         ...{ 'onRemovePartner': {} },
@@ -2516,11 +2566,11 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
         filteredGeneralVisitors: (__VLS_ctx.filteredGeneralVisitors),
         paginatedGeneralVisitors: (__VLS_ctx.paginatedGeneralVisitors),
         generalVisitorPages: (__VLS_ctx.generalVisitorPages),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_48));
-    let __VLS_51;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_49));
     let __VLS_52;
     let __VLS_53;
-    const __VLS_54 = {
+    let __VLS_54;
+    const __VLS_55 = {
         onCreatePartner: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2537,13 +2587,13 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
             __VLS_ctx.openBusinessPartnerDialog();
         }
     };
-    const __VLS_55 = {
+    const __VLS_56 = {
         onEditPartner: (__VLS_ctx.openBusinessPartnerDialog)
     };
-    const __VLS_56 = {
+    const __VLS_57 = {
         onRemovePartner: (__VLS_ctx.removeBusinessPartner)
     };
-    const __VLS_57 = {
+    const __VLS_58 = {
         onCreateVisitor: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2560,30 +2610,31 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
             __VLS_ctx.openGeneralVisitorDialog();
         }
     };
-    const __VLS_58 = {
+    const __VLS_59 = {
         onEditVisitor: (__VLS_ctx.openGeneralVisitorDialog)
     };
-    const __VLS_59 = {
+    const __VLS_60 = {
         onRemoveVisitor: (__VLS_ctx.removeGeneralVisitor)
     };
-    var __VLS_50;
+    var __VLS_51;
 }
 else if (__VLS_ctx.activeSection === 'Equipo y herramientas') {
     /** @type {[typeof EquipmentSection, ]} */ ;
     // @ts-ignore
-    const __VLS_60 = __VLS_asFunctionalComponent(EquipmentSection, new EquipmentSection({
+    const __VLS_61 = __VLS_asFunctionalComponent(EquipmentSection, new EquipmentSection({
         theme: (__VLS_ctx.dashboardTheme),
     }));
-    const __VLS_61 = __VLS_60({
+    const __VLS_62 = __VLS_61({
         theme: (__VLS_ctx.dashboardTheme),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_60));
+    }, ...__VLS_functionalComponentArgsRest(__VLS_61));
 }
 else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
     /** @type {[typeof DailyLogSection, ]} */ ;
     // @ts-ignore
-    const __VLS_63 = __VLS_asFunctionalComponent(DailyLogSection, new DailyLogSection({
+    const __VLS_64 = __VLS_asFunctionalComponent(DailyLogSection, new DailyLogSection({
         ...{ 'onMovementSaved': {} },
         ...{ 'onOpenQr': {} },
+        initialRange: (__VLS_ctx.dailyLogInitialRange),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
         appointments: (__VLS_ctx.appointments),
         appointmentsLoading: (__VLS_ctx.appointmentLoading),
@@ -2592,9 +2643,10 @@ else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
         hosts: (__VLS_ctx.hosts),
         departments: (__VLS_ctx.departments),
     }));
-    const __VLS_64 = __VLS_63({
+    const __VLS_65 = __VLS_64({
         ...{ 'onMovementSaved': {} },
         ...{ 'onOpenQr': {} },
+        initialRange: (__VLS_ctx.dailyLogInitialRange),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
         appointments: (__VLS_ctx.appointments),
         appointmentsLoading: (__VLS_ctx.appointmentLoading),
@@ -2602,23 +2654,26 @@ else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
         generalVisitors: (__VLS_ctx.generalVisitors),
         hosts: (__VLS_ctx.hosts),
         departments: (__VLS_ctx.departments),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_63));
-    let __VLS_66;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_64));
     let __VLS_67;
     let __VLS_68;
-    const __VLS_69 = {
+    let __VLS_69;
+    const __VLS_70 = {
         onMovementSaved: (__VLS_ctx.loadAppointments)
     };
-    const __VLS_70 = {
+    const __VLS_71 = {
         onOpenQr: (__VLS_ctx.openQrDialog)
     };
-    var __VLS_65;
+    var __VLS_66;
 }
 else if (__VLS_ctx.activeSection === 'Inicio') {
     /** @type {[typeof HomeSection, ]} */ ;
     // @ts-ignore
-    const __VLS_71 = __VLS_asFunctionalComponent(HomeSection, new HomeSection({
+    const __VLS_72 = __VLS_asFunctionalComponent(HomeSection, new HomeSection({
         ...{ 'onCreateAppointment': {} },
+        ...{ 'onEditAppointment': {} },
+        ...{ 'onCancelAppointment': {} },
+        ...{ 'onDeleteAppointment': {} },
         ...{ 'onOpenQr': {} },
         ...{ 'onShowToast': {} },
         ...{ 'onOpenLog': {} },
@@ -2626,9 +2681,13 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
         ...{ 'onOpenEquipment': {} },
         appointments: (__VLS_ctx.appointments),
         summaryItems: (__VLS_ctx.summaryItems),
+        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
     }));
-    const __VLS_72 = __VLS_71({
+    const __VLS_73 = __VLS_72({
         ...{ 'onCreateAppointment': {} },
+        ...{ 'onEditAppointment': {} },
+        ...{ 'onCancelAppointment': {} },
+        ...{ 'onDeleteAppointment': {} },
         ...{ 'onOpenQr': {} },
         ...{ 'onShowToast': {} },
         ...{ 'onOpenLog': {} },
@@ -2636,43 +2695,33 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
         ...{ 'onOpenEquipment': {} },
         appointments: (__VLS_ctx.appointments),
         summaryItems: (__VLS_ctx.summaryItems),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_71));
-    let __VLS_74;
+        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
+    }, ...__VLS_functionalComponentArgsRest(__VLS_72));
     let __VLS_75;
     let __VLS_76;
-    const __VLS_77 = {
-        onCreateAppointment: (__VLS_ctx.openAppointmentDialog)
-    };
+    let __VLS_77;
     const __VLS_78 = {
-        onOpenQr: (__VLS_ctx.openQrDialog)
+        onCreateAppointment: (__VLS_ctx.openHomeAppointmentDialog)
     };
     const __VLS_79 = {
-        onShowToast: (__VLS_ctx.showToast)
+        onEditAppointment: (__VLS_ctx.openAppointmentDialog)
     };
     const __VLS_80 = {
-        onOpenLog: (...[$event]) => {
-            if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Anfitriones'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Accesos'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Departamento'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Personal de externos'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Equipo y herramientas'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Bitácora diaria'))
-                return;
-            if (!(__VLS_ctx.activeSection === 'Inicio'))
-                return;
-            __VLS_ctx.selectSection('Bitácora diaria');
-        }
+        onCancelAppointment: (__VLS_ctx.cancelAppointment)
     };
     const __VLS_81 = {
+        onDeleteAppointment: (__VLS_ctx.deleteAppointment)
+    };
+    const __VLS_82 = {
+        onOpenQr: (__VLS_ctx.openQrDialog)
+    };
+    const __VLS_83 = {
+        onShowToast: (__VLS_ctx.showToast)
+    };
+    const __VLS_84 = {
+        onOpenLog: (__VLS_ctx.openDailyLogRange)
+    };
+    const __VLS_85 = {
         onOpenAppointments: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2695,7 +2744,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
             __VLS_ctx.selectSection('Agenda de citas');
         }
     };
-    const __VLS_82 = {
+    const __VLS_86 = {
         onOpenEquipment: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2718,7 +2767,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
             __VLS_ctx.selectSection('Equipo y herramientas');
         }
     };
-    var __VLS_73;
+    var __VLS_74;
 }
 else {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -2770,9 +2819,11 @@ if (__VLS_ctx.appointmentDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
         id: "appointment-dialog-title",
     });
+    (__VLS_ctx.editingAppointmentId === null ? "Nueva cita" : "Editar cita");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "dialog-description" },
     });
+    (__VLS_ctx.editingAppointmentId === null ? "Agrega una visita a la agenda." : "Actualiza los datos de la visita.");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
         ...{ onSubmit: (__VLS_ctx.submitAppointment) },
         ...{ class: "appointment-form" },
@@ -2891,7 +2942,7 @@ if (__VLS_ctx.appointmentDialogOpen) {
         type: "submit",
         disabled: (__VLS_ctx.appointmentSaving),
     });
-    (__VLS_ctx.appointmentSaving ? "Guardando cita..." : "Agregar cita");
+    (__VLS_ctx.appointmentSaving ? "Guardando cita..." : __VLS_ctx.editingAppointmentId === null ? "Agregar cita" : "Guardar cambios");
 }
 if (__VLS_ctx.qrDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -3186,7 +3237,7 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "number",
-        min: "0",
+        min: "1",
         max: "4294967295",
         step: "1",
         required: true,
@@ -4058,6 +4109,7 @@ const __VLS_self = (await import('vue')).defineComponent({
             drawerOpen: drawerOpen,
             privateMenuOpen: privateMenuOpen,
             appointmentDialogOpen: appointmentDialogOpen,
+            editingAppointmentId: editingAppointmentId,
             qrDialogOpen: qrDialogOpen,
             qrAppointment: qrAppointment,
             qrDataUrl: qrDataUrl,
@@ -4065,6 +4117,7 @@ const __VLS_self = (await import('vue')).defineComponent({
             qrEmailSending: qrEmailSending,
             qrEmailRecoveryOpen: qrEmailRecoveryOpen,
             qrEmailRecoveryValue: qrEmailRecoveryValue,
+            dailyLogInitialRange: dailyLogInitialRange,
             externalStaffDialogOpen: externalStaffDialogOpen,
             editingExternalStaffId: editingExternalStaffId,
             externalStaffSaving: externalStaffSaving,
@@ -4160,10 +4213,12 @@ const __VLS_self = (await import('vue')).defineComponent({
             calendarDays: calendarDays,
             activeAppointmentCount: activeAppointmentCount,
             selectSection: selectSection,
+            openDailyLogRange: openDailyLogRange,
             showToast: showToast,
             logout: logout,
             openQrDialog: openQrDialog,
             openAppointmentDialog: openAppointmentDialog,
+            openHomeAppointmentDialog: openHomeAppointmentDialog,
             changeAppointmentCompany: changeAppointmentCompany,
             changeAppointmentVisitor: changeAppointmentVisitor,
             changeCalendarMonth: changeCalendarMonth,

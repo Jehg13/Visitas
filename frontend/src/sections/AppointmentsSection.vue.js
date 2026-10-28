@@ -143,6 +143,17 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.paginatedAppointm
         ...{ class: "agenda-actions" },
         ...{ class: ({ 'agenda-actions-readonly': !__VLS_ctx.canManageAppointments }) },
     });
+    if (__VLS_ctx.canManageAppointments && appointment.status !== 'Retirado' && appointment.status !== 'Cancelada') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.canManageAppointments && appointment.status !== 'Retirado' && appointment.status !== 'Cancelada'))
+                        return;
+                    __VLS_ctx.emit('edit', appointment);
+                } },
+            ...{ class: "staff-edit-button" },
+            type: "button",
+        });
+    }
     if (__VLS_ctx.canManageAppointments) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ onClick: (...[$event]) => {
@@ -194,6 +205,8 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.paginatedAppointm
             ...{ class: "workspace-remove agenda-delete-action" },
             type: "button",
             'aria-label': (`Eliminar cita de ${appointment.visitor}`),
+            title: (appointment.status === 'Cancelada' ? 'Eliminar cita cancelada' : 'Primero cancela la cita para poder eliminarla'),
+            disabled: (appointment.status !== 'Cancelada'),
         });
     }
 }
@@ -368,6 +381,7 @@ for (const [day] of __VLS_getVForSourceType((__VLS_ctx.calendarDays))) {
 /** @type {__VLS_StyleScopedClasses['status-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-actions-readonly']} */ ;
+/** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-qr-action']} */ ;
 /** @type {__VLS_StyleScopedClasses['qr-button']} */ ;

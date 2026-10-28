@@ -34,7 +34,8 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
    ```
 
    Crea los catálogos, directorios de visitantes y empresas, personal externo,
-   citas, equipo, bitácora y permisos por sección, además de atribuir las citas existentes a su creador cuando la cuenta puede identificarse sin ambigüedad. La cuenta de MySQL configurada en `backend\.env` debe
+   citas, equipo, bitácora, historial de cambios de citas y permisos por sección,
+   además de atribuir las citas existentes a su creador cuando la cuenta puede identificarse sin ambigüedad. La cuenta de MySQL configurada en `backend\.env` debe
    tener permiso para crear tablas. Si ya tienes MySQL instalado, ajusta allí
    `DB_NAME=visitas_recep`, `DB_USER` y `DB_PASSWORD` antes de ejecutar la migración.
    Para enviar pases QR por correo, configura también `SMTP_HOST`, `SMTP_PORT`,
@@ -76,6 +77,7 @@ contraseñas se guardan como hashes Argon2id. El login acepta usuario o correo y
 solo permite cuentas activas. Las tres cuentas usan la contraseña ingresada
 para ejecutar el seed; no se guarda en el repositorio ni queda en el entorno
 después de ejecutar `Remove-Item`.
+
 El seed registra también el permiso `recepcion` en `accesos_secciones` para la
 cuenta de prueba de Recepción.
 
@@ -97,9 +99,16 @@ ver sus QR, pero no crearlas, cancelarlas, eliminarlas ni enviarlas. El rol
 Anfitrión tiene acceso a Agenda y a todos los módulos de Externos: contratistas,
 proveedores, visitantes, personal externo y equipo/herramientas. Sus citas se
 filtran por login y puede crear, cancelar, eliminar y enviar el pase únicamente
-de sus propias citas. Los cambios de Externos se protegen también en la API y
+de sus propias citas. Las citas canceladas y las modificaciones se conservan en
+el historial del Inicio; eliminar una cita requiere cancelarla y la oculta de la
+agenda sin borrar su historial ni los movimientos asociados. Los cambios de Externos se protegen también en la API y
 requieren el permiso `anfitriones`; asignar el permiso de Recepción mantiene
 ese rol en modo de solo lectura para la Agenda.
+
+La navegación del frontend solo controla qué secciones se muestran; cada API
+valida la sesión y el permiso requerido por separado. La ruta heredada
+`/api/visits` también requiere acceso de Recepción o Administrador, por lo que
+no expone registros a visitantes sin autenticar.
 
 La sección Departamentos lee y guarda sus registros en MySQL (`departments`);
 crear, editar y eliminar requiere una cuenta administradora. Al eliminar un
@@ -141,6 +150,65 @@ Abre <http://localhost:5173>. Vite reenvía las solicitudes `/api` a `http://loc
 La API ofrece `GET /api/health` para comprobar la conexión y `GET /api/visits` para consultar las visitas.
 Vue Router permite navegar directamente a las secciones del dashboard, por ejemplo `/agenda` o
 `/bitacora`; Vite entrega la aplicación también al recargar esas rutas.
+
+## Despliegue con Docker en VPS
+
+La imagen de producción separa el frontend estático en Nginx, la API en Bun y
+MySQL en contenedores distintos. Solo Nginx publica un puerto al host; MySQL y
+la API permanecen en la red privada de Docker. El volumen `mysql_data` conserva
+la base de datos entre actualizaciones.
+
+1. Copia `.env.production.example` como `.env.production` y configura
+   contraseñas aleatorias distintas para `MYSQL_PASSWORD` y
+   `MYSQL_ROOT_PASSWORD`, además del dominio HTTPS en `PUBLIC_APP_URL`.
+   Puedes generar contraseñas independientes con `openssl rand -hex 32`.
+   No subas `.env.production` al repositorio.
+2. Desde la raíz del proyecto, construye y levanta los servicios:
+
+   ```sh
+   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+   ```
+
+3. Comprueba el estado:
+
+   ```sh
+   docker compose --env-file .env.production -f docker-compose.prod.yml ps
+   docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api web
+   ```
+
+   Configura TLS con el proxy inverso del VPS (por ejemplo, Caddy, Traefik o
+   Nginx del host) y reenvía el dominio al puerto indicado por `HTTP_PORT`
+   (8080 por defecto). La API activa cookies `Secure` en producción, por lo que
+   el acceso público debe servirse por HTTPS. Restringe en el firewall el puerto
+   publicado a ese proxy si este se ejecuta en el host.
+
+Para publicar una actualización, conserva el volumen de MySQL y ejecuta primero
+la migración con la nueva imagen; después reconstruye y levanta los servicios:
+
+```sh
+docker compose --env-file .env.production -f docker-compose.prod.yml run --build --rm migrate
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+En una instalación nueva, `up` ejecuta la migración antes de iniciar la API. No
+uses `docker compose down -v` en producción: elimina el volumen con los datos
+de MySQL. Haz y verifica respaldos del volumen antes de cualquier actualización
+de esquema. Este despliegue crea una base nueva y vacía; antes de ponerlo en
+producción, restaura en MySQL el respaldo de datos que debas conservar. No
+ejecutes el seed de usuarios de prueba en producción.
+
+## Producción: rendimiento y origen
+
+- El logo principal del login se entrega como WebP (~31 KB en lugar de ~908 KB) y se precarga
+  con prioridad alta para reducir el Largest Contentful Paint (LCP).
+- Publica el frontend y la API bajo el mismo origen HTTPS. Configura el proxy del hosting para
+  enviar `/api/*` al servidor Bun y para devolver `index.html` en las rutas de Vue Router.
+  Vite solo configura el proxy `/api` durante desarrollo; no sustituye este proxy en producción.
+- Al mantener frontend y API en el mismo origen, CORS no se necesita. No habilites
+  `Access-Control-Allow-Origin: *` para esta API; no hay una allowlist CORS configurada.
+- Ejecuta Bun con `NODE_ENV=production` para que las cookies de sesión incluyan `Secure`, y
+  configura `PUBLIC_APP_URL` con la URL HTTPS pública del frontend para los enlaces enviados
+  por correo.
 
 ## Comandos
 

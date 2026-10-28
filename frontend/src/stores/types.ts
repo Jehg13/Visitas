@@ -7,6 +7,7 @@ export type SystemAccessRole = "Administrador" | "Recepción" | "Anfitriones";
 
 export type Appointment = {
   id: number;
+  businessPartnerId?: number | null;
   date: string;
   time: string;
   visitor: string;

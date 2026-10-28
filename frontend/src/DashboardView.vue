@@ -164,6 +164,7 @@ const currentRoleLabel = computed(() =>
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
 const appointmentDialogOpen = ref(false);
+const editingAppointmentId = ref<number | null>(null);
 const qrDialogOpen = ref(false);
 const qrAppointment = ref<Appointment | null>(null);
 const qrDataUrl = ref("");
@@ -172,6 +173,7 @@ const qrEmailSending = ref(false);
 const qrEmailRecoveryOpen = ref(false);
 const qrEmailRecoveryValue = ref("");
 const deletingAppointmentId = ref<number | null>(null);
+const dailyLogInitialRange = ref<{ from: string; to: string } | null>(null);
 const externalStaffDialogOpen = ref(false);
 const editingExternalStaffId = ref<number | null>(null);
 const externalStaffSaving = ref(false);
@@ -232,7 +234,7 @@ const businessPartnerName = ref("");
 const businessPartnerDescription = ref("");
 const businessPartnerRfc = ref("");
 const businessPartnerCategory = ref("");
-const businessPartnerEmployeeCount = ref(0);
+const businessPartnerEmployeeCount = ref(1);
 const businessPartnerType = ref<BusinessPartnerType>("Contratista");
 const businessPartnerStatus = ref<BusinessPartnerStatus>("Activa");
 const nextGeneralVisitorId = ref(0);
@@ -812,6 +814,11 @@ function selectSection(label: string) {
   if (path && route.path !== path) void router.push(path);
 }
 
+function openDailyLogRange(from: string, to: string) {
+  dailyLogInitialRange.value = { from, to };
+  selectSection("Bitácora diaria");
+}
+
 async function loadDepartments(silent = false) {
   try {
     const response = await fetch("/api/departments");
@@ -911,14 +918,27 @@ async function openQrDialog(appointment: Appointment) {
   }
 }
 
-function openAppointmentDialog() {
-  visitorDate.value = selectedAppointmentDate.value;
-  visitorName.value = "";
-  visitorEmail.value = "";
-  visitorSelection.value = "";
-  visitorCompanyId.value = null;
-  visitorHostLogin.value = isHost.value ? currentUser.value.login : "";
+function openAppointmentDialog(appointment?: Appointment) {
+  editingAppointmentId.value = appointment?.id ?? null;
+  visitorDate.value = appointment?.date ?? selectedAppointmentDate.value;
+  visitorTime.value = appointment?.time ?? "18:00";
+  visitorName.value = appointment?.visitor ?? "";
+  visitorEmail.value = appointment?.email ?? "";
+  visitorSelection.value = appointment ? otherAppointmentVisitor : "";
+  visitorCompanyId.value = appointment
+    ? appointment.businessPartnerId ??
+      businessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
+      null
+    : null;
+  visitorHostLogin.value = isHost.value
+    ? currentUser.value.login
+    : hosts.value.find((host) => host.name === appointment?.host)?.login ?? "";
   appointmentDialogOpen.value = true;
+}
+
+function openHomeAppointmentDialog(date: string) {
+  openAppointmentDialog();
+  visitorDate.value = date;
 }
 
 function changeAppointmentCompany() {
@@ -1266,8 +1286,11 @@ async function submitAppointment() {
 
   appointmentSaving.value = true;
   try {
-    const response = await fetch("/api/appointments", {
-      method: "POST",
+    const appointmentId = editingAppointmentId.value;
+    const response = await fetch(
+      appointmentId === null ? "/api/appointments" : `/api/appointments/${appointmentId}`,
+      {
+      method: appointmentId === null ? "POST" : "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         visitorName: appointmentVisitorName,
@@ -1277,9 +1300,11 @@ async function submitAppointment() {
         date: visitorDate.value,
         time: visitorTime.value,
       }),
-    });
+      },
+    );
     const result = await response.json() as {
       appointments?: Appointment[];
+      message?: string;
       error?: string;
     };
     if (!response.ok) {
@@ -1293,8 +1318,12 @@ async function submitAppointment() {
     }
     appointments.value = result.appointments;
     appointmentDialogOpen.value = false;
+    editingAppointmentId.value = null;
     selectedAppointmentDate.value = visitorDate.value;
-    showToast("La cita se guardó en la agenda.", "success");
+    showToast(
+      result.message ?? (appointmentId === null ? "La cita se guardó en la agenda." : "La cita se actualizó en la agenda."),
+      "success",
+    );
     visitorName.value = "";
     visitorEmail.value = "";
     visitorSelection.value = "";
@@ -1388,9 +1417,13 @@ function downloadAppointmentQr(appointment: Appointment, dataUrl = qrDataUrl.val
 }
 
 async function deleteAppointment(appointment: Appointment) {
+  if (appointment.status !== "Cancelada") {
+    showToast("Para eliminar una cita, primero debes cancelarla.");
+    return;
+  }
   if (
     deletingAppointmentId.value !== null ||
-    !window.confirm(`¿Eliminar definitivamente la cita de ${appointment.visitor}?`)
+    !window.confirm(`¿Quitar de la agenda la cita cancelada de ${appointment.visitor}? Se conservará en el historial.`)
   ) {
     return;
   }
@@ -1424,6 +1457,7 @@ async function deleteAppointment(appointment: Appointment) {
 
 async function cancelAppointment(appointment: Appointment) {
   if (appointment.status === "Cancelada" || appointment.status === "Retirado") return;
+  if (!await confirmUser(`¿Cancelar la cita de ${appointment.visitor}?`, "Cancelar cita")) return;
 
   try {
     const response = await fetch(`/api/appointments/${appointment.id}`, {
@@ -1483,6 +1517,21 @@ async function submitExternalStaff() {
   const businessPartnerId = externalStaffBusinessPartnerId.value;
   if (!fullName || businessPartnerId === null) return;
   const editingId = editingExternalStaffId.value;
+  const selectedPartner = businessPartners.value.find((partner) => partner.id === businessPartnerId);
+  const currentStaffPartnerId = editingId === null
+    ? null
+    : externalStaff.value.find((person) => person.id === editingId)?.businessPartnerId ?? null;
+  if (selectedPartner && (editingId === null || currentStaffPartnerId !== businessPartnerId)) {
+    const registeredStaff = externalStaff.value.filter(
+      (person) => person.businessPartnerId === businessPartnerId,
+    ).length;
+    if (registeredStaff >= selectedPartner.employeeCount) {
+      showToast(
+        `Modifica el número de empleados de este ${selectedPartner.type.toLocaleLowerCase()} en Contratistas y proveedores antes de registrar más personal.`,
+      );
+      return;
+    }
+  }
   externalStaffSaving.value = true;
 
   try {
@@ -1561,7 +1610,7 @@ function openBusinessPartnerDialog(partner?: BusinessPartner) {
   businessPartnerDescription.value = partner?.description ?? "";
   businessPartnerRfc.value = partner?.rfc ?? "";
   businessPartnerCategory.value = partner?.category ?? "";
-  businessPartnerEmployeeCount.value = partner?.employeeCount ?? 0;
+  businessPartnerEmployeeCount.value = partner?.employeeCount ?? 1;
   businessPartnerType.value = partner?.type ?? "Contratista";
   businessPartnerStatus.value = partner?.status ?? "Activa";
   businessPartnerDialogOpen.value = true;
@@ -1578,9 +1627,23 @@ async function submitBusinessPartner() {
     showToast("Completa el nombre, la descripción, el RFC y la categoría.");
     return;
   }
-  if (!Number.isSafeInteger(employeeCount) || employeeCount < 0 || employeeCount > 4294967295) {
-    showToast("El número de empleados debe ser un entero entre 0 y 4,294,967,295.");
+  if (!Number.isSafeInteger(employeeCount) || employeeCount < 1 || employeeCount > 4294967295) {
+    showToast("El número de empleados debe ser un entero entre 1 y 4,294,967,295.");
     return;
+  }
+  const existingPartner = businessPartners.value.find(
+    (partner) => partner.id === editingBusinessPartnerId.value,
+  );
+  if (existingPartner) {
+    const registeredStaff = externalStaff.value.filter(
+      (person) => person.businessPartnerId === existingPartner.id,
+    ).length;
+    if (employeeCount < registeredStaff) {
+      showToast(
+        `No puedes establecer menos empleados que el personal externo ya registrado para este ${existingPartner.type.toLocaleLowerCase()} (${registeredStaff}).`,
+      );
+      return;
+    }
   }
 
   const duplicateRfc = businessPartners.value.some(
@@ -1641,7 +1704,7 @@ async function submitBusinessPartner() {
   businessPartnerDescription.value = "";
   businessPartnerRfc.value = "";
   businessPartnerCategory.value = "";
-  businessPartnerEmployeeCount.value = 0;
+  businessPartnerEmployeeCount.value = 1;
 }
 
 async function removeBusinessPartner(id: number) {
@@ -2106,6 +2169,7 @@ async function removeGeneralVisitor(id: number) {
         @send-qr="sendAppointmentQr"
         @open-qr="openQrDialog"
         @delete="deleteAppointment"
+        @edit="openAppointmentDialog"
         @change-month="changeCalendarMonth"
         @select-day="selectCalendarDay"
       />
@@ -2189,6 +2253,7 @@ async function removeGeneralVisitor(id: number) {
 
       <DailyLogSection
         v-else-if="activeSection === 'Bitácora diaria'"
+        :initial-range="dailyLogInitialRange"
         :is-admin="currentUser.isAdmin"
         :appointments="appointments"
         :appointments-loading="appointmentLoading"
@@ -2204,10 +2269,14 @@ async function removeGeneralVisitor(id: number) {
         v-else-if="activeSection === 'Inicio'"
         :appointments="appointments"
         :summary-items="summaryItems"
-        @create-appointment="openAppointmentDialog"
+        :can-manage-appointments="currentUser.isAdmin || isHost"
+        @create-appointment="openHomeAppointmentDialog"
+        @edit-appointment="openAppointmentDialog"
+        @cancel-appointment="cancelAppointment"
+        @delete-appointment="deleteAppointment"
         @open-qr="openQrDialog"
         @show-toast="showToast"
-        @open-log="selectSection('Bitácora diaria')"
+        @open-log="openDailyLogRange"
         @open-appointments="selectSection('Agenda de citas')"
         @open-equipment="selectSection('Equipo y herramientas')"
       />
@@ -2221,8 +2290,8 @@ async function removeGeneralVisitor(id: number) {
       <section class="dialog appointment-dialog" role="dialog" aria-modal="true" aria-labelledby="appointment-dialog-title">
         <button class="dialog-close" type="button" aria-label="Cerrar" @click="appointmentDialogOpen = false"><svg class="icon"><use href="#i-close" /></svg></button>
         <span class="dialog-icon"><svg class="icon"><use href="#i-calendar" /></svg></span>
-        <h2 id="appointment-dialog-title">Nueva cita</h2>
-        <p class="dialog-description">Agrega una visita a la agenda de hoy.</p>
+        <h2 id="appointment-dialog-title">{{ editingAppointmentId === null ? "Nueva cita" : "Editar cita" }}</h2>
+        <p class="dialog-description">{{ editingAppointmentId === null ? "Agrega una visita a la agenda." : "Actualiza los datos de la visita." }}</p>
         <form class="appointment-form" @submit.prevent="submitAppointment">
           <label>
             Empresa
@@ -2316,7 +2385,7 @@ async function removeGeneralVisitor(id: number) {
           <label>Fecha<input v-model="visitorDate" required type="date" /></label>
           <label>Hora<input v-model="visitorTime" required type="time" /></label>
           <button class="button-primary dialog-submit" type="submit" :disabled="appointmentSaving">
-            {{ appointmentSaving ? "Guardando cita..." : "Agregar cita" }}
+            {{ appointmentSaving ? "Guardando cita..." : editingAppointmentId === null ? "Agregar cita" : "Guardar cambios" }}
           </button>
         </form>
       </section>
@@ -2464,7 +2533,7 @@ async function removeGeneralVisitor(id: number) {
           </label>
           <label>
             Número de empleados
-            <input v-model.number="businessPartnerEmployeeCount" type="number" min="0" max="4294967295" step="1" required />
+            <input v-model.number="businessPartnerEmployeeCount" type="number" min="1" max="4294967295" step="1" required />
           </label>
           <label>
             Estado

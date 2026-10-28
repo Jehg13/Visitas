@@ -3519,7 +3519,7 @@ input:focus-visible {
       radial-gradient(ellipse at 88% 9%, rgb(186 36 51 / 23%), transparent 36%),
       radial-gradient(ellipse at 8% 92%, rgb(37 91 148 / 28%), transparent 48%),
       linear-gradient(145deg, rgb(7 17 34 / 80%), rgb(8 13 24 / 85%)),
-      url("/images/cymez-recep-logo.png") center / cover no-repeat;
+      url("/images/cymez-recep-logo-v2.webp") center / cover no-repeat;
   }
 
   .login-content {
@@ -9128,35 +9128,159 @@ input:focus-visible {
   line-height: 1.5;
 }
 
+.daily-log-readonly-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #286296;
+  border-left: 3px solid #4ba8f5;
+  border-radius: 9px;
+  background: linear-gradient(110deg, rgb(20 91 151 / 24%), rgb(12 38 67 / 68%));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.daily-log-readonly-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  border: 1px solid rgb(104 184 245 / 38%);
+  border-radius: 10px;
+  background: rgb(39 128 198 / 18%);
+  color: #83c8ff;
+}
+
+.daily-log-readonly-icon svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.daily-log-readonly-copy {
+  display: grid;
+  gap: 4px;
+  padding-top: 1px;
+}
+
+.daily-log-readonly-copy strong {
+  color: #c4e5ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.daily-log-readonly-copy span {
+  color: #afc8df;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
 .daily-log-recent-panel {
   overflow: hidden;
 }
 
 .daily-log-recent-panel .daily-log-panel-heading {
   display: flex;
+  min-height: 76px;
+  padding: 14px 18px;
 }
 
 .daily-log-recent-link {
-  border: 0;
-  background: transparent;
-  color: #9bc7e6;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid #28547b;
+  border-radius: 999px;
+  background: rgb(25 91 146 / 16%);
+  color: #a9d8ff;
   font: inherit;
-  font-size: 0.62rem;
+  font-size: 0.68rem;
+  font-weight: 650;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.daily-log-recent-link:hover {
+  transform: translateY(-1px);
+  border-color: #4a9de7;
+  background: rgb(25 119 197 / 25%);
+  color: #fff;
+}
+
+.daily-log-recent-link:focus-visible,
+.daily-log-recent-entry:focus-visible {
+  outline: 2px solid #58a8ff;
+  outline-offset: -2px;
 }
 
 .daily-log-recent-entry {
   display: grid;
   width: 100%;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  padding: 11px 14px;
+  grid-template-columns: 34px 52px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  padding: 13px 16px;
   border: 0;
   border-bottom: 1px solid #152f48;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.daily-log-recent-entry:last-of-type {
+  border-bottom-color: transparent;
+}
+
+.daily-log-recent-marker {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid #315b7a;
+  border-radius: 10px;
+  background: #122a40;
+  color: #a8d7fa;
+}
+
+.daily-log-recent-marker svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.daily-log-recent-entry.is-llegada .daily-log-recent-marker {
+  border-color: #2e775f;
+  background: #12352d;
+  color: #6ed6ae;
+}
+
+.daily-log-recent-entry.is-ingreso .daily-log-recent-marker {
+  border-color: #2d6091;
+  background: #122d4b;
+  color: #75baff;
+}
+
+.daily-log-recent-entry.is-retiro .daily-log-recent-marker {
+  border-color: #814850;
+  background: #3a2029;
+  color: #ff9aa4;
+}
+
+.daily-log-recent-entry.is-observaciones .daily-log-recent-marker {
+  border-color: #655b8a;
+  background: #292540;
+  color: #c4b8ff;
 }
 
 .daily-log-recent-entry:hover,
@@ -9165,34 +9289,84 @@ input:focus-visible {
 }
 
 .daily-log-recent-time {
-  padding-top: 2px;
-  color: #91a5bd;
-  font-size: 0.59rem;
+  padding-top: 8px;
+  color: #9ab0c7;
+  font-size: 0.68rem;
   font-variant-numeric: tabular-nums;
+  font-weight: 650;
 }
 
 .daily-log-recent-copy {
   display: grid;
   min-width: 0;
   gap: 4px;
+  padding-top: 1px;
 }
 
 .daily-log-recent-copy strong {
   color: #e5eef7;
-  font-size: 0.64rem;
+  font-size: 0.76rem;
+  font-weight: 700;
 }
 
 .daily-log-recent-copy span,
 .daily-log-recent-copy small {
   overflow: hidden;
   color: #a3b5c8;
-  font-size: 0.58rem;
+  font-size: 0.68rem;
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .daily-log-recent-copy small {
   color: #8197ae;
+  font-size: 0.63rem;
+}
+
+.daily-log-recent-empty {
+  display: grid;
+  min-height: 158px;
+  justify-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 20px;
+  text-align: center;
+}
+
+.daily-log-recent-empty-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  margin-bottom: 2px;
+  border: 1px solid #28547b;
+  border-radius: 13px;
+  background: rgb(25 91 146 / 16%);
+  color: #84c4ff;
+}
+
+.daily-log-recent-empty-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.daily-log-recent-empty strong {
+  color: #e5eef7;
+  font-size: 0.78rem;
+}
+
+.daily-log-recent-empty p {
+  max-width: 280px;
+  margin: 0;
+  color: #91a5bd;
+  font-size: 0.68rem;
+  line-height: 1.5;
 }
 
 .dashboard-app[data-theme="light"] .daily-log-quick-heading h3,
@@ -9215,6 +9389,84 @@ input:focus-visible {
 .dashboard-app[data-theme="light"] .daily-log-recent-panel {
   border-color: #cbd9e4;
   background: #fff;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-marker {
+  border-color: #cbd9e4;
+  background: #f0f6fa;
+  color: #286c9c;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-entry.is-llegada .daily-log-recent-marker {
+  border-color: #b6d9c8;
+  background: #eaf6ef;
+  color: #226344;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-entry.is-ingreso .daily-log-recent-marker {
+  border-color: #c3d9ef;
+  background: #edf5fd;
+  color: #286c9c;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-entry.is-retiro .daily-log-recent-marker {
+  border-color: #e5bfc5;
+  background: #fff0f2;
+  color: #a12c3a;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-entry.is-observaciones .daily-log-recent-marker {
+  border-color: #d7d0ed;
+  background: #f2effb;
+  color: #66549d;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-copy strong,
+.dashboard-app[data-theme="light"] .daily-log-recent-empty strong {
+  color: #20384f;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-empty p {
+  color: #586f84;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-empty-icon {
+  border-color: #c5d9e5;
+  background: #edf5fa;
+  color: #327792;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-readonly-notice {
+  border-color: #b7d7f0;
+  border-left-color: #2785d3;
+  background: linear-gradient(110deg, #f1f8fe, #eaf4fc);
+  box-shadow: inset 0 1px 0 #fff;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-readonly-icon {
+  border-color: #c5dff3;
+  background: #e2f1fc;
+  color: #1974ba;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-readonly-copy strong {
+  color: #17456c;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-readonly-copy span {
+  color: #456783;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-link {
+  border-color: #c6dced;
+  background: #f0f7fd;
+  color: #286c9c;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-recent-link:hover {
+  border-color: #9fc5e4;
+  background: #e4f1fc;
+  color: #1b4e76;
 }
 
 .dashboard-app[data-theme="light"] .daily-log-quick-search {
@@ -9317,13 +9569,7 @@ input:focus-visible {
   color: #226344;
 }
 
-.dashboard-app[data-theme="light"] .daily-log-recent-link {
-  color: #286c9c;
-}
 
-.dashboard-app[data-theme="light"] .daily-log-recent-link:hover {
-  color: #1b4e76;
-}
 
 .dashboard-app[data-theme="light"] .daily-log-selection-icon {
   border-color: #c5d9e5;

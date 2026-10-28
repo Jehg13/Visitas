@@ -4,9 +4,10 @@ import { randomInt } from "node:crypto";
 
 const migrationUrl = new URL("../../database/init/002_create_application_tables.sql", import.meta.url);
 const equipmentMigrationUrl = new URL("../../database/init/004_create_equipment_workflow.sql", import.meta.url);
+const appointmentHistoryMigrationUrl = new URL("../../database/init/005_create_appointment_history.sql", import.meta.url);
 
 async function migrate() {
-  const migrationFiles = [migrationUrl, equipmentMigrationUrl];
+  const migrationFiles = [migrationUrl, equipmentMigrationUrl, appointmentHistoryMigrationUrl];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
   const connection = await pool.getConnection();
@@ -149,6 +150,18 @@ async function migrate() {
     await connection.query(
       "ALTER TABLE appointments MODIFY reference_code CHAR(8) NOT NULL",
     );
+    const [appointmentDeletedAtColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'appointments'
+         AND COLUMN_NAME = 'deleted_at'`,
+    );
+    if (appointmentDeletedAtColumns.length === 0) {
+      await connection.query(
+        "ALTER TABLE appointments ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at",
+      );
+    }
     const dailyLogReferences = [
       {
         column: "appointment_id",
