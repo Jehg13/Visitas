@@ -38,9 +38,10 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
    además de atribuir las citas existentes a su creador cuando la cuenta puede identificarse sin ambigüedad. La cuenta de MySQL configurada en `backend\.env` debe
    tener permiso para crear tablas. Si ya tienes MySQL instalado, ajusta allí
    `DB_NAME=visitas_recep`, `DB_USER` y `DB_PASSWORD` antes de ejecutar la migración.
-   Para enviar pases QR por correo, configura también `SMTP_HOST`, `SMTP_PORT`,
-   `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM` en `backend\.env`.
-   La recuperación de contraseña usa el mismo servicio SMTP y requiere
+   Los pases QR se muestran y descargan para compartirlos manualmente. La
+   recuperación de contraseña usa SMTP y requiere configurar `SMTP_HOST`,
+   `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM` en
+   `backend\.env`; también requiere
    `PUBLIC_APP_URL` con la URL pública del frontend en producción. En desarrollo
    local, si se deja vacío, se utiliza `http://localhost:5173`.
    Para Microsoft 365 normalmente se usa `smtp.office365.com`, puerto `587` y
@@ -98,12 +99,28 @@ Agenda de citas y Bitácora diaria; en la Agenda puede consultar todas las citas
 ver sus QR, pero no crearlas, cancelarlas, eliminarlas ni enviarlas. El rol
 Anfitrión tiene acceso a Agenda y a todos los módulos de Externos: contratistas,
 proveedores, visitantes, personal externo y equipo/herramientas. Sus citas se
-filtran por login y puede crear, cancelar, eliminar y enviar el pase únicamente
-de sus propias citas. Las citas canceladas y las modificaciones se conservan en
+filtran por login y puede crear, cancelar y eliminar únicamente sus propias
+citas; puede ver y descargar sus QR para compartirlos por su cuenta. Las citas canceladas y las modificaciones se conservan en
 el historial del Inicio; eliminar una cita requiere cancelarla y la oculta de la
 agenda sin borrar su historial ni los movimientos asociados. Los cambios de Externos se protegen también en la API y
 requieren el permiso `anfitriones`; asignar el permiso de Recepción mantiene
 ese rol en modo de solo lectura para la Agenda.
+
+El autorregistro público está disponible en `/registro` y no requiere una
+cuenta de visitante. El formulario guarda de forma transaccional el visitante,
+los artículos, el folio, la declaración sobre identificación y la llegada
+inicial en la bitácora. No crea empresas nuevas. La visita queda pendiente de
+autorización y el endpoint público solo permite enviar registros; la consulta y
+las acciones de recepción requieren sesión con permiso de Recepción o
+Administrador. Los reintentos usan una clave de idempotencia y las solicitudes
+de alta se limitan por IP. Recepción puede revisar artículos, autorizar o
+rechazar la visita, confirmar físicamente una identificación y registrar su
+devolución; cada acción se audita. La bitácora impide registrar el ingreso real
+hasta que la visita esté autorizada y el checklist de entrada se haya completado.
+El checklist registra coincidencias, faltantes, daños, artículos extra y
+observaciones; al completar la salida también registra el retiro. El kiosco
+mantiene una pantalla de espera y muestra el resultado de la revisión de
+recepción antes de volver a la bienvenida.
 
 La navegación del frontend solo controla qué secciones se muestran; cada API
 valida la sesión y el permiso requerido por separado. La ruta heredada
@@ -204,8 +221,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 En una instalación nueva, `up` ejecuta la migración antes de iniciar la API.
 Las migraciones crean las tablas de la aplicación si faltan y pueden actualizar
 el esquema existente; no ejecutan el seed de usuarios de prueba. Verifica los
-respaldos antes de cualquier cambio de esquema y no ejecutes el seed en
-producción.
+respaldos antes de cualquier cambio de esquema.
 
 ## Producción: rendimiento y origen
 
@@ -256,12 +272,13 @@ docker-compose.yml     Servicio local de base de datos
 ## Tablas creadas
 
 - `departments`: catálogo de departamentos. El puesto se representa con el campo `role` de `accesos` y se asigna a un departamento desde el formulario del anfitrión.
-- `business_partners`: contratistas y proveedores, con RFC, categoría, empleados y estado.
+- `business_partners`: contratistas, proveedores y visitantes, con RFC, categoría, asunto, empleados y estado.
 - `general_visitors`: público general, con CURP opcional.
 - `external_staff`: datos básicos del personal vinculado a una empresa de `business_partners`; el formulario selecciona la empresa del catálogo y guarda el vínculo en MySQL.
-- `appointments`: agenda persistente; conserva empresa, anfitrión, correo del visitante y login del creador para filtrar las citas de cada anfitrión. Los pases QR se adjuntan y envían por el SMTP configurado.
+- `appointments`: agenda persistente; conserva empresa, anfitrión, correo del visitante y login del creador para filtrar las citas de cada anfitrión. Los pases QR se muestran y descargan para compartirlos manualmente.
 - `equipment_records`: tabla anterior de equipo que se conserva; el flujo nuevo usa tablas propias de declaraciones y revisiones.
-- `daily_log_entries`: bitácora diaria. Se guarda en MySQL, permite consultar rangos de hasta un año, buscar y filtrar movimientos, y relacionarlos opcionalmente con citas, personal externo o visitantes. Los ingresos y retiros vinculados actualizan el estado de la cita; el indicador de personas dentro considera el último ingreso/retiro de todo el historial, no solo la fecha visible.
+- `daily_log_entries`: bitácora diaria. Se guarda en MySQL, permite consultar rangos de hasta un año, buscar y filtrar movimientos, y relacionarlos opcionalmente con citas, personal externo o visitantes. Los empleados de una cita de contratista o proveedor se consultan y registran individualmente; el estado de la cita resume los movimientos de sus asistentes. El indicador de personas dentro considera el último ingreso/retiro de todo el historial, no solo la fecha visible.
+- `visitor_kiosk_registrations`, `visitor_kiosk_items`, `visitor_kiosk_inspections` y sus tablas auxiliares: autorregistro público, artículos declarados, checklists de entrada y salida y auditoría de recepción.
 - `equipment_declarations` y `equipment_declaration_items`: declaración de un solo uso, asociada con una empresa y, cuando existe, con su cita, visitante o registro de personal externo. Cada fila conserva si el artículo es equipo o herramienta.
 - `equipment_inspections` y `equipment_inspection_items`: verificaciones separadas de Entrada y Salida, con el inspector, tipo de artículo, cantidades/características revisadas, resultados y observaciones de incidencias.
 - `accesos`: estructura local de usuarios compatible con la tabla externa; conserva exactamente sus 13 columnas y nulabilidad, sin agregar campos.
@@ -280,10 +297,12 @@ inspector, requieren observaciones. Este flujo no genera ni modifica movimientos
 la Bitácora y tampoco cambia el estado de una cita.
 
 En la Bitácora diaria, Recepción puede escanear en el campo de acceso rápido el
-QR enviado al visitante (con un lector que escriba el contenido como teclado) o
+QR compartido manualmente con el visitante (con un lector que escriba el contenido como teclado) o
 buscar su nombre y presionar Enter. El sistema registra entrada o salida según
 el estado actual de la cita; también deja disponibles los botones para confirmar
-el movimiento manualmente.
+el movimiento manualmente. Para citas de contratistas o proveedores, el botón
+«Ver empleados» muestra el personal de la empresa y permite registrar sus
+llegadas, entradas y salidas por separado.
 
 La migración es repetible, crea las tablas que faltan y actualiza columnas e índices
 de compatibilidad; no carga

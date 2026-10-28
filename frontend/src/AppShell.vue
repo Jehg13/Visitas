@@ -1,15 +1,20 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import DashboardView from "./DashboardView.vue";
 import AppAlert from "./components/AppAlert.vue";
 import LoginView from "./LoginView.vue";
 import PublicEquipmentDeclaration from "./sections/PublicEquipmentDeclaration.vue";
+import PublicVisitorKiosk from "./sections/PublicVisitorKiosk.vue";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 import type { AccessAccount, AuthenticatedUser } from "./stores/types";
 
 const sessionChecking = ref(true);
+const route = useRoute();
+const visitorKioskRoute = computed(() => route.path === "/registro");
 const publicEquipmentToken = new URLSearchParams(window.location.hash.slice(1)).get("equipo");
 const passwordResetToken = ref(
   new URLSearchParams(window.location.hash.slice(1)).get("restablecer") ?? "",
@@ -35,6 +40,10 @@ function closeSession() {
 
 onMounted(async () => {
   window.addEventListener("hashchange", syncPasswordResetToken);
+  if (visitorKioskRoute.value) {
+    sessionChecking.value = false;
+    return;
+  }
   if (passwordResetToken.value) {
     sessionChecking.value = false;
     return;
@@ -65,7 +74,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <PublicEquipmentDeclaration v-if="publicEquipmentToken" />
+  <PublicVisitorKiosk v-if="visitorKioskRoute" />
+  <PublicEquipmentDeclaration v-else-if="publicEquipmentToken" />
   <LoginView
     v-else-if="passwordResetToken"
     :password-reset-token="passwordResetToken"

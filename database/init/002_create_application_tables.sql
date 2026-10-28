@@ -7,23 +7,6 @@ CREATE TABLE IF NOT EXISTS departments (
   UNIQUE KEY uq_departments_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-CREATE TABLE IF NOT EXISTS business_partners (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  name VARCHAR(180) NOT NULL,
-  description TEXT NOT NULL,
-  rfc VARCHAR(13) NOT NULL,
-  category VARCHAR(120) NOT NULL,
-  employee_count INT UNSIGNED NOT NULL DEFAULT 0,
-  partner_type ENUM('Contratista', 'Proveedor') NOT NULL,
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_business_partners_rfc (rfc),
-  KEY idx_business_partners_name (name),
-  KEY idx_business_partners_type_active (partner_type, is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
 CREATE TABLE IF NOT EXISTS general_visitors (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   full_name VARCHAR(180) NOT NULL,
@@ -36,6 +19,29 @@ CREATE TABLE IF NOT EXISTS general_visitors (
   UNIQUE KEY uq_general_visitors_curp (curp),
   KEY idx_general_visitors_full_name (full_name),
   KEY idx_general_visitors_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS business_partners (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(180) NOT NULL,
+  description TEXT NOT NULL,
+  rfc VARCHAR(13) NULL,
+  category VARCHAR(120) NOT NULL,
+  subject VARCHAR(500) NULL,
+  visitor_record_id BIGINT UNSIGNED NULL,
+  employee_count INT UNSIGNED NOT NULL DEFAULT 0,
+  partner_type ENUM('Contratista', 'Proveedor', 'Visitante') NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_business_partners_rfc (rfc),
+  UNIQUE KEY uq_business_partners_visitor_record (visitor_record_id),
+  KEY idx_business_partners_name (name),
+  KEY idx_business_partners_type_active (partner_type, is_active),
+  CONSTRAINT fk_business_partners_visitor
+    FOREIGN KEY (visitor_record_id) REFERENCES general_visitors (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS external_staff (
@@ -189,3 +195,94 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 
 ALTER TABLE accesos_secciones
   MODIFY seccion ENUM('recepcion', 'anfitriones', 'administrador') NOT NULL;
+
+CREATE TABLE IF NOT EXISTS visitor_kiosk_registrations (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  visitor_record_id BIGINT UNSIGNED NOT NULL,
+  folio CHAR(8) NOT NULL,
+  company_name VARCHAR(180) NOT NULL,
+  visit_reason VARCHAR(500) NOT NULL,
+  carries_equipment BOOLEAN NOT NULL DEFAULT FALSE,
+  authorization_status ENUM('Pendiente', 'Autorizada', 'Rechazada') NOT NULL DEFAULT 'Pendiente',
+  registration_source VARCHAR(32) NOT NULL DEFAULT 'Autorregistro',
+  identification_type VARCHAR(40) NOT NULL,
+  visitor_declared_id_retained BOOLEAN NOT NULL DEFAULT FALSE,
+  reception_received_id_at DATETIME NULL,
+  reception_received_id_by VARCHAR(255) NULL,
+  id_returned_at DATETIME NULL,
+  id_returned_by VARCHAR(255) NULL,
+  idempotency_key CHAR(36) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_visitor_kiosk_registrations_folio (folio),
+  UNIQUE KEY uq_visitor_kiosk_registrations_idempotency (idempotency_key),
+  KEY idx_visitor_kiosk_registrations_created (created_at, authorization_status),
+  CONSTRAINT fk_visitor_kiosk_registrations_visitor
+    FOREIGN KEY (visitor_record_id) REFERENCES general_visitors (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS visitor_kiosk_items (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  registration_id BIGINT UNSIGNED NOT NULL,
+  item_type ENUM('Equipo', 'Herramienta') NOT NULL,
+  description VARCHAR(180) NOT NULL,
+  brand VARCHAR(120) NOT NULL DEFAULT '',
+  model VARCHAR(120) NOT NULL DEFAULT '',
+  serial_number VARCHAR(180) NOT NULL DEFAULT '',
+  color VARCHAR(80) NOT NULL DEFAULT '',
+  quantity INT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_visitor_kiosk_items_registration (registration_id),
+  CONSTRAINT fk_visitor_kiosk_items_registration
+    FOREIGN KEY (registration_id) REFERENCES visitor_kiosk_registrations (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS visitor_kiosk_audit (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  registration_id BIGINT UNSIGNED NOT NULL,
+  action VARCHAR(40) NOT NULL,
+  actor_login VARCHAR(255) NULL,
+  actor_name VARCHAR(255) NOT NULL,
+  details TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_visitor_kiosk_audit_registration (registration_id, created_at),
+  CONSTRAINT fk_visitor_kiosk_audit_registration
+    FOREIGN KEY (registration_id) REFERENCES visitor_kiosk_registrations (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS visitor_kiosk_inspections (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  registration_id BIGINT UNSIGNED NOT NULL,
+  phase ENUM('Entrada', 'Salida') NOT NULL,
+  inspector_login VARCHAR(255) NOT NULL,
+  inspector_name VARCHAR(255) NOT NULL,
+  completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_visitor_kiosk_inspections_phase (registration_id, phase),
+  CONSTRAINT fk_visitor_kiosk_inspections_registration
+    FOREIGN KEY (registration_id) REFERENCES visitor_kiosk_registrations (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS visitor_kiosk_inspection_items (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  inspection_id BIGINT UNSIGNED NOT NULL,
+  kiosk_item_id BIGINT UNSIGNED NULL,
+  result ENUM('Conforme', 'Incidencia', 'Coincide', 'Faltante', 'Dañado', 'Extra') NOT NULL,
+  notes VARCHAR(1000) NOT NULL DEFAULT '',
+  checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_visitor_kiosk_inspection_items_item (inspection_id, kiosk_item_id),
+  CONSTRAINT fk_visitor_kiosk_inspection_items_inspection
+    FOREIGN KEY (inspection_id) REFERENCES visitor_kiosk_inspections (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_visitor_kiosk_inspection_items_kiosk_item
+    FOREIGN KEY (kiosk_item_id) REFERENCES visitor_kiosk_items (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

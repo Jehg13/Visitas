@@ -77,13 +77,21 @@ const visibleNavigationGroups = computed(() =>
 );
 
 function getStoredDashboardSection(login: string) {
+  const key = `visitas:${encodeURIComponent(login)}:active-section`;
+  let section: string | null = null;
   try {
-    const section = localStorage.getItem(`visitas:${encodeURIComponent(login)}:active-section`);
-    return section && dashboardSections.includes(section) ? section : "Inicio";
+    section = localStorage.getItem(key);
   } catch (error) {
-    console.error("No se pudo restaurar la sección del dashboard:", error);
-    return "Inicio";
+    console.warn("No se pudo restaurar la sección guardada del dashboard:", error);
   }
+  if (!section || !dashboardSections.includes(section)) {
+    try {
+      section = sessionStorage.getItem(key);
+    } catch (fallbackError) {
+      console.error("No se pudo restaurar la sección de la sesión actual:", fallbackError);
+    }
+  }
+  return section && dashboardSections.includes(section) ? section : "Inicio";
 }
 
 function getStoredDashboardTheme(login: string): "dark" | "light" {
@@ -136,7 +144,10 @@ hosts.value = getStoredHosts();
 const allowedDashboardSections = computed(() => {
   if (currentUser.value.isAdmin) return dashboardSections;
   if (currentUser.value.sectionAccess.includes("recepcion")) {
-    return ["Agenda de citas", "Bitácora diaria"];
+    return [
+      "Agenda de citas",
+      "Bitácora diaria",
+    ];
   }
   if (currentUser.value.sectionAccess.includes("anfitriones")) {
     return [
@@ -159,7 +170,11 @@ const isHost = computed(
 );
 if (isHost.value) appointmentFilter.value = "all";
 const currentRoleLabel = computed(() =>
-  currentUser.value.isAdmin ? "Programador" : isReception.value ? "Recepción" : "Anfitrión",
+  currentUser.value.isAdmin
+    ? "Programador"
+    : isReception.value
+      ? "Recepción"
+      : "Anfitrión",
 );
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
@@ -167,11 +182,11 @@ const appointmentDialogOpen = ref(false);
 const editingAppointmentId = ref<number | null>(null);
 const qrDialogOpen = ref(false);
 const qrAppointment = ref<Appointment | null>(null);
+const qrExternalStaff = ref<ExternalStaff | null>(null);
 const qrDataUrl = ref("");
 const qrGenerating = ref(false);
-const qrEmailSending = ref(false);
-const qrEmailRecoveryOpen = ref(false);
-const qrEmailRecoveryValue = ref("");
+const qrDispatchAppointment = ref<Appointment | null>(null);
+const sendingExternalQrStaffId = ref<number | null>(null);
 const deletingAppointmentId = ref<number | null>(null);
 const dailyLogInitialRange = ref<{ from: string; to: string } | null>(null);
 const externalStaffDialogOpen = ref(false);
@@ -179,8 +194,6 @@ const editingExternalStaffId = ref<number | null>(null);
 const externalStaffSaving = ref(false);
 const businessPartnerDialogOpen = ref(false);
 const editingBusinessPartnerId = ref<number | null>(null);
-const generalVisitorDialogOpen = ref(false);
-const editingGeneralVisitorId = ref<number | null>(null);
 const visitorName = ref("");
 const visitorEmail = ref("");
 const visitorSelection = ref("");
@@ -222,7 +235,6 @@ const hostEmail = ref("");
 const hostPhone = ref("");
 const businessDirectoryLoading = ref(false);
 const businessPartnerSaving = ref(false);
-const generalVisitorSaving = ref(false);
 const nextBusinessPartnerId = ref(0);
 const businessPartnerSearch = ref("");
 const businessPartnerTypeFilter = ref<"Todas" | BusinessPartnerType>("Todas");
@@ -234,17 +246,10 @@ const businessPartnerName = ref("");
 const businessPartnerDescription = ref("");
 const businessPartnerRfc = ref("");
 const businessPartnerCategory = ref("");
+const businessPartnerSubject = ref("");
 const businessPartnerEmployeeCount = ref(1);
 const businessPartnerType = ref<BusinessPartnerType>("Contratista");
 const businessPartnerStatus = ref<BusinessPartnerStatus>("Activa");
-const nextGeneralVisitorId = ref(0);
-const generalVisitorSearch = ref("");
-const generalVisitorCurpFilter = ref<"Todas" | "Con CURP" | "Sin CURP">("Todas");
-const generalVisitorPage = ref(1);
-const generalVisitorName = ref("");
-const generalVisitorCurp = ref("");
-const generalVisitorPhone = ref("");
-const generalVisitorEmail = ref("");
 
 watch(allowedDashboardSections, (sections) => {
   if (!sections.includes(activeSection.value)) {
@@ -288,14 +293,16 @@ watch(accessAccounts, (accounts) => {
 }, { immediate: true });
 
 watch(activeSection, (section) => {
+  const key = `visitas:${encodeURIComponent(currentUser.value.login)}:active-section`;
   try {
-    localStorage.setItem(
-      `visitas:${encodeURIComponent(currentUser.value.login)}:active-section`,
-      section,
-    );
+    localStorage.setItem(key, section);
   } catch (error) {
-    console.error("No se pudo guardar la sección del dashboard:", error);
-    showToast("No se pudo recordar la sección para la próxima visita.");
+    console.warn("No se pudo guardar la sección del dashboard de forma permanente:", error);
+    try {
+      sessionStorage.setItem(key, section);
+    } catch (fallbackError) {
+      console.error("No se pudo guardar la sección de la sesión actual:", fallbackError);
+    }
   }
   if (section === "Bitácora diaria") void loadAppointments();
 }, { flush: "sync" });
@@ -319,7 +326,9 @@ const selectableHostAccounts = computed(() =>
 );
 const externalStaffPartnerOptions = computed(() =>
   businessPartners.value.filter(
-    (partner) => partner.type === externalStaffRelationshipType.value,
+    (partner): partner is BusinessPartner & { type: ExternalStaffType } =>
+      partner.type !== "Visitante" &&
+      partner.type === externalStaffRelationshipType.value,
   ),
 );
 
@@ -560,7 +569,7 @@ const summaryItems = [
   },
   {
     title: "Crear cita (anfitrión)",
-    detail: "Selecciona visitante, fecha, hora y anfitrión. Envía QR al visitante.",
+    detail: "Selecciona visitante, fecha, hora y anfitrión. Descarga el QR para compartirlo.",
     icon: "calendar",
   },
   {
@@ -584,7 +593,9 @@ const pageTitle = computed(() =>
 );
 const hostEligibleDepartments = computed(() => departments.value);
 const appointmentCompanyOptions = computed(() =>
-  [...businessPartners.value].sort((first, second) =>
+  [...businessPartners.value]
+    .filter((partner) => partner.type !== "Visitante")
+    .sort((first, second) =>
     first.name.localeCompare(second.name, "es"),
   ),
 );
@@ -670,31 +681,6 @@ const paginatedBusinessPartners = computed(() => {
 const businessPartnerPages = computed(() =>
   Math.max(1, Math.ceil(filteredBusinessPartners.value.length / partnerRowsPerPage)),
 );
-const filteredGeneralVisitors = computed(() => {
-  const query = generalVisitorSearch.value.trim().toLocaleLowerCase();
-
-  return generalVisitors.value.filter((visitor) => {
-    const matchesQuery =
-      !query ||
-      [visitor.fullName, visitor.curp, visitor.phone, visitor.email]
-        .join(" ")
-        .toLocaleLowerCase()
-        .includes(query);
-    const matchesCurp =
-      generalVisitorCurpFilter.value === "Todas" ||
-      (generalVisitorCurpFilter.value === "Con CURP" && Boolean(visitor.curp)) ||
-      (generalVisitorCurpFilter.value === "Sin CURP" && !visitor.curp);
-
-    return matchesQuery && matchesCurp;
-  });
-});
-const paginatedGeneralVisitors = computed(() => {
-  const start = (generalVisitorPage.value - 1) * partnerRowsPerPage;
-  return filteredGeneralVisitors.value.slice(start, start + partnerRowsPerPage);
-});
-const generalVisitorPages = computed(() =>
-  Math.max(1, Math.ceil(filteredGeneralVisitors.value.length / partnerRowsPerPage)),
-);
 const selectedAppointments = computed(() =>
   appointments.value
     .filter(
@@ -779,19 +765,9 @@ watch(
   },
 );
 
-watch([generalVisitorSearch, generalVisitorCurpFilter], () => {
-  generalVisitorPage.value = 1;
-});
-
 watch(filteredBusinessPartners, () => {
   if (businessPartnerPage.value > businessPartnerPages.value) {
     businessPartnerPage.value = businessPartnerPages.value;
-  }
-});
-
-watch(filteredGeneralVisitors, () => {
-  if (generalVisitorPage.value > generalVisitorPages.value) {
-    generalVisitorPage.value = generalVisitorPages.value;
   }
 });
 
@@ -884,12 +860,13 @@ async function logout() {
   }
 }
 
-async function createAppointmentQr(appointment: Appointment) {
+async function createAppointmentQr(appointment: Appointment, staff?: ExternalStaff) {
   return QRCode.toDataURL(JSON.stringify({
     type: "visitas-appointment",
     id: appointment.id,
     referenceCode: appointment.referenceCode,
-    visitor: appointment.visitor,
+    visitor: staff?.fullName ?? appointment.visitor,
+    ...(staff ? { externalStaffId: staff.id } : {}),
     company: appointment.company,
     host: appointment.host,
     date: appointment.date,
@@ -903,6 +880,7 @@ async function createAppointmentQr(appointment: Appointment) {
 }
 
 async function openQrDialog(appointment: Appointment) {
+  qrExternalStaff.value = null;
   qrAppointment.value = appointment;
   qrDataUrl.value = "";
   qrGenerating.value = true;
@@ -916,6 +894,94 @@ async function openQrDialog(appointment: Appointment) {
   } finally {
     qrGenerating.value = false;
   }
+}
+
+function openCompanyQrDispatch(appointment: Appointment) {
+  if (appointment.partnerType !== "Contratista" || !appointment.businessPartnerId) {
+    showToast("Esta cita no está vinculada a un contratista.");
+    return;
+  }
+  qrDispatchAppointment.value = appointment;
+  selectSection("Personal de externos");
+}
+
+async function openExternalStaffQr(staff: ExternalStaff) {
+  const appointment = qrDispatchAppointment.value;
+  if (!appointment) {
+    showToast("No se encontró la cita para generar este QR.");
+    return;
+  }
+  qrAppointment.value = appointment;
+  qrExternalStaff.value = staff;
+  qrDataUrl.value = "";
+  qrGenerating.value = true;
+  qrDialogOpen.value = true;
+  try {
+    qrDataUrl.value = await createAppointmentQr(appointment, staff);
+  } catch (error) {
+    console.error("Failed to generate external staff appointment QR:", error);
+    showToast("No se pudo generar el código QR de este empleado.");
+    qrDialogOpen.value = false;
+  } finally {
+    qrGenerating.value = false;
+  }
+}
+
+async function sendExternalStaffQr(staff: ExternalStaff) {
+  const appointment = qrDispatchAppointment.value;
+  if (!appointment || staff.businessPartnerId !== appointment.businessPartnerId) {
+    showToast("El empleado no pertenece a la empresa de esta cita.");
+    return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(staff.email.trim())) {
+    showToast("El envío está bloqueado hasta registrar un correo electrónico válido.");
+    return;
+  }
+  if (sendingExternalQrStaffId.value !== null) return;
+
+  const equipmentRecipient = externalStaff.value
+    .filter((person) =>
+      person.businessPartnerId === appointment.businessPartnerId &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim()),
+    )
+    .sort((first, second) => first.id - second.id)[0];
+  const receivesEquipmentLink = equipmentRecipient?.id === staff.id;
+  const confirmed = await confirmUser(
+    receivesEquipmentLink
+      ? `Se enviará el QR de ${staff.fullName} a ${staff.email}. Si la declaración aún está pendiente, este correo incluirá el enlace para declarar equipo y herramientas. Ese enlace solo puede usarse una vez y se desactiva al enviar la declaración; solo esta persona lo recibe. ¿Continuar?`
+      : `Se enviará el QR de ${staff.fullName} a ${staff.email}. El enlace de declaración de equipo se envía únicamente a ${equipmentRecipient?.fullName ?? "la primera persona con correo válido"}. ¿Continuar?`,
+    "Enviar QR",
+  );
+  if (!confirmed) return;
+
+  sendingExternalQrStaffId.value = staff.id;
+  try {
+    const response = await fetch(`/api/appointments/${appointment.id}/send-qr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ employeeId: staff.id }),
+    });
+    const result = await response.json() as { message?: string; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo enviar el QR al empleado.");
+      return;
+    }
+    if (!result.message) {
+      console.error("La API no devolvió la confirmación del envío del QR.");
+      showToast("El servidor no confirmó el envío del QR.");
+      return;
+    }
+    showToast(result.message, "success");
+  } catch (error) {
+    console.error("Failed to send external staff appointment QR:", error);
+    showToast("No se pudo conectar con el servidor para enviar el QR.");
+  } finally {
+    sendingExternalQrStaffId.value = null;
+  }
+}
+
+function clearQrDispatch() {
+  qrDispatchAppointment.value = null;
 }
 
 function openAppointmentDialog(appointment?: Appointment) {
@@ -1267,7 +1333,7 @@ async function submitAppointment() {
       ? visitorName.value.trim()
       : selectedVisitor?.fullName ?? "";
   const email = visitorEmail.value.trim();
-  const appointmentEmail =
+  let appointmentEmail =
     visitorSelection.value === otherAppointmentVisitor
       ? email
       : selectedVisitor?.email.trim() ?? "";
@@ -1275,15 +1341,13 @@ async function submitAppointment() {
     showToast("Selecciona empresa, visitante y anfitrión.");
     return;
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(appointmentEmail)) {
-    showToast(
-      visitorSelection.value === otherAppointmentVisitor
-        ? "Ingresa un correo válido para el visitante."
-        : "El empleado seleccionado no tiene un correo válido registrado. Actualiza su ficha de Personal de externos.",
-    );
-    return;
+  if (appointmentEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(appointmentEmail)) {
+    if (visitorSelection.value === otherAppointmentVisitor) {
+      showToast("Ingresa un correo válido o déjalo vacío.");
+      return;
+    }
+    appointmentEmail = "";
   }
-
   appointmentSaving.value = true;
   try {
     const appointmentId = editingAppointmentId.value;
@@ -1339,80 +1403,20 @@ async function submitAppointment() {
   }
 }
 
-async function sendAppointmentQr(appointment: Appointment) {
-  const isContractor = appointment.partnerType === "Contratista";
-  const message = isContractor
-    ? `Se enviará el código QR de visita y el código de referencia a ${appointment.email || "su correo"}. También recibirá el enlace de un solo uso para declarar el equipo y las herramientas que llevará. Al enviar el formulario, el enlace se desactivará; en recepción solo podrá ingresar lo registrado y verificado. Comparte esta condición con la persona visitante.`
-    : `Se enviará únicamente el código QR de visita y su código de referencia a ${appointment.email || "su correo"}. Para proveedores no se envía formulario ni enlace de equipo.`;
-  if (!await confirmUser(message, "Enviar QR")) return;
-  await sendAppointmentQrEmail(appointment);
-}
-
-async function sendAppointmentQrEmail(appointment: Appointment) {
-  await sendAppointmentQrEmailTo(appointment);
-}
-
-async function sendAppointmentQrEmailTo(appointment: Appointment, email?: string) {
-  if (qrEmailSending.value) return;
-  qrEmailSending.value = true;
-  try {
-    const response = await fetch(`/api/appointments/${appointment.id}/send-qr`, {
-      method: "POST",
-      ...(email
-        ? {
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email }),
-          }
-        : {}),
-    });
-    const result = await response.json() as {
-      message?: string;
-      error?: string;
-      code?: string;
-    };
-    if (!response.ok) {
-      if (result.code === "VISITOR_EMAIL_REQUIRED") {
-        qrEmailRecoveryValue.value = "";
-        qrEmailRecoveryOpen.value = true;
-        return;
-      }
-      showToast(result.error ?? "No se pudo enviar el correo con el QR.");
-      return;
-    }
-    qrEmailRecoveryOpen.value = false;
-    qrDialogOpen.value = false;
-    showToast(
-      result.message ?? (appointment.partnerType === "Contratista"
-        ? `El pase, el código de referencia y el enlace de declaración se enviaron a ${appointment.email}.`
-        : `El pase y el código de referencia se enviaron a ${appointment.email}.`),
-      "success",
-    );
-  } catch (error) {
-    console.error("Failed to email appointment QR:", error);
-    showToast("No se pudo conectar con el servidor para enviar el pase.");
-  } finally {
-    qrEmailSending.value = false;
-  }
-}
-
-async function submitQrEmailRecovery() {
-  const appointment = qrAppointment.value;
-  const email = qrEmailRecoveryValue.value.trim();
-  if (!appointment || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    showToast("Ingresa un correo válido para el visitante.");
-    return;
-  }
-  await sendAppointmentQrEmailTo(appointment, email);
-}
-
-function downloadAppointmentQr(appointment: Appointment, dataUrl = qrDataUrl.value) {
+function downloadAppointmentQr(
+  appointment: Appointment,
+  dataUrl = qrDataUrl.value,
+  staff = qrExternalStaff.value,
+) {
   if (!dataUrl) {
     showToast("El QR aún no está listo para descargarse.");
     return;
   }
   const link = document.createElement("a");
   link.href = dataUrl;
-  link.download = `visitas-cita-${appointment.id}.png`;
+  link.download = staff
+    ? `visitas-cita-${appointment.id}-empleado-${staff.id}.png`
+    : `visitas-cita-${appointment.id}.png`;
   link.click();
 }
 
@@ -1495,7 +1499,7 @@ function openExternalStaffDialog(staff?: ExternalStaff, businessPartnerId?: numb
     (partner) => partner.id === (staff?.businessPartnerId ?? businessPartnerId),
   );
   externalStaffRelationshipType.value =
-    staff?.relationshipType ?? selectedPartner?.type ?? "Contratista";
+    staff?.relationshipType ?? (selectedPartner?.type === "Proveedor" ? "Proveedor" : "Contratista");
   externalStaffBusinessPartnerId.value =
     staff?.businessPartnerId ?? businessPartnerId ?? null;
   externalStaffDialogOpen.value = true;
@@ -1610,10 +1614,25 @@ function openBusinessPartnerDialog(partner?: BusinessPartner) {
   businessPartnerDescription.value = partner?.description ?? "";
   businessPartnerRfc.value = partner?.rfc ?? "";
   businessPartnerCategory.value = partner?.category ?? "";
+  businessPartnerSubject.value = partner?.subject ?? "";
   businessPartnerEmployeeCount.value = partner?.employeeCount ?? 1;
   businessPartnerType.value = partner?.type ?? "Contratista";
   businessPartnerStatus.value = partner?.status ?? "Activa";
   businessPartnerDialogOpen.value = true;
+}
+
+function changeBusinessPartnerType(type: BusinessPartnerType) {
+  businessPartnerType.value = type;
+  if (type === "Visitante") {
+    businessPartnerDescription.value = "Público General";
+    businessPartnerRfc.value = "N/A";
+    businessPartnerCategory.value = "Visitante";
+    businessPartnerEmployeeCount.value = 1;
+    businessPartnerStatus.value = "No aplica";
+  } else {
+    if (businessPartnerStatus.value === "No aplica") businessPartnerStatus.value = "Activa";
+    businessPartnerSubject.value = "";
+  }
 }
 
 async function submitBusinessPartner() {
@@ -1622,12 +1641,19 @@ async function submitBusinessPartner() {
   const description = businessPartnerDescription.value.trim();
   const rfc = businessPartnerRfc.value.trim().toLocaleUpperCase();
   const category = businessPartnerCategory.value.trim();
+  const subject = businessPartnerSubject.value.trim();
   const employeeCount = businessPartnerEmployeeCount.value;
-  if (!name || !description || !rfc || !category) {
-    showToast("Completa el nombre, la descripción, el RFC y la categoría.");
+  const isVisitor = businessPartnerType.value === "Visitante";
+  if (!name || (isVisitor && !subject) || (!isVisitor && (!description || !rfc || !category))) {
+    showToast(isVisitor
+      ? "Completa el nombre y el asunto del visitante."
+      : "Completa el nombre, la descripción, el RFC y la categoría de la empresa.");
     return;
   }
-  if (!Number.isSafeInteger(employeeCount) || employeeCount < 1 || employeeCount > 4294967295) {
+  if (
+    !isVisitor &&
+    (!Number.isSafeInteger(employeeCount) || employeeCount < 1 || employeeCount > 4294967295)
+  ) {
     showToast("El número de empleados debe ser un entero entre 1 y 4,294,967,295.");
     return;
   }
@@ -1646,7 +1672,7 @@ async function submitBusinessPartner() {
     }
   }
 
-  const duplicateRfc = businessPartners.value.some(
+  const duplicateRfc = !isVisitor && businessPartners.value.some(
     (partner) =>
       partner.rfc.toLocaleUpperCase() === rfc &&
       partner.id !== editingBusinessPartnerId.value,
@@ -1658,12 +1684,13 @@ async function submitBusinessPartner() {
 
   const partnerData = {
     name,
-    description,
-    rfc,
-    category,
-    employeeCount: businessPartnerEmployeeCount.value,
+    description: isVisitor ? "Público General" : description,
+    rfc: isVisitor ? "N/A" : rfc,
+    category: isVisitor ? "Visitante" : category,
+    subject: isVisitor ? subject : null,
+    employeeCount: isVisitor ? 1 : employeeCount,
     type: businessPartnerType.value,
-    status: businessPartnerStatus.value,
+    status: isVisitor ? "No aplica" : businessPartnerStatus.value,
   };
 
   businessPartnerSaving.value = true;
@@ -1704,6 +1731,7 @@ async function submitBusinessPartner() {
   businessPartnerDescription.value = "";
   businessPartnerRfc.value = "";
   businessPartnerCategory.value = "";
+  businessPartnerSubject.value = "";
   businessPartnerEmployeeCount.value = 1;
 }
 
@@ -1728,118 +1756,6 @@ async function removeBusinessPartner(id: number) {
   } catch (error) {
     console.error("Failed to delete business partner:", error);
     showToast("No se pudo conectar con el servidor para eliminar la empresa.");
-  }
-}
-
-function openGeneralVisitorDialog(visitor?: GeneralVisitor) {
-  editingGeneralVisitorId.value = visitor?.id ?? null;
-  generalVisitorName.value = visitor?.fullName ?? "";
-  generalVisitorCurp.value = visitor?.curp ?? "";
-  generalVisitorPhone.value = visitor?.phone ?? "";
-  generalVisitorEmail.value = visitor?.email ?? "";
-  generalVisitorDialogOpen.value = true;
-}
-
-async function submitGeneralVisitor() {
-  if (generalVisitorSaving.value) return;
-  const fullName = generalVisitorName.value.trim();
-  const curp = generalVisitorCurp.value.trim().toLocaleUpperCase();
-  const phone = generalVisitorPhone.value.trim();
-  const email = generalVisitorEmail.value.trim();
-  if (!fullName || !phone || !email) {
-    showToast("Completa el nombre, la CURP, el teléfono y el correo electrónico.");
-    return;
-  }
-
-  if (!/^[A-Z0-9]{18}$/.test(curp)) {
-    showToast("La CURP debe contener 18 letras o números.");
-    return;
-  }
-  if (phone.length > 30 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    showToast("Revisa que el teléfono y el correo electrónico sean válidos.");
-    return;
-  }
-
-  const duplicateCurp = curp
-    ? generalVisitors.value.some(
-        (visitor) =>
-          visitor.curp.toLocaleUpperCase() === curp &&
-          visitor.id !== editingGeneralVisitorId.value,
-      )
-    : false;
-  if (duplicateCurp) {
-    showToast("Ya existe un visitante registrado con esa CURP.");
-    return;
-  }
-
-  const visitorData = {
-    fullName,
-    curp,
-    phone,
-    email,
-  };
-
-  generalVisitorSaving.value = true;
-  try {
-    const visitorId = editingGeneralVisitorId.value;
-    const response = await fetch(
-      visitorId === null ? "/api/general-visitors" : `/api/general-visitors/${visitorId}`,
-      {
-        method: visitorId === null ? "POST" : "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(visitorData),
-      },
-    );
-    const result = await response.json() as {
-      generalVisitors?: GeneralVisitor[];
-      error?: string;
-    };
-    if (!response.ok) {
-      showToast(result.error ?? "No se pudo guardar a la persona.");
-      return;
-    }
-    if (!Array.isArray(result.generalVisitors)) {
-      console.error("La API devolvió una lista de personas con formato inválido.");
-      showToast("La persona se guardó, pero no se pudo actualizar la lista.");
-      return;
-    }
-    generalVisitors.value = result.generalVisitors;
-    generalVisitorDialogOpen.value = false;
-    showToast(visitorId === null ? "La persona se registró correctamente." : "Los datos de la persona se actualizaron.", "success");
-  } catch (error) {
-    console.error("Failed to save general visitor:", error);
-    showToast("No se pudo conectar con el servidor para guardar a la persona.");
-  } finally {
-    generalVisitorSaving.value = false;
-  }
-  editingGeneralVisitorId.value = null;
-  generalVisitorName.value = "";
-  generalVisitorCurp.value = "";
-  generalVisitorPhone.value = "";
-  generalVisitorEmail.value = "";
-}
-
-async function removeGeneralVisitor(id: number) {
-  try {
-    const response = await fetch(`/api/general-visitors/${id}`, { method: "DELETE" });
-    const result = await response.json() as {
-      generalVisitors?: GeneralVisitor[];
-      error?: string;
-    };
-    if (!response.ok) {
-      showToast(result.error ?? "No se pudo eliminar a la persona.");
-      return;
-    }
-    if (!Array.isArray(result.generalVisitors)) {
-      console.error("La API devolvió una lista de personas con formato inválido.");
-      showToast("La persona se eliminó, pero no se pudo actualizar la lista.");
-      return;
-    }
-    generalVisitors.value = result.generalVisitors;
-    showToast("La persona se eliminó.", "success");
-  } catch (error) {
-    console.error("Failed to delete general visitor:", error);
-    showToast("No se pudo conectar con el servidor para eliminar a la persona.");
   }
 }
 
@@ -2166,8 +2082,8 @@ async function removeGeneralVisitor(id: number) {
         @update:page="appointmentsPage = $event"
         @create="openAppointmentDialog"
         @cancel="cancelAppointment"
-        @send-qr="sendAppointmentQr"
         @open-qr="openQrDialog"
+        @send-company-qrs="openCompanyQrDispatch"
         @delete="deleteAppointment"
         @edit="openAppointmentDialog"
         @change-month="changeCalendarMonth"
@@ -2207,12 +2123,17 @@ async function removeGeneralVisitor(id: number) {
       <ExternalStaffSection
         v-else-if="activeSection === 'Personal de externos'"
         v-model:search="externalStaffSearch"
-        :companies="businessPartners"
+        :companies="externalStaffPartnerOptions"
         :staff="externalStaff"
         :loading="businessDirectoryLoading"
+        :dispatch-appointment="qrDispatchAppointment"
+        :sending-staff-id="sendingExternalQrStaffId"
         @create="openExternalStaffDialog(undefined, $event)"
         @edit="openExternalStaffDialog"
         @remove="removeExternalStaff"
+        @send-qr="sendExternalStaffQr"
+        @open-qr="openExternalStaffQr"
+        @clear-dispatch="clearQrDispatch"
       />
 
       <BusinessDirectorySection
@@ -2222,9 +2143,6 @@ async function removeGeneralVisitor(id: number) {
         v-model:business-partner-category-filter="businessPartnerCategoryFilter"
         v-model:business-partner-status-filter="businessPartnerStatusFilter"
         v-model:business-partner-page="businessPartnerPage"
-        v-model:general-visitor-search="generalVisitorSearch"
-        v-model:general-visitor-curp-filter="generalVisitorCurpFilter"
-        v-model:general-visitor-page="generalVisitorPage"
         :business-partners="businessPartners"
         :filtered-business-partners="filteredBusinessPartners"
         :paginated-business-partners="paginatedBusinessPartners"
@@ -2233,17 +2151,9 @@ async function removeGeneralVisitor(id: number) {
         :partner-rows-per-page="partnerRowsPerPage"
         :loading="businessDirectoryLoading"
         :business-partner-saving="businessPartnerSaving"
-        :general-visitor-saving="generalVisitorSaving"
-        :general-visitors="generalVisitors"
-        :filtered-general-visitors="filteredGeneralVisitors"
-        :paginated-general-visitors="paginatedGeneralVisitors"
-        :general-visitor-pages="generalVisitorPages"
         @create-partner="openBusinessPartnerDialog()"
         @edit-partner="openBusinessPartnerDialog"
         @remove-partner="removeBusinessPartner"
-        @create-visitor="openGeneralVisitorDialog()"
-        @edit-visitor="openGeneralVisitorDialog"
-        @remove-visitor="removeGeneralVisitor"
       />
 
       <EquipmentSection
@@ -2275,14 +2185,14 @@ async function removeGeneralVisitor(id: number) {
         @cancel-appointment="cancelAppointment"
         @delete-appointment="deleteAppointment"
         @open-qr="openQrDialog"
-        @show-toast="showToast"
+        @send-company-qrs="openCompanyQrDispatch"
         @open-log="openDailyLogRange"
         @open-appointments="selectSection('Agenda de citas')"
         @open-equipment="selectSection('Equipo y herramientas')"
       />
       <div v-else class="panel workspace-panel access-none-panel">
         <h2>Sin secciones asignadas</h2>
-        <p>Solicita al administrador que te otorgue acceso a Recepción o Anfitriones.</p>
+        <p>Solicita al administrador que te otorgue acceso a una sección de la aplicación.</p>
       </div>
     </section>
 
@@ -2370,17 +2280,16 @@ async function removeGeneralVisitor(id: number) {
               autocomplete="email"
               maxlength="254"
               placeholder="persona@empresa.com"
-              required
             />
             <span class="appointment-field-hint">
-              Necesitamos este correo para enviar el pase QR.
+              Opcional. No se envían correos; el QR se puede descargar para compartirlo manualmente.
             </span>
           </label>
           <p
             v-else-if="visitorSelection"
             class="appointment-field-hint appointment-form-full"
           >
-            El pase QR se enviará automáticamente a {{ visitorEmail || "el correo guardado en la ficha del empleado" }}.
+            El pase QR se puede descargar desde la cita y compartir manualmente.
           </p>
           <label>Fecha<input v-model="visitorDate" required type="date" /></label>
           <label>Hora<input v-model="visitorTime" required type="time" /></label>
@@ -2397,32 +2306,25 @@ async function removeGeneralVisitor(id: number) {
         <span class="dialog-icon"><svg class="icon"><use href="#i-qr" /></svg></span>
         <h2 id="qr-dialog-title">Ver código QR</h2>
         <p class="dialog-description">
-          Pase de visita para <strong>{{ qrAppointment?.visitor }}</strong>
+          Pase de visita para <strong>{{ qrExternalStaff?.fullName ?? qrAppointment?.visitor }}</strong>
         </p>
         <div class="qr-preview">
           <span v-if="qrGenerating" class="qr-loading">Generando código...</span>
           <img
             v-else-if="qrDataUrl"
             :src="qrDataUrl"
-            :alt="`Código QR de la cita de ${qrAppointment?.visitor}`"
+            :alt="`Código QR de la cita de ${qrExternalStaff?.fullName ?? qrAppointment?.visitor}`"
           />
         </div>
         <p v-if="qrAppointment" class="qr-appointment-details">
           {{ qrAppointment.company }}<br />
           {{ qrAppointment.date }} · {{ qrAppointment.time }} · Anfitrión: {{ qrAppointment.host }}<br />
           Código de referencia: <strong>{{ qrAppointment.referenceCode }}</strong>
+          <template v-if="qrExternalStaff"><br />Empleado: {{ qrExternalStaff.fullName }}</template>
         </p>
         <div v-if="!isReception" class="qr-dialog-actions">
           <button
             class="button-primary dialog-submit"
-            type="button"
-            :disabled="qrGenerating || qrEmailSending || !qrAppointment"
-            @click="qrAppointment && sendAppointmentQr(qrAppointment)"
-          >
-            {{ qrEmailSending ? "Enviando por correo..." : "Enviar por correo" }}
-          </button>
-          <button
-            class="button-secondary dialog-submit"
             type="button"
             :disabled="qrGenerating || !qrDataUrl || !qrAppointment"
             @click="qrAppointment && downloadAppointmentQr(qrAppointment)"
@@ -2432,59 +2334,10 @@ async function removeGeneralVisitor(id: number) {
         </div>
         <p class="qr-placeholder-note">
           {{ isReception
-            ? "Recepción puede consultar el pase; el anfitrión o Programación puede enviarlo."
-            : qrAppointment?.partnerType === "Contratista"
-              ? "Contratistas: recibirán un enlace de un solo uso para declarar su equipo; lo que no se registre no podrá ingresar."
-              : "Proveedores: recibirán solamente el QR y código de referencia." }}
+            ? "Recepción puede consultar el pase."
+            : "Descarga el código y compártelo manualmente con las personas de la empresa." }}
         </p>
         <button class="button-secondary dialog-submit" type="button" @click="qrDialogOpen = false">Cerrar</button>
-      </section>
-    </div>
-
-    <div
-      v-if="qrEmailRecoveryOpen"
-      class="modal-backdrop"
-      @click.self="!qrEmailSending && (qrEmailRecoveryOpen = false)"
-    >
-      <section
-        class="dialog email-qr-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="qr-email-recovery-title"
-      >
-        <button
-          class="dialog-close"
-          type="button"
-          aria-label="Cerrar"
-          :disabled="qrEmailSending"
-          @click="qrEmailRecoveryOpen = false"
-        ><svg class="icon"><use href="#i-close" /></svg></button>
-        <span class="dialog-icon"><svg class="icon"><use href="#i-note" /></svg></span>
-        <h2 id="qr-email-recovery-title">Falta el correo del visitante</h2>
-        <p class="dialog-description">
-          No encontramos un correo en la ficha de <strong>{{ qrAppointment?.visitor }}</strong>.
-          Ingresa uno para enviar el QR; se guardará en esta cita.
-        </p>
-        <form class="appointment-form email-send-form" @submit.prevent="submitQrEmailRecovery">
-          <label>
-            Correo del visitante
-            <input
-              v-model.trim="qrEmailRecoveryValue"
-              type="email"
-              autocomplete="email"
-              maxlength="254"
-              placeholder="persona@empresa.com"
-              required
-            />
-          </label>
-          <button
-            class="button-primary dialog-submit"
-            type="submit"
-            :disabled="qrEmailSending"
-          >
-            {{ qrEmailSending ? "Enviando..." : "Guardar correo y enviar QR" }}
-          </button>
-        </form>
       </section>
     </div>
 
@@ -2504,100 +2357,77 @@ async function removeGeneralVisitor(id: number) {
         </button>
         <span class="dialog-icon"><svg class="icon"><use href="#i-building" /></svg></span>
         <h2 id="business-partner-dialog-title">
-          {{ editingBusinessPartnerId === null ? "Registrar empresa" : "Editar empresa" }}
+          {{ editingBusinessPartnerId === null ? "Registrar registro" : "Editar registro" }}
         </h2>
-        <p class="dialog-description">Datos del contratista o proveedor.</p>
+        <p class="dialog-description">
+          {{ businessPartnerType === "Visitante" ? "Registra el nombre y asunto de la visita." : "Datos del contratista o proveedor." }}
+        </p>
         <form class="workspace-form modal-workspace-form directory-form" @submit.prevent="submitBusinessPartner">
           <label>
             Tipo
-            <select v-model="businessPartnerType" required>
+            <select
+              :value="businessPartnerType"
+              required
+              @change="changeBusinessPartnerType(($event.target as HTMLSelectElement).value as BusinessPartnerType)"
+            >
               <option value="Contratista">Contratista</option>
               <option value="Proveedor">Proveedor</option>
+              <option value="Visitante">Visitante</option>
             </select>
           </label>
           <label>
-            Nombre de la empresa
-            <input v-model.trim="businessPartnerName" type="text" autocomplete="organization" maxlength="180" pattern=".*\S.*" required />
+            {{ businessPartnerType === "Visitante" ? "Nombre completo" : "Nombre de la empresa" }}
+            <input
+              v-model.trim="businessPartnerName"
+              type="text"
+              :autocomplete="businessPartnerType === 'Visitante' ? 'name' : 'organization'"
+              maxlength="180"
+              pattern=".*\S.*"
+              required
+            />
           </label>
-          <label class="directory-form-full">
-            Descripción breve
-            <textarea v-model.trim="businessPartnerDescription" rows="3" maxlength="65535" placeholder="Describe a qué se dedica la empresa" required></textarea>
+          <label v-if="businessPartnerType === 'Visitante'" class="directory-form-full">
+            Asunto de la visita
+            <input
+              v-model.trim="businessPartnerSubject"
+              type="text"
+              maxlength="500"
+              pattern=".*\S.*"
+              placeholder="Motivo de la visita"
+              required
+            />
           </label>
-          <label>
-            RFC
-            <input v-model.trim="businessPartnerRfc" type="text" maxlength="13" pattern=".*\S.*" required />
-          </label>
-          <label>
-            Categoría
-            <input v-model.trim="businessPartnerCategory" type="text" maxlength="120" pattern=".*\S.*" placeholder="Ej. Construcción, limpieza" required />
-          </label>
-          <label>
-            Número de empleados
-            <input v-model.number="businessPartnerEmployeeCount" type="number" min="1" max="4294967295" step="1" required />
-          </label>
-          <label>
-            Estado
-            <select v-model="businessPartnerStatus" required>
-              <option value="Activa">Activa</option>
-              <option value="Inactiva">Inactiva</option>
-            </select>
-          </label>
+          <template v-else>
+            <label class="directory-form-full">
+              Descripción breve
+              <textarea v-model.trim="businessPartnerDescription" rows="3" maxlength="65535" placeholder="Describe a qué se dedica la empresa" required></textarea>
+            </label>
+            <label>
+              RFC
+              <input v-model.trim="businessPartnerRfc" type="text" maxlength="13" pattern=".*\S.*" required />
+            </label>
+            <label>
+              Categoría
+              <input v-model.trim="businessPartnerCategory" type="text" maxlength="120" pattern=".*\S.*" placeholder="Ej. Construcción, limpieza" required />
+            </label>
+            <label>
+              Número de empleados
+              <input v-model.number="businessPartnerEmployeeCount" type="number" min="1" max="4294967295" step="1" required />
+            </label>
+            <label>
+              Estado
+              <select v-model="businessPartnerStatus" required>
+                <option value="Activa">Activa</option>
+                <option value="Inactiva">Inactiva</option>
+              </select>
+            </label>
+          </template>
+          <p v-if="businessPartnerType === 'Visitante'" class="directory-form-full access-none-note">
+            Se guardará como Público General · categoría Visitante · RFC N/A · 1 empleado · estado No aplica.
+          </p>
           <button class="button-primary workspace-submit" type="submit" :disabled="businessPartnerSaving">
             <svg class="icon"><use href="#i-plus" /></svg>
             {{ businessPartnerSaving ? "Guardando..." : editingBusinessPartnerId === null ? "Registrar empresa" : "Guardar cambios" }}
-          </button>
-        </form>
-      </section>
-    </div>
-
-    <div
-      v-if="generalVisitorDialogOpen"
-      class="modal-backdrop"
-      @click.self="generalVisitorDialogOpen = false"
-    >
-      <section
-        class="dialog workspace-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="general-visitor-dialog-title"
-      >
-        <button class="dialog-close" type="button" aria-label="Cerrar" @click="generalVisitorDialogOpen = false">
-          <svg class="icon"><use href="#i-close" /></svg>
-        </button>
-        <span class="dialog-icon"><svg class="icon"><use href="#i-people" /></svg></span>
-        <h2 id="general-visitor-dialog-title">
-          {{ editingGeneralVisitorId === null ? "Registrar persona" : "Editar persona" }}
-        </h2>
-        <p class="dialog-description">Registra nombre, CURP, teléfono y correo electrónico para identificar y contactar a la persona.</p>
-        <form class="workspace-form modal-workspace-form directory-form" @submit.prevent="submitGeneralVisitor">
-          <label class="directory-form-full">
-            Nombre completo
-            <input v-model.trim="generalVisitorName" type="text" maxlength="180" pattern=".*\S.*" autocomplete="name" required />
-          </label>
-          <label class="directory-form-full">
-            CURP
-            <input
-              v-model.trim="generalVisitorCurp"
-              type="text"
-              maxlength="18"
-              pattern="[A-Za-z0-9]{18}"
-              autocomplete="off"
-              placeholder="18 caracteres"
-              required
-              @input="generalVisitorCurp = generalVisitorCurp.toLocaleUpperCase()"
-            />
-          </label>
-          <label>
-            Teléfono
-            <input v-model.trim="generalVisitorPhone" type="tel" maxlength="30" autocomplete="tel" pattern=".*\S.*" required />
-          </label>
-          <label>
-            Correo electrónico
-            <input v-model.trim="generalVisitorEmail" type="email" maxlength="254" autocomplete="email" required />
-          </label>
-          <button class="button-primary workspace-submit" type="submit" :disabled="generalVisitorSaving">
-            <svg class="icon"><use href="#i-plus" /></svg>
-            {{ generalVisitorSaving ? "Guardando..." : editingGeneralVisitorId === null ? "Registrar persona" : "Guardar cambios" }}
           </button>
         </form>
       </section>

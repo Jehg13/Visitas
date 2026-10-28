@@ -43,14 +43,23 @@ const visibleNavigationGroups = computed(() => navigationGroups
 }))
     .filter((group) => group.items.length > 0));
 function getStoredDashboardSection(login) {
+    const key = `visitas:${encodeURIComponent(login)}:active-section`;
+    let section = null;
     try {
-        const section = localStorage.getItem(`visitas:${encodeURIComponent(login)}:active-section`);
-        return section && dashboardSections.includes(section) ? section : "Inicio";
+        section = localStorage.getItem(key);
     }
     catch (error) {
-        console.error("No se pudo restaurar la sección del dashboard:", error);
-        return "Inicio";
+        console.warn("No se pudo restaurar la sección guardada del dashboard:", error);
     }
+    if (!section || !dashboardSections.includes(section)) {
+        try {
+            section = sessionStorage.getItem(key);
+        }
+        catch (fallbackError) {
+            console.error("No se pudo restaurar la sección de la sesión actual:", fallbackError);
+        }
+    }
+    return section && dashboardSections.includes(section) ? section : "Inicio";
 }
 function getStoredDashboardTheme(login) {
     try {
@@ -99,7 +108,10 @@ const allowedDashboardSections = computed(() => {
     if (currentUser.value.isAdmin)
         return dashboardSections;
     if (currentUser.value.sectionAccess.includes("recepcion")) {
-        return ["Agenda de citas", "Bitácora diaria"];
+        return [
+            "Agenda de citas",
+            "Bitácora diaria",
+        ];
     }
     if (currentUser.value.sectionAccess.includes("anfitriones")) {
         return [
@@ -117,18 +129,22 @@ const isHost = computed(() => !currentUser.value.isAdmin &&
     !currentUser.value.sectionAccess.includes("recepcion"));
 if (isHost.value)
     appointmentFilter.value = "all";
-const currentRoleLabel = computed(() => currentUser.value.isAdmin ? "Programador" : isReception.value ? "Recepción" : "Anfitrión");
+const currentRoleLabel = computed(() => currentUser.value.isAdmin
+    ? "Programador"
+    : isReception.value
+        ? "Recepción"
+        : "Anfitrión");
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
 const appointmentDialogOpen = ref(false);
 const editingAppointmentId = ref(null);
 const qrDialogOpen = ref(false);
 const qrAppointment = ref(null);
+const qrExternalStaff = ref(null);
 const qrDataUrl = ref("");
 const qrGenerating = ref(false);
-const qrEmailSending = ref(false);
-const qrEmailRecoveryOpen = ref(false);
-const qrEmailRecoveryValue = ref("");
+const qrDispatchAppointment = ref(null);
+const sendingExternalQrStaffId = ref(null);
 const deletingAppointmentId = ref(null);
 const dailyLogInitialRange = ref(null);
 const externalStaffDialogOpen = ref(false);
@@ -136,8 +152,6 @@ const editingExternalStaffId = ref(null);
 const externalStaffSaving = ref(false);
 const businessPartnerDialogOpen = ref(false);
 const editingBusinessPartnerId = ref(null);
-const generalVisitorDialogOpen = ref(false);
-const editingGeneralVisitorId = ref(null);
 const visitorName = ref("");
 const visitorEmail = ref("");
 const visitorSelection = ref("");
@@ -179,7 +193,6 @@ const hostEmail = ref("");
 const hostPhone = ref("");
 const businessDirectoryLoading = ref(false);
 const businessPartnerSaving = ref(false);
-const generalVisitorSaving = ref(false);
 const nextBusinessPartnerId = ref(0);
 const businessPartnerSearch = ref("");
 const businessPartnerTypeFilter = ref("Todas");
@@ -191,17 +204,10 @@ const businessPartnerName = ref("");
 const businessPartnerDescription = ref("");
 const businessPartnerRfc = ref("");
 const businessPartnerCategory = ref("");
+const businessPartnerSubject = ref("");
 const businessPartnerEmployeeCount = ref(1);
 const businessPartnerType = ref("Contratista");
 const businessPartnerStatus = ref("Activa");
-const nextGeneralVisitorId = ref(0);
-const generalVisitorSearch = ref("");
-const generalVisitorCurpFilter = ref("Todas");
-const generalVisitorPage = ref(1);
-const generalVisitorName = ref("");
-const generalVisitorCurp = ref("");
-const generalVisitorPhone = ref("");
-const generalVisitorEmail = ref("");
 watch(allowedDashboardSections, (sections) => {
     if (!sections.includes(activeSection.value)) {
         activeSection.value = sections[0] ?? "";
@@ -238,12 +244,18 @@ watch(accessAccounts, (accounts) => {
     });
 }, { immediate: true });
 watch(activeSection, (section) => {
+    const key = `visitas:${encodeURIComponent(currentUser.value.login)}:active-section`;
     try {
-        localStorage.setItem(`visitas:${encodeURIComponent(currentUser.value.login)}:active-section`, section);
+        localStorage.setItem(key, section);
     }
     catch (error) {
-        console.error("No se pudo guardar la sección del dashboard:", error);
-        showToast("No se pudo recordar la sección para la próxima visita.");
+        console.warn("No se pudo guardar la sección del dashboard de forma permanente:", error);
+        try {
+            sessionStorage.setItem(key, section);
+        }
+        catch (fallbackError) {
+            console.error("No se pudo guardar la sección de la sesión actual:", fallbackError);
+        }
     }
     if (section === "Bitácora diaria")
         void loadAppointments();
@@ -259,7 +271,8 @@ watch(hosts, (storedHosts) => {
 }, { deep: true });
 const selectableHostAccounts = computed(() => hostAccountOptions.value.filter((account) => !hosts.value.some((host) => host.login.toLocaleLowerCase() === account.login.toLocaleLowerCase() &&
     host.id !== editingHostId.value)));
-const externalStaffPartnerOptions = computed(() => businessPartners.value.filter((partner) => partner.type === externalStaffRelationshipType.value));
+const externalStaffPartnerOptions = computed(() => businessPartners.value.filter((partner) => partner.type !== "Visitante" &&
+    partner.type === externalStaffRelationshipType.value));
 let liveRefreshTimer;
 function refreshVisibleSection() {
     if (document.visibilityState !== "visible")
@@ -498,7 +511,7 @@ const summaryItems = [
     },
     {
         title: "Crear cita (anfitrión)",
-        detail: "Selecciona visitante, fecha, hora y anfitrión. Envía QR al visitante.",
+        detail: "Selecciona visitante, fecha, hora y anfitrión. Descarga el QR para compartirlo.",
         icon: "calendar",
     },
     {
@@ -518,7 +531,9 @@ const pageTitle = computed(() => !activeSection.value
         ? "Panel de control"
         : activeSection.value);
 const hostEligibleDepartments = computed(() => departments.value);
-const appointmentCompanyOptions = computed(() => [...businessPartners.value].sort((first, second) => first.name.localeCompare(second.name, "es")));
+const appointmentCompanyOptions = computed(() => [...businessPartners.value]
+    .filter((partner) => partner.type !== "Visitante")
+    .sort((first, second) => first.name.localeCompare(second.name, "es")));
 const appointmentHostOptions = computed(() => isHost.value
     ? [{
             id: 0,
@@ -584,25 +599,6 @@ const paginatedBusinessPartners = computed(() => {
     return filteredBusinessPartners.value.slice(start, start + partnerRowsPerPage);
 });
 const businessPartnerPages = computed(() => Math.max(1, Math.ceil(filteredBusinessPartners.value.length / partnerRowsPerPage)));
-const filteredGeneralVisitors = computed(() => {
-    const query = generalVisitorSearch.value.trim().toLocaleLowerCase();
-    return generalVisitors.value.filter((visitor) => {
-        const matchesQuery = !query ||
-            [visitor.fullName, visitor.curp, visitor.phone, visitor.email]
-                .join(" ")
-                .toLocaleLowerCase()
-                .includes(query);
-        const matchesCurp = generalVisitorCurpFilter.value === "Todas" ||
-            (generalVisitorCurpFilter.value === "Con CURP" && Boolean(visitor.curp)) ||
-            (generalVisitorCurpFilter.value === "Sin CURP" && !visitor.curp);
-        return matchesQuery && matchesCurp;
-    });
-});
-const paginatedGeneralVisitors = computed(() => {
-    const start = (generalVisitorPage.value - 1) * partnerRowsPerPage;
-    return filteredGeneralVisitors.value.slice(start, start + partnerRowsPerPage);
-});
-const generalVisitorPages = computed(() => Math.max(1, Math.ceil(filteredGeneralVisitors.value.length / partnerRowsPerPage)));
 const selectedAppointments = computed(() => appointments.value
     .filter((appointment) => appointmentFilter.value === "all" || appointment.date === selectedAppointmentDate.value)
     .sort((first, second) => first.date.localeCompare(second.date) || first.time.localeCompare(second.time)));
@@ -661,17 +657,9 @@ watch([
 ], () => {
     businessPartnerPage.value = 1;
 });
-watch([generalVisitorSearch, generalVisitorCurpFilter], () => {
-    generalVisitorPage.value = 1;
-});
 watch(filteredBusinessPartners, () => {
     if (businessPartnerPage.value > businessPartnerPages.value) {
         businessPartnerPage.value = businessPartnerPages.value;
-    }
-});
-watch(filteredGeneralVisitors, () => {
-    if (generalVisitorPage.value > generalVisitorPages.value) {
-        generalVisitorPage.value = generalVisitorPages.value;
     }
 });
 watch(selectedAppointmentDate, (date) => {
@@ -765,12 +753,13 @@ async function logout() {
         showToast("No se pudo conectar con el servidor para cerrar la sesión.");
     }
 }
-async function createAppointmentQr(appointment) {
+async function createAppointmentQr(appointment, staff) {
     return QRCode.toDataURL(JSON.stringify({
         type: "visitas-appointment",
         id: appointment.id,
         referenceCode: appointment.referenceCode,
-        visitor: appointment.visitor,
+        visitor: staff?.fullName ?? appointment.visitor,
+        ...(staff ? { externalStaffId: staff.id } : {}),
         company: appointment.company,
         host: appointment.host,
         date: appointment.date,
@@ -783,6 +772,7 @@ async function createAppointmentQr(appointment) {
     });
 }
 async function openQrDialog(appointment) {
+    qrExternalStaff.value = null;
     qrAppointment.value = appointment;
     qrDataUrl.value = "";
     qrGenerating.value = true;
@@ -798,6 +788,89 @@ async function openQrDialog(appointment) {
     finally {
         qrGenerating.value = false;
     }
+}
+function openCompanyQrDispatch(appointment) {
+    if (appointment.partnerType !== "Contratista" || !appointment.businessPartnerId) {
+        showToast("Esta cita no está vinculada a un contratista.");
+        return;
+    }
+    qrDispatchAppointment.value = appointment;
+    selectSection("Personal de externos");
+}
+async function openExternalStaffQr(staff) {
+    const appointment = qrDispatchAppointment.value;
+    if (!appointment) {
+        showToast("No se encontró la cita para generar este QR.");
+        return;
+    }
+    qrAppointment.value = appointment;
+    qrExternalStaff.value = staff;
+    qrDataUrl.value = "";
+    qrGenerating.value = true;
+    qrDialogOpen.value = true;
+    try {
+        qrDataUrl.value = await createAppointmentQr(appointment, staff);
+    }
+    catch (error) {
+        console.error("Failed to generate external staff appointment QR:", error);
+        showToast("No se pudo generar el código QR de este empleado.");
+        qrDialogOpen.value = false;
+    }
+    finally {
+        qrGenerating.value = false;
+    }
+}
+async function sendExternalStaffQr(staff) {
+    const appointment = qrDispatchAppointment.value;
+    if (!appointment || staff.businessPartnerId !== appointment.businessPartnerId) {
+        showToast("El empleado no pertenece a la empresa de esta cita.");
+        return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(staff.email.trim())) {
+        showToast("El envío está bloqueado hasta registrar un correo electrónico válido.");
+        return;
+    }
+    if (sendingExternalQrStaffId.value !== null)
+        return;
+    const equipmentRecipient = externalStaff.value
+        .filter((person) => person.businessPartnerId === appointment.businessPartnerId &&
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim()))
+        .sort((first, second) => first.id - second.id)[0];
+    const receivesEquipmentLink = equipmentRecipient?.id === staff.id;
+    const confirmed = await confirmUser(receivesEquipmentLink
+        ? `Se enviará el QR de ${staff.fullName} a ${staff.email}. Si la declaración aún está pendiente, este correo incluirá el enlace para declarar equipo y herramientas. Ese enlace solo puede usarse una vez y se desactiva al enviar la declaración; solo esta persona lo recibe. ¿Continuar?`
+        : `Se enviará el QR de ${staff.fullName} a ${staff.email}. El enlace de declaración de equipo se envía únicamente a ${equipmentRecipient?.fullName ?? "la primera persona con correo válido"}. ¿Continuar?`, "Enviar QR");
+    if (!confirmed)
+        return;
+    sendingExternalQrStaffId.value = staff.id;
+    try {
+        const response = await fetch(`/api/appointments/${appointment.id}/send-qr`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ employeeId: staff.id }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            showToast(result.error ?? "No se pudo enviar el QR al empleado.");
+            return;
+        }
+        if (!result.message) {
+            console.error("La API no devolvió la confirmación del envío del QR.");
+            showToast("El servidor no confirmó el envío del QR.");
+            return;
+        }
+        showToast(result.message, "success");
+    }
+    catch (error) {
+        console.error("Failed to send external staff appointment QR:", error);
+        showToast("No se pudo conectar con el servidor para enviar el QR.");
+    }
+    finally {
+        sendingExternalQrStaffId.value = null;
+    }
+}
+function clearQrDispatch() {
+    qrDispatchAppointment.value = null;
 }
 function openAppointmentDialog(appointment) {
     editingAppointmentId.value = appointment?.id ?? null;
@@ -1093,18 +1166,19 @@ async function submitAppointment() {
         ? visitorName.value.trim()
         : selectedVisitor?.fullName ?? "";
     const email = visitorEmail.value.trim();
-    const appointmentEmail = visitorSelection.value === otherAppointmentVisitor
+    let appointmentEmail = visitorSelection.value === otherAppointmentVisitor
         ? email
         : selectedVisitor?.email.trim() ?? "";
     if (!appointmentVisitorName || !company || !host || !visitorSelection.value) {
         showToast("Selecciona empresa, visitante y anfitrión.");
         return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(appointmentEmail)) {
-        showToast(visitorSelection.value === otherAppointmentVisitor
-            ? "Ingresa un correo válido para el visitante."
-            : "El empleado seleccionado no tiene un correo válido registrado. Actualiza su ficha de Personal de externos.");
-        return;
+    if (appointmentEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(appointmentEmail)) {
+        if (visitorSelection.value === otherAppointmentVisitor) {
+            showToast("Ingresa un correo válido o déjalo vacío.");
+            return;
+        }
+        appointmentEmail = "";
     }
     appointmentSaving.value = true;
     try {
@@ -1152,73 +1226,16 @@ async function submitAppointment() {
         appointmentSaving.value = false;
     }
 }
-async function sendAppointmentQr(appointment) {
-    const isContractor = appointment.partnerType === "Contratista";
-    const message = isContractor
-        ? `Se enviará el código QR de visita y el código de referencia a ${appointment.email || "su correo"}. También recibirá el enlace de un solo uso para declarar el equipo y las herramientas que llevará. Al enviar el formulario, el enlace se desactivará; en recepción solo podrá ingresar lo registrado y verificado. Comparte esta condición con la persona visitante.`
-        : `Se enviará únicamente el código QR de visita y su código de referencia a ${appointment.email || "su correo"}. Para proveedores no se envía formulario ni enlace de equipo.`;
-    if (!await confirmUser(message, "Enviar QR"))
-        return;
-    await sendAppointmentQrEmail(appointment);
-}
-async function sendAppointmentQrEmail(appointment) {
-    await sendAppointmentQrEmailTo(appointment);
-}
-async function sendAppointmentQrEmailTo(appointment, email) {
-    if (qrEmailSending.value)
-        return;
-    qrEmailSending.value = true;
-    try {
-        const response = await fetch(`/api/appointments/${appointment.id}/send-qr`, {
-            method: "POST",
-            ...(email
-                ? {
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ email }),
-                }
-                : {}),
-        });
-        const result = await response.json();
-        if (!response.ok) {
-            if (result.code === "VISITOR_EMAIL_REQUIRED") {
-                qrEmailRecoveryValue.value = "";
-                qrEmailRecoveryOpen.value = true;
-                return;
-            }
-            showToast(result.error ?? "No se pudo enviar el correo con el QR.");
-            return;
-        }
-        qrEmailRecoveryOpen.value = false;
-        qrDialogOpen.value = false;
-        showToast(result.message ?? (appointment.partnerType === "Contratista"
-            ? `El pase, el código de referencia y el enlace de declaración se enviaron a ${appointment.email}.`
-            : `El pase y el código de referencia se enviaron a ${appointment.email}.`), "success");
-    }
-    catch (error) {
-        console.error("Failed to email appointment QR:", error);
-        showToast("No se pudo conectar con el servidor para enviar el pase.");
-    }
-    finally {
-        qrEmailSending.value = false;
-    }
-}
-async function submitQrEmailRecovery() {
-    const appointment = qrAppointment.value;
-    const email = qrEmailRecoveryValue.value.trim();
-    if (!appointment || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        showToast("Ingresa un correo válido para el visitante.");
-        return;
-    }
-    await sendAppointmentQrEmailTo(appointment, email);
-}
-function downloadAppointmentQr(appointment, dataUrl = qrDataUrl.value) {
+function downloadAppointmentQr(appointment, dataUrl = qrDataUrl.value, staff = qrExternalStaff.value) {
     if (!dataUrl) {
         showToast("El QR aún no está listo para descargarse.");
         return;
     }
     const link = document.createElement("a");
     link.href = dataUrl;
-    link.download = `visitas-cita-${appointment.id}.png`;
+    link.download = staff
+        ? `visitas-cita-${appointment.id}-empleado-${staff.id}.png`
+        : `visitas-cita-${appointment.id}.png`;
     link.click();
 }
 async function deleteAppointment(appointment) {
@@ -1292,7 +1309,7 @@ function openExternalStaffDialog(staff, businessPartnerId) {
     externalStaffEmail.value = staff?.email ?? "";
     const selectedPartner = businessPartners.value.find((partner) => partner.id === (staff?.businessPartnerId ?? businessPartnerId));
     externalStaffRelationshipType.value =
-        staff?.relationshipType ?? selectedPartner?.type ?? "Contratista";
+        staff?.relationshipType ?? (selectedPartner?.type === "Proveedor" ? "Proveedor" : "Contratista");
     externalStaffBusinessPartnerId.value =
         staff?.businessPartnerId ?? businessPartnerId ?? null;
     externalStaffDialogOpen.value = true;
@@ -1389,10 +1406,26 @@ function openBusinessPartnerDialog(partner) {
     businessPartnerDescription.value = partner?.description ?? "";
     businessPartnerRfc.value = partner?.rfc ?? "";
     businessPartnerCategory.value = partner?.category ?? "";
+    businessPartnerSubject.value = partner?.subject ?? "";
     businessPartnerEmployeeCount.value = partner?.employeeCount ?? 1;
     businessPartnerType.value = partner?.type ?? "Contratista";
     businessPartnerStatus.value = partner?.status ?? "Activa";
     businessPartnerDialogOpen.value = true;
+}
+function changeBusinessPartnerType(type) {
+    businessPartnerType.value = type;
+    if (type === "Visitante") {
+        businessPartnerDescription.value = "Público General";
+        businessPartnerRfc.value = "N/A";
+        businessPartnerCategory.value = "Visitante";
+        businessPartnerEmployeeCount.value = 1;
+        businessPartnerStatus.value = "No aplica";
+    }
+    else {
+        if (businessPartnerStatus.value === "No aplica")
+            businessPartnerStatus.value = "Activa";
+        businessPartnerSubject.value = "";
+    }
 }
 async function submitBusinessPartner() {
     if (businessPartnerSaving.value)
@@ -1401,12 +1434,17 @@ async function submitBusinessPartner() {
     const description = businessPartnerDescription.value.trim();
     const rfc = businessPartnerRfc.value.trim().toLocaleUpperCase();
     const category = businessPartnerCategory.value.trim();
+    const subject = businessPartnerSubject.value.trim();
     const employeeCount = businessPartnerEmployeeCount.value;
-    if (!name || !description || !rfc || !category) {
-        showToast("Completa el nombre, la descripción, el RFC y la categoría.");
+    const isVisitor = businessPartnerType.value === "Visitante";
+    if (!name || (isVisitor && !subject) || (!isVisitor && (!description || !rfc || !category))) {
+        showToast(isVisitor
+            ? "Completa el nombre y el asunto del visitante."
+            : "Completa el nombre, la descripción, el RFC y la categoría de la empresa.");
         return;
     }
-    if (!Number.isSafeInteger(employeeCount) || employeeCount < 1 || employeeCount > 4294967295) {
+    if (!isVisitor &&
+        (!Number.isSafeInteger(employeeCount) || employeeCount < 1 || employeeCount > 4294967295)) {
         showToast("El número de empleados debe ser un entero entre 1 y 4,294,967,295.");
         return;
     }
@@ -1418,7 +1456,7 @@ async function submitBusinessPartner() {
             return;
         }
     }
-    const duplicateRfc = businessPartners.value.some((partner) => partner.rfc.toLocaleUpperCase() === rfc &&
+    const duplicateRfc = !isVisitor && businessPartners.value.some((partner) => partner.rfc.toLocaleUpperCase() === rfc &&
         partner.id !== editingBusinessPartnerId.value);
     if (duplicateRfc) {
         showToast("Ya existe un contratista o proveedor registrado con ese RFC.");
@@ -1426,12 +1464,13 @@ async function submitBusinessPartner() {
     }
     const partnerData = {
         name,
-        description,
-        rfc,
-        category,
-        employeeCount: businessPartnerEmployeeCount.value,
+        description: isVisitor ? "Público General" : description,
+        rfc: isVisitor ? "N/A" : rfc,
+        category: isVisitor ? "Visitante" : category,
+        subject: isVisitor ? subject : null,
+        employeeCount: isVisitor ? 1 : employeeCount,
         type: businessPartnerType.value,
-        status: businessPartnerStatus.value,
+        status: isVisitor ? "No aplica" : businessPartnerStatus.value,
     };
     businessPartnerSaving.value = true;
     try {
@@ -1467,6 +1506,7 @@ async function submitBusinessPartner() {
     businessPartnerDescription.value = "";
     businessPartnerRfc.value = "";
     businessPartnerCategory.value = "";
+    businessPartnerSubject.value = "";
     businessPartnerEmployeeCount.value = 1;
 }
 async function removeBusinessPartner(id) {
@@ -1488,103 +1528,6 @@ async function removeBusinessPartner(id) {
     catch (error) {
         console.error("Failed to delete business partner:", error);
         showToast("No se pudo conectar con el servidor para eliminar la empresa.");
-    }
-}
-function openGeneralVisitorDialog(visitor) {
-    editingGeneralVisitorId.value = visitor?.id ?? null;
-    generalVisitorName.value = visitor?.fullName ?? "";
-    generalVisitorCurp.value = visitor?.curp ?? "";
-    generalVisitorPhone.value = visitor?.phone ?? "";
-    generalVisitorEmail.value = visitor?.email ?? "";
-    generalVisitorDialogOpen.value = true;
-}
-async function submitGeneralVisitor() {
-    if (generalVisitorSaving.value)
-        return;
-    const fullName = generalVisitorName.value.trim();
-    const curp = generalVisitorCurp.value.trim().toLocaleUpperCase();
-    const phone = generalVisitorPhone.value.trim();
-    const email = generalVisitorEmail.value.trim();
-    if (!fullName || !phone || !email) {
-        showToast("Completa el nombre, la CURP, el teléfono y el correo electrónico.");
-        return;
-    }
-    if (!/^[A-Z0-9]{18}$/.test(curp)) {
-        showToast("La CURP debe contener 18 letras o números.");
-        return;
-    }
-    if (phone.length > 30 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        showToast("Revisa que el teléfono y el correo electrónico sean válidos.");
-        return;
-    }
-    const duplicateCurp = curp
-        ? generalVisitors.value.some((visitor) => visitor.curp.toLocaleUpperCase() === curp &&
-            visitor.id !== editingGeneralVisitorId.value)
-        : false;
-    if (duplicateCurp) {
-        showToast("Ya existe un visitante registrado con esa CURP.");
-        return;
-    }
-    const visitorData = {
-        fullName,
-        curp,
-        phone,
-        email,
-    };
-    generalVisitorSaving.value = true;
-    try {
-        const visitorId = editingGeneralVisitorId.value;
-        const response = await fetch(visitorId === null ? "/api/general-visitors" : `/api/general-visitors/${visitorId}`, {
-            method: visitorId === null ? "POST" : "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(visitorData),
-        });
-        const result = await response.json();
-        if (!response.ok) {
-            showToast(result.error ?? "No se pudo guardar a la persona.");
-            return;
-        }
-        if (!Array.isArray(result.generalVisitors)) {
-            console.error("La API devolvió una lista de personas con formato inválido.");
-            showToast("La persona se guardó, pero no se pudo actualizar la lista.");
-            return;
-        }
-        generalVisitors.value = result.generalVisitors;
-        generalVisitorDialogOpen.value = false;
-        showToast(visitorId === null ? "La persona se registró correctamente." : "Los datos de la persona se actualizaron.", "success");
-    }
-    catch (error) {
-        console.error("Failed to save general visitor:", error);
-        showToast("No se pudo conectar con el servidor para guardar a la persona.");
-    }
-    finally {
-        generalVisitorSaving.value = false;
-    }
-    editingGeneralVisitorId.value = null;
-    generalVisitorName.value = "";
-    generalVisitorCurp.value = "";
-    generalVisitorPhone.value = "";
-    generalVisitorEmail.value = "";
-}
-async function removeGeneralVisitor(id) {
-    try {
-        const response = await fetch(`/api/general-visitors/${id}`, { method: "DELETE" });
-        const result = await response.json();
-        if (!response.ok) {
-            showToast(result.error ?? "No se pudo eliminar a la persona.");
-            return;
-        }
-        if (!Array.isArray(result.generalVisitors)) {
-            console.error("La API devolvió una lista de personas con formato inválido.");
-            showToast("La persona se eliminó, pero no se pudo actualizar la lista.");
-            return;
-        }
-        generalVisitors.value = result.generalVisitors;
-        showToast("La persona se eliminó.", "success");
-    }
-    catch (error) {
-        console.error("Failed to delete general visitor:", error);
-        showToast("No se pudo conectar con el servidor para eliminar a la persona.");
     }
 }
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
@@ -2266,8 +2209,8 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         ...{ 'onUpdate:page': {} },
         ...{ 'onCreate': {} },
         ...{ 'onCancel': {} },
-        ...{ 'onSendQr': {} },
         ...{ 'onOpenQr': {} },
+        ...{ 'onSendCompanyQrs': {} },
         ...{ 'onDelete': {} },
         ...{ 'onEdit': {} },
         ...{ 'onChangeMonth': {} },
@@ -2292,8 +2235,8 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         ...{ 'onUpdate:page': {} },
         ...{ 'onCreate': {} },
         ...{ 'onCancel': {} },
-        ...{ 'onSendQr': {} },
         ...{ 'onOpenQr': {} },
+        ...{ 'onSendCompanyQrs': {} },
         ...{ 'onDelete': {} },
         ...{ 'onEdit': {} },
         ...{ 'onChangeMonth': {} },
@@ -2331,10 +2274,10 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         onCancel: (__VLS_ctx.cancelAppointment)
     };
     const __VLS_9 = {
-        onSendQr: (__VLS_ctx.sendAppointmentQr)
+        onOpenQr: (__VLS_ctx.openQrDialog)
     };
     const __VLS_10 = {
-        onOpenQr: (__VLS_ctx.openQrDialog)
+        onSendCompanyQrs: (__VLS_ctx.openCompanyQrDispatch)
     };
     const __VLS_11 = {
         onDelete: (__VLS_ctx.deleteAppointment)
@@ -2466,19 +2409,29 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
+        ...{ 'onSendQr': {} },
+        ...{ 'onOpenQr': {} },
+        ...{ 'onClearDispatch': {} },
         search: (__VLS_ctx.externalStaffSearch),
-        companies: (__VLS_ctx.businessPartners),
+        companies: (__VLS_ctx.externalStaffPartnerOptions),
         staff: (__VLS_ctx.externalStaff),
         loading: (__VLS_ctx.businessDirectoryLoading),
+        dispatchAppointment: (__VLS_ctx.qrDispatchAppointment),
+        sendingStaffId: (__VLS_ctx.sendingExternalQrStaffId),
     }));
     const __VLS_41 = __VLS_40({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
+        ...{ 'onSendQr': {} },
+        ...{ 'onOpenQr': {} },
+        ...{ 'onClearDispatch': {} },
         search: (__VLS_ctx.externalStaffSearch),
-        companies: (__VLS_ctx.businessPartners),
+        companies: (__VLS_ctx.externalStaffPartnerOptions),
         staff: (__VLS_ctx.externalStaff),
         loading: (__VLS_ctx.businessDirectoryLoading),
+        dispatchAppointment: (__VLS_ctx.qrDispatchAppointment),
+        sendingStaffId: (__VLS_ctx.sendingExternalQrStaffId),
     }, ...__VLS_functionalComponentArgsRest(__VLS_40));
     let __VLS_43;
     let __VLS_44;
@@ -2504,26 +2457,29 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
     const __VLS_48 = {
         onRemove: (__VLS_ctx.removeExternalStaff)
     };
+    const __VLS_49 = {
+        onSendQr: (__VLS_ctx.sendExternalStaffQr)
+    };
+    const __VLS_50 = {
+        onOpenQr: (__VLS_ctx.openExternalStaffQr)
+    };
+    const __VLS_51 = {
+        onClearDispatch: (__VLS_ctx.clearQrDispatch)
+    };
     var __VLS_42;
 }
 else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
     /** @type {[typeof BusinessDirectorySection, ]} */ ;
     // @ts-ignore
-    const __VLS_49 = __VLS_asFunctionalComponent(BusinessDirectorySection, new BusinessDirectorySection({
+    const __VLS_52 = __VLS_asFunctionalComponent(BusinessDirectorySection, new BusinessDirectorySection({
         ...{ 'onCreatePartner': {} },
         ...{ 'onEditPartner': {} },
         ...{ 'onRemovePartner': {} },
-        ...{ 'onCreateVisitor': {} },
-        ...{ 'onEditVisitor': {} },
-        ...{ 'onRemoveVisitor': {} },
         businessPartnerSearch: (__VLS_ctx.businessPartnerSearch),
         businessPartnerTypeFilter: (__VLS_ctx.businessPartnerTypeFilter),
         businessPartnerCategoryFilter: (__VLS_ctx.businessPartnerCategoryFilter),
         businessPartnerStatusFilter: (__VLS_ctx.businessPartnerStatusFilter),
         businessPartnerPage: (__VLS_ctx.businessPartnerPage),
-        generalVisitorSearch: (__VLS_ctx.generalVisitorSearch),
-        generalVisitorCurpFilter: (__VLS_ctx.generalVisitorCurpFilter),
-        generalVisitorPage: (__VLS_ctx.generalVisitorPage),
         businessPartners: (__VLS_ctx.businessPartners),
         filteredBusinessPartners: (__VLS_ctx.filteredBusinessPartners),
         paginatedBusinessPartners: (__VLS_ctx.paginatedBusinessPartners),
@@ -2532,27 +2488,16 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
         partnerRowsPerPage: (__VLS_ctx.partnerRowsPerPage),
         loading: (__VLS_ctx.businessDirectoryLoading),
         businessPartnerSaving: (__VLS_ctx.businessPartnerSaving),
-        generalVisitorSaving: (__VLS_ctx.generalVisitorSaving),
-        generalVisitors: (__VLS_ctx.generalVisitors),
-        filteredGeneralVisitors: (__VLS_ctx.filteredGeneralVisitors),
-        paginatedGeneralVisitors: (__VLS_ctx.paginatedGeneralVisitors),
-        generalVisitorPages: (__VLS_ctx.generalVisitorPages),
     }));
-    const __VLS_50 = __VLS_49({
+    const __VLS_53 = __VLS_52({
         ...{ 'onCreatePartner': {} },
         ...{ 'onEditPartner': {} },
         ...{ 'onRemovePartner': {} },
-        ...{ 'onCreateVisitor': {} },
-        ...{ 'onEditVisitor': {} },
-        ...{ 'onRemoveVisitor': {} },
         businessPartnerSearch: (__VLS_ctx.businessPartnerSearch),
         businessPartnerTypeFilter: (__VLS_ctx.businessPartnerTypeFilter),
         businessPartnerCategoryFilter: (__VLS_ctx.businessPartnerCategoryFilter),
         businessPartnerStatusFilter: (__VLS_ctx.businessPartnerStatusFilter),
         businessPartnerPage: (__VLS_ctx.businessPartnerPage),
-        generalVisitorSearch: (__VLS_ctx.generalVisitorSearch),
-        generalVisitorCurpFilter: (__VLS_ctx.generalVisitorCurpFilter),
-        generalVisitorPage: (__VLS_ctx.generalVisitorPage),
         businessPartners: (__VLS_ctx.businessPartners),
         filteredBusinessPartners: (__VLS_ctx.filteredBusinessPartners),
         paginatedBusinessPartners: (__VLS_ctx.paginatedBusinessPartners),
@@ -2561,16 +2506,11 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
         partnerRowsPerPage: (__VLS_ctx.partnerRowsPerPage),
         loading: (__VLS_ctx.businessDirectoryLoading),
         businessPartnerSaving: (__VLS_ctx.businessPartnerSaving),
-        generalVisitorSaving: (__VLS_ctx.generalVisitorSaving),
-        generalVisitors: (__VLS_ctx.generalVisitors),
-        filteredGeneralVisitors: (__VLS_ctx.filteredGeneralVisitors),
-        paginatedGeneralVisitors: (__VLS_ctx.paginatedGeneralVisitors),
-        generalVisitorPages: (__VLS_ctx.generalVisitorPages),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_49));
-    let __VLS_52;
-    let __VLS_53;
-    let __VLS_54;
-    const __VLS_55 = {
+    }, ...__VLS_functionalComponentArgsRest(__VLS_52));
+    let __VLS_55;
+    let __VLS_56;
+    let __VLS_57;
+    const __VLS_58 = {
         onCreatePartner: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2587,36 +2527,13 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
             __VLS_ctx.openBusinessPartnerDialog();
         }
     };
-    const __VLS_56 = {
+    const __VLS_59 = {
         onEditPartner: (__VLS_ctx.openBusinessPartnerDialog)
     };
-    const __VLS_57 = {
+    const __VLS_60 = {
         onRemovePartner: (__VLS_ctx.removeBusinessPartner)
     };
-    const __VLS_58 = {
-        onCreateVisitor: (...[$event]) => {
-            if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Anfitriones'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Accesos'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Departamento'))
-                return;
-            if (!!(__VLS_ctx.activeSection === 'Personal de externos'))
-                return;
-            if (!(__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes'))
-                return;
-            __VLS_ctx.openGeneralVisitorDialog();
-        }
-    };
-    const __VLS_59 = {
-        onEditVisitor: (__VLS_ctx.openGeneralVisitorDialog)
-    };
-    const __VLS_60 = {
-        onRemoveVisitor: (__VLS_ctx.removeGeneralVisitor)
-    };
-    var __VLS_51;
+    var __VLS_54;
 }
 else if (__VLS_ctx.activeSection === 'Equipo y herramientas') {
     /** @type {[typeof EquipmentSection, ]} */ ;
@@ -2675,7 +2592,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
         ...{ 'onCancelAppointment': {} },
         ...{ 'onDeleteAppointment': {} },
         ...{ 'onOpenQr': {} },
-        ...{ 'onShowToast': {} },
+        ...{ 'onSendCompanyQrs': {} },
         ...{ 'onOpenLog': {} },
         ...{ 'onOpenAppointments': {} },
         ...{ 'onOpenEquipment': {} },
@@ -2689,7 +2606,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
         ...{ 'onCancelAppointment': {} },
         ...{ 'onDeleteAppointment': {} },
         ...{ 'onOpenQr': {} },
-        ...{ 'onShowToast': {} },
+        ...{ 'onSendCompanyQrs': {} },
         ...{ 'onOpenLog': {} },
         ...{ 'onOpenAppointments': {} },
         ...{ 'onOpenEquipment': {} },
@@ -2716,7 +2633,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
         onOpenQr: (__VLS_ctx.openQrDialog)
     };
     const __VLS_83 = {
-        onShowToast: (__VLS_ctx.showToast)
+        onSendCompanyQrs: (__VLS_ctx.openCompanyQrDispatch)
     };
     const __VLS_84 = {
         onOpenLog: (__VLS_ctx.openDailyLogRange)
@@ -2912,7 +2829,6 @@ if (__VLS_ctx.appointmentDialogOpen) {
             autocomplete: "email",
             maxlength: "254",
             placeholder: "persona@empresa.com",
-            required: true,
         });
         (__VLS_ctx.visitorEmail);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
@@ -2923,7 +2839,6 @@ if (__VLS_ctx.appointmentDialogOpen) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
             ...{ class: "appointment-field-hint appointment-form-full" },
         });
-        (__VLS_ctx.visitorEmail || "el correo guardado en la ficha del empleado");
     }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
@@ -2991,7 +2906,7 @@ if (__VLS_ctx.qrDialogOpen) {
         ...{ class: "dialog-description" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-    (__VLS_ctx.qrAppointment?.visitor);
+    (__VLS_ctx.qrExternalStaff?.fullName ?? __VLS_ctx.qrAppointment?.visitor);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "qr-preview" },
     });
@@ -3003,7 +2918,7 @@ if (__VLS_ctx.qrDialogOpen) {
     else if (__VLS_ctx.qrDataUrl) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
             src: (__VLS_ctx.qrDataUrl),
-            alt: (`Código QR de la cita de ${__VLS_ctx.qrAppointment?.visitor}`),
+            alt: (`Código QR de la cita de ${__VLS_ctx.qrExternalStaff?.fullName ?? __VLS_ctx.qrAppointment?.visitor}`),
         });
     }
     if (__VLS_ctx.qrAppointment) {
@@ -3018,6 +2933,10 @@ if (__VLS_ctx.qrDialogOpen) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.br)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
         (__VLS_ctx.qrAppointment.referenceCode);
+        if (__VLS_ctx.qrExternalStaff) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.br)({});
+            (__VLS_ctx.qrExternalStaff.fullName);
+        }
     }
     if (!__VLS_ctx.isReception) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -3029,22 +2948,9 @@ if (__VLS_ctx.qrDialogOpen) {
                         return;
                     if (!(!__VLS_ctx.isReception))
                         return;
-                    __VLS_ctx.qrAppointment && __VLS_ctx.sendAppointmentQr(__VLS_ctx.qrAppointment);
-                } },
-            ...{ class: "button-primary dialog-submit" },
-            type: "button",
-            disabled: (__VLS_ctx.qrGenerating || __VLS_ctx.qrEmailSending || !__VLS_ctx.qrAppointment),
-        });
-        (__VLS_ctx.qrEmailSending ? "Enviando por correo..." : "Enviar por correo");
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (...[$event]) => {
-                    if (!(__VLS_ctx.qrDialogOpen))
-                        return;
-                    if (!(!__VLS_ctx.isReception))
-                        return;
                     __VLS_ctx.qrAppointment && __VLS_ctx.downloadAppointmentQr(__VLS_ctx.qrAppointment);
                 } },
-            ...{ class: "button-secondary dialog-submit" },
+            ...{ class: "button-primary dialog-submit" },
             type: "button",
             disabled: (__VLS_ctx.qrGenerating || !__VLS_ctx.qrDataUrl || !__VLS_ctx.qrAppointment),
         });
@@ -3053,10 +2959,8 @@ if (__VLS_ctx.qrDialogOpen) {
         ...{ class: "qr-placeholder-note" },
     });
     (__VLS_ctx.isReception
-        ? "Recepción puede consultar el pase; el anfitrión o Programación puede enviarlo."
-        : __VLS_ctx.qrAppointment?.partnerType === "Contratista"
-            ? "Contratistas: recibirán un enlace de un solo uso para declarar su equipo; lo que no se registre no podrá ingresar."
-            : "Proveedores: recibirán solamente el QR y código de referencia.");
+        ? "Recepción puede consultar el pase."
+        : "Descarga el código y compártelo manualmente con las personas de la empresa.");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
                 if (!(__VLS_ctx.qrDialogOpen))
@@ -3066,75 +2970,6 @@ if (__VLS_ctx.qrDialogOpen) {
         ...{ class: "button-secondary dialog-submit" },
         type: "button",
     });
-}
-if (__VLS_ctx.qrEmailRecoveryOpen) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.qrEmailRecoveryOpen))
-                    return;
-                !__VLS_ctx.qrEmailSending && (__VLS_ctx.qrEmailRecoveryOpen = false);
-            } },
-        ...{ class: "modal-backdrop" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-        ...{ class: "dialog email-qr-dialog" },
-        role: "dialog",
-        'aria-modal': "true",
-        'aria-labelledby': "qr-email-recovery-title",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.qrEmailRecoveryOpen))
-                    return;
-                __VLS_ctx.qrEmailRecoveryOpen = false;
-            } },
-        ...{ class: "dialog-close" },
-        type: "button",
-        'aria-label': "Cerrar",
-        disabled: (__VLS_ctx.qrEmailSending),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        ...{ class: "icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-        href: "#i-close",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "dialog-icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        ...{ class: "icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-        href: "#i-note",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
-        id: "qr-email-recovery-title",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "dialog-description" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-    (__VLS_ctx.qrAppointment?.visitor);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
-        ...{ onSubmit: (__VLS_ctx.submitQrEmailRecovery) },
-        ...{ class: "appointment-form email-send-form" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        type: "email",
-        autocomplete: "email",
-        maxlength: "254",
-        placeholder: "persona@empresa.com",
-        required: true,
-    });
-    (__VLS_ctx.qrEmailRecoveryValue);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ class: "button-primary dialog-submit" },
-        type: "submit",
-        disabled: (__VLS_ctx.qrEmailSending),
-    });
-    (__VLS_ctx.qrEmailSending ? "Enviando..." : "Guardar correo y enviar QR");
 }
 if (__VLS_ctx.businessPartnerDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -3179,16 +3014,22 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
         id: "business-partner-dialog-title",
     });
-    (__VLS_ctx.editingBusinessPartnerId === null ? "Registrar empresa" : "Editar empresa");
+    (__VLS_ctx.editingBusinessPartnerId === null ? "Registrar registro" : "Editar registro");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "dialog-description" },
     });
+    (__VLS_ctx.businessPartnerType === "Visitante" ? "Registra el nombre y asunto de la visita." : "Datos del contratista o proveedor.");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
         ...{ onSubmit: (__VLS_ctx.submitBusinessPartner) },
         ...{ class: "workspace-form modal-workspace-form directory-form" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
+        ...{ onChange: (...[$event]) => {
+                if (!(__VLS_ctx.businessPartnerDialogOpen))
+                    return;
+                __VLS_ctx.changeBusinessPartnerType($event.target.value);
+            } },
         value: (__VLS_ctx.businessPartnerType),
         required: true,
     });
@@ -3198,62 +3039,86 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
         value: "Proveedor",
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
+        value: "Visitante",
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+    (__VLS_ctx.businessPartnerType === "Visitante" ? "Nombre completo" : "Nombre de la empresa");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         value: (__VLS_ctx.businessPartnerName),
         type: "text",
-        autocomplete: "organization",
+        autocomplete: (__VLS_ctx.businessPartnerType === 'Visitante' ? 'name' : 'organization'),
         maxlength: "180",
         pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
         required: true,
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-        ...{ class: "directory-form-full" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea, __VLS_intrinsicElements.textarea)({
-        value: (__VLS_ctx.businessPartnerDescription),
-        rows: "3",
-        maxlength: "65535",
-        placeholder: "Describe a qué se dedica la empresa",
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        value: (__VLS_ctx.businessPartnerRfc),
-        type: "text",
-        maxlength: "13",
-        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        value: (__VLS_ctx.businessPartnerCategory),
-        type: "text",
-        maxlength: "120",
-        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
-        placeholder: "Ej. Construcción, limpieza",
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        type: "number",
-        min: "1",
-        max: "4294967295",
-        step: "1",
-        required: true,
-    });
-    (__VLS_ctx.businessPartnerEmployeeCount);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-        value: (__VLS_ctx.businessPartnerStatus),
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "Activa",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-        value: "Inactiva",
-    });
+    if (__VLS_ctx.businessPartnerType === 'Visitante') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+            ...{ class: "directory-form-full" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            value: (__VLS_ctx.businessPartnerSubject),
+            type: "text",
+            maxlength: "500",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+            placeholder: "Motivo de la visita",
+            required: true,
+        });
+    }
+    else {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+            ...{ class: "directory-form-full" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea, __VLS_intrinsicElements.textarea)({
+            value: (__VLS_ctx.businessPartnerDescription),
+            rows: "3",
+            maxlength: "65535",
+            placeholder: "Describe a qué se dedica la empresa",
+            required: true,
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            value: (__VLS_ctx.businessPartnerRfc),
+            type: "text",
+            maxlength: "13",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+            required: true,
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            value: (__VLS_ctx.businessPartnerCategory),
+            type: "text",
+            maxlength: "120",
+            pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
+            placeholder: "Ej. Construcción, limpieza",
+            required: true,
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            type: "number",
+            min: "1",
+            max: "4294967295",
+            step: "1",
+            required: true,
+        });
+        (__VLS_ctx.businessPartnerEmployeeCount);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
+            value: (__VLS_ctx.businessPartnerStatus),
+            required: true,
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
+            value: "Activa",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
+            value: "Inactiva",
+        });
+    }
+    if (__VLS_ctx.businessPartnerType === 'Visitante') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "directory-form-full access-none-note" },
+        });
+    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ class: "button-primary workspace-submit" },
         type: "submit",
@@ -3266,115 +3131,6 @@ if (__VLS_ctx.businessPartnerDialogOpen) {
         href: "#i-plus",
     });
     (__VLS_ctx.businessPartnerSaving ? "Guardando..." : __VLS_ctx.editingBusinessPartnerId === null ? "Registrar empresa" : "Guardar cambios");
-}
-if (__VLS_ctx.generalVisitorDialogOpen) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.generalVisitorDialogOpen))
-                    return;
-                __VLS_ctx.generalVisitorDialogOpen = false;
-            } },
-        ...{ class: "modal-backdrop" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-        ...{ class: "dialog workspace-dialog" },
-        role: "dialog",
-        'aria-modal': "true",
-        'aria-labelledby': "general-visitor-dialog-title",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.generalVisitorDialogOpen))
-                    return;
-                __VLS_ctx.generalVisitorDialogOpen = false;
-            } },
-        ...{ class: "dialog-close" },
-        type: "button",
-        'aria-label': "Cerrar",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        ...{ class: "icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-        href: "#i-close",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "dialog-icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        ...{ class: "icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-        href: "#i-people",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
-        id: "general-visitor-dialog-title",
-    });
-    (__VLS_ctx.editingGeneralVisitorId === null ? "Registrar persona" : "Editar persona");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "dialog-description" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
-        ...{ onSubmit: (__VLS_ctx.submitGeneralVisitor) },
-        ...{ class: "workspace-form modal-workspace-form directory-form" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-        ...{ class: "directory-form-full" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        value: (__VLS_ctx.generalVisitorName),
-        type: "text",
-        maxlength: "180",
-        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
-        autocomplete: "name",
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-        ...{ class: "directory-form-full" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        ...{ onInput: (...[$event]) => {
-                if (!(__VLS_ctx.generalVisitorDialogOpen))
-                    return;
-                __VLS_ctx.generalVisitorCurp = __VLS_ctx.generalVisitorCurp.toLocaleUpperCase();
-            } },
-        value: (__VLS_ctx.generalVisitorCurp),
-        type: "text",
-        maxlength: "18",
-        pattern: "[A-Za-z0-9]{18}",
-        autocomplete: "off",
-        placeholder: "18 caracteres",
-        required: true,
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        type: "tel",
-        maxlength: "30",
-        autocomplete: "tel",
-        pattern: "\u002e\u002a\u005c\u0053\u002e\u002a",
-        required: true,
-    });
-    (__VLS_ctx.generalVisitorPhone);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        type: "email",
-        maxlength: "254",
-        autocomplete: "email",
-        required: true,
-    });
-    (__VLS_ctx.generalVisitorEmail);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ class: "button-primary workspace-submit" },
-        type: "submit",
-        disabled: (__VLS_ctx.generalVisitorSaving),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        ...{ class: "icon" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-        href: "#i-plus",
-    });
-    (__VLS_ctx.generalVisitorSaving ? "Guardando..." : __VLS_ctx.editingGeneralVisitorId === null ? "Registrar persona" : "Guardar cambios");
 }
 if (__VLS_ctx.editingAccessAccount) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -3960,40 +3716,11 @@ if (__VLS_ctx.externalStaffDialogOpen) {
 /** @type {__VLS_StyleScopedClasses['qr-dialog-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog-submit']} */ ;
-/** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-submit']} */ ;
 /** @type {__VLS_StyleScopedClasses['qr-placeholder-note']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog-submit']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
-/** @type {__VLS_StyleScopedClasses['email-qr-dialog']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-close']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-description']} */ ;
-/** @type {__VLS_StyleScopedClasses['appointment-form']} */ ;
-/** @type {__VLS_StyleScopedClasses['email-send-form']} */ ;
-/** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-submit']} */ ;
-/** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-dialog']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-close']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-description']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-form']} */ ;
-/** @type {__VLS_StyleScopedClasses['modal-workspace-form']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-form']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
-/** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-submit']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog-close']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
@@ -4005,6 +3732,8 @@ if (__VLS_ctx.externalStaffDialogOpen) {
 /** @type {__VLS_StyleScopedClasses['directory-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
 /** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
+/** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-none-note']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-submit']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
@@ -4112,19 +3841,17 @@ const __VLS_self = (await import('vue')).defineComponent({
             editingAppointmentId: editingAppointmentId,
             qrDialogOpen: qrDialogOpen,
             qrAppointment: qrAppointment,
+            qrExternalStaff: qrExternalStaff,
             qrDataUrl: qrDataUrl,
             qrGenerating: qrGenerating,
-            qrEmailSending: qrEmailSending,
-            qrEmailRecoveryOpen: qrEmailRecoveryOpen,
-            qrEmailRecoveryValue: qrEmailRecoveryValue,
+            qrDispatchAppointment: qrDispatchAppointment,
+            sendingExternalQrStaffId: sendingExternalQrStaffId,
             dailyLogInitialRange: dailyLogInitialRange,
             externalStaffDialogOpen: externalStaffDialogOpen,
             editingExternalStaffId: editingExternalStaffId,
             externalStaffSaving: externalStaffSaving,
             businessPartnerDialogOpen: businessPartnerDialogOpen,
             editingBusinessPartnerId: editingBusinessPartnerId,
-            generalVisitorDialogOpen: generalVisitorDialogOpen,
-            editingGeneralVisitorId: editingGeneralVisitorId,
             visitorName: visitorName,
             visitorEmail: visitorEmail,
             visitorSelection: visitorSelection,
@@ -4164,7 +3891,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             hostPhone: hostPhone,
             businessDirectoryLoading: businessDirectoryLoading,
             businessPartnerSaving: businessPartnerSaving,
-            generalVisitorSaving: generalVisitorSaving,
             businessPartnerSearch: businessPartnerSearch,
             businessPartnerTypeFilter: businessPartnerTypeFilter,
             businessPartnerCategoryFilter: businessPartnerCategoryFilter,
@@ -4175,16 +3901,10 @@ const __VLS_self = (await import('vue')).defineComponent({
             businessPartnerDescription: businessPartnerDescription,
             businessPartnerRfc: businessPartnerRfc,
             businessPartnerCategory: businessPartnerCategory,
+            businessPartnerSubject: businessPartnerSubject,
             businessPartnerEmployeeCount: businessPartnerEmployeeCount,
             businessPartnerType: businessPartnerType,
             businessPartnerStatus: businessPartnerStatus,
-            generalVisitorSearch: generalVisitorSearch,
-            generalVisitorCurpFilter: generalVisitorCurpFilter,
-            generalVisitorPage: generalVisitorPage,
-            generalVisitorName: generalVisitorName,
-            generalVisitorCurp: generalVisitorCurp,
-            generalVisitorPhone: generalVisitorPhone,
-            generalVisitorEmail: generalVisitorEmail,
             selectableHostAccounts: selectableHostAccounts,
             externalStaffPartnerOptions: externalStaffPartnerOptions,
             loadAppointments: loadAppointments,
@@ -4202,9 +3922,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             filteredBusinessPartners: filteredBusinessPartners,
             paginatedBusinessPartners: paginatedBusinessPartners,
             businessPartnerPages: businessPartnerPages,
-            filteredGeneralVisitors: filteredGeneralVisitors,
-            paginatedGeneralVisitors: paginatedGeneralVisitors,
-            generalVisitorPages: generalVisitorPages,
             selectedAppointments: selectedAppointments,
             searchedAppointments: searchedAppointments,
             totalAppointmentPages: totalAppointmentPages,
@@ -4214,9 +3931,12 @@ const __VLS_self = (await import('vue')).defineComponent({
             activeAppointmentCount: activeAppointmentCount,
             selectSection: selectSection,
             openDailyLogRange: openDailyLogRange,
-            showToast: showToast,
             logout: logout,
             openQrDialog: openQrDialog,
+            openCompanyQrDispatch: openCompanyQrDispatch,
+            openExternalStaffQr: openExternalStaffQr,
+            sendExternalStaffQr: sendExternalStaffQr,
+            clearQrDispatch: clearQrDispatch,
             openAppointmentDialog: openAppointmentDialog,
             openHomeAppointmentDialog: openHomeAppointmentDialog,
             changeAppointmentCompany: changeAppointmentCompany,
@@ -4231,8 +3951,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             removeHost: removeHost,
             selectCalendarDay: selectCalendarDay,
             submitAppointment: submitAppointment,
-            sendAppointmentQr: sendAppointmentQr,
-            submitQrEmailRecovery: submitQrEmailRecovery,
             downloadAppointmentQr: downloadAppointmentQr,
             deleteAppointment: deleteAppointment,
             cancelAppointment: cancelAppointment,
@@ -4241,11 +3959,9 @@ const __VLS_self = (await import('vue')).defineComponent({
             submitExternalStaff: submitExternalStaff,
             removeExternalStaff: removeExternalStaff,
             openBusinessPartnerDialog: openBusinessPartnerDialog,
+            changeBusinessPartnerType: changeBusinessPartnerType,
             submitBusinessPartner: submitBusinessPartner,
             removeBusinessPartner: removeBusinessPartner,
-            openGeneralVisitorDialog: openGeneralVisitorDialog,
-            submitGeneralVisitor: submitGeneralVisitor,
-            removeGeneralVisitor: removeGeneralVisitor,
         };
     },
     __typeEmits: {},

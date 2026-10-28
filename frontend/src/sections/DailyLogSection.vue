@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { notifyUser } from "../notifications";
+import VisitorKioskReceptionSection from "./VisitorKioskReceptionSection.vue";
 
 type LogEventType = "Llegada" | "Ingreso" | "Retiro" | "Observaciones";
 type LogCategory = "Visitante" | "Contratista" | "Proveedor" | "Sin categoría";
@@ -27,6 +28,7 @@ type LogSummary = {
 };
 type Appointment = {
   id: number;
+  businessPartnerId?: number | null;
   date: string;
   time: string;
   visitor: string;
@@ -34,10 +36,17 @@ type Appointment = {
   referenceCode: string;
   registeredBy: string;
   company: string;
+  partnerType?: "Contratista" | "Proveedor" | "Visitante";
   host: string;
   status: "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
   equipmentChecklistRequired?: boolean;
   equipmentEntryChecklistComplete?: boolean;
+};
+type AppointmentEmployeeStatus = "Pendiente" | "En proceso" | "Dentro" | "Retirado";
+type AppointmentEmployee = {
+  id: number;
+  fullName: string;
+  status: AppointmentEmployeeStatus;
 };
 type ExternalStaff = {
   id: number;
@@ -123,15 +132,23 @@ const scannerError = ref("");
 const scannerVideo = ref<HTMLVideoElement | null>(null);
 let scannerControls: { stop: () => void } | null = null;
 const selectedQuickAppointmentId = ref<number | null>(null);
+const selectedQuickExternalStaffId = ref<number | null>(null);
 const selectedEntryId = ref<number | null>(null);
 const quickObservation = ref("");
 const quickStatusOverrides = ref<Record<number, Appointment["status"]>>({});
+const appointmentEmployees = ref<AppointmentEmployee[]>([]);
+const employeeRosterOpen = ref(false);
+const employeeRosterLoading = ref(false);
+const employeeRosterError = ref("");
+const employeeRosterAppointmentId = ref<number | null>(null);
+const employeeMovementId = ref<number | null>(null);
 const dialogOpen = ref(false);
 const logPersonType = ref<SubjectType>("appointment");
 const logSubjectId = ref("");
 const manualPerson = ref("");
 const logDetails = ref("");
 let requestVersion = 0;
+let employeeRosterRequestVersion = 0;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshTimer: number | undefined;
 
@@ -257,29 +274,31 @@ function quickAppointmentStatus(appointment: Appointment) {
 }
 
 function entryStatus(entry: LogEntry) {
-  const appointment = appointmentForEntry(entry);
-  if (appointment) return quickAppointmentStatus(appointment);
-
   const samePerson = (candidate: LogEntry) => {
-    if (entry.appointmentId !== null) return candidate.appointmentId === entry.appointmentId;
+    if (candidate.appointmentId !== entry.appointmentId) return false;
     if (entry.externalStaffId !== null) return candidate.externalStaffId === entry.externalStaffId;
     if (entry.visitorRecordId !== null) return candidate.visitorRecordId === entry.visitorRecordId;
-    return candidate.appointmentId === null &&
-      candidate.externalStaffId === null &&
+    return candidate.externalStaffId === null &&
       candidate.visitorRecordId === null &&
       candidate.person.trim().toLocaleLowerCase("es") === entry.person.trim().toLocaleLowerCase("es");
   };
-  const latestMovement = entries.value
-    .filter((candidate) =>
-      samePerson(candidate) &&
-      (candidate.event === "Llegada" || candidate.event === "Ingreso" || candidate.event === "Retiro"),
-    )
-    .sort((first, second) =>
-      `${second.date} ${second.time} ${second.id}`.localeCompare(`${first.date} ${first.time} ${first.id}`),
-    )[0];
-  if (latestMovement?.event === "Ingreso") return "Dentro";
-  if (latestMovement?.event === "Retiro") return "Retirado";
-  if (latestMovement?.event === "Llegada") return "En proceso";
+  const movement = entry.event === "Observaciones"
+    ? entries.value
+      .filter((candidate) =>
+        samePerson(candidate) &&
+        (candidate.event === "Llegada" || candidate.event === "Ingreso" || candidate.event === "Retiro"),
+      )
+      .sort((first, second) =>
+        `${second.date} ${second.time} ${second.id}`.localeCompare(`${first.date} ${first.time} ${first.id}`),
+      )[0]?.event
+    : entry.event;
+  if (movement === "Ingreso") return "Dentro";
+  if (movement === "Retiro") return "Retirado";
+  if (movement === "Llegada") return "En proceso";
+  if (entry.event === "Observaciones") {
+    const appointment = appointmentForEntry(entry);
+    if (appointment) return quickAppointmentStatus(appointment);
+  }
   return "Pendiente";
 }
 
@@ -559,11 +578,22 @@ async function submitEntry() {
 
 function selectQuickAppointment(appointment: Appointment) {
   selectedQuickAppointmentId.value = appointment.id;
+  selectedQuickExternalStaffId.value = null;
   selectedEntryId.value = null;
+  clearAppointmentEmployees();
   quickActionError.value = "";
   quickActionNotice.value = "";
   quickObservation.value = "";
   quickSearch.value = appointment.visitor;
+}
+
+function clearAppointmentEmployees() {
+  employeeRosterRequestVersion += 1;
+  employeeRosterOpen.value = false;
+  employeeRosterLoading.value = false;
+  appointmentEmployees.value = [];
+  employeeRosterAppointmentId.value = null;
+  employeeRosterError.value = "";
 }
 
 async function openReferenceCodeEntry() {
@@ -719,6 +749,7 @@ async function saveQuickMovement(
 function selectEntry(entry: LogEntry) {
   selectedEntryId.value = entry.id;
   selectedQuickAppointmentId.value = null;
+  clearAppointmentEmployees();
   quickActionError.value = "";
   quickActionNotice.value = "";
   quickObservation.value = "";
@@ -786,6 +817,112 @@ async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro"
   }
 }
 
+function employeeMovements(employee: AppointmentEmployee): ("Llegada" | "Ingreso" | "Retiro")[] {
+  if (employee.status === "Pendiente") return ["Llegada"];
+  if (employee.status === "En proceso") return ["Ingreso", "Retiro"];
+  if (employee.status === "Dentro") return ["Retiro"];
+  return [];
+}
+
+async function loadAppointmentEmployees(appointment: Appointment) {
+  const currentRequest = ++employeeRosterRequestVersion;
+  employeeRosterLoading.value = true;
+  employeeRosterError.value = "";
+  try {
+    const response = await fetch(`/api/appointments/${appointment.id}/employees`);
+    const result = await response.json() as {
+      employees?: Array<{ id: number; fullName: string; status: AppointmentEmployeeStatus }>;
+      error?: string;
+    };
+    if (!response.ok) throw new Error(result.error ?? "No se pudo cargar el personal de la empresa.");
+    if (
+      !Array.isArray(result.employees) ||
+      result.employees.some((employee) =>
+        !Number.isSafeInteger(employee.id) ||
+        typeof employee.fullName !== "string" ||
+        !["Pendiente", "En proceso", "Dentro", "Retirado"].includes(employee.status),
+      )
+    ) {
+      throw new Error("El servidor devolvió una lista de empleados inválida.");
+    }
+    if (currentRequest !== employeeRosterRequestVersion || selectedAppointment.value?.id !== appointment.id) return;
+    appointmentEmployees.value = result.employees;
+    employeeRosterAppointmentId.value = appointment.id;
+  } catch (cause) {
+    console.error("Failed to load appointment employees:", cause);
+    if (currentRequest === employeeRosterRequestVersion && selectedAppointment.value?.id === appointment.id) {
+      employeeRosterError.value =
+        cause instanceof Error ? cause.message : "No se pudo cargar el personal de la empresa.";
+    }
+  } finally {
+    if (currentRequest === employeeRosterRequestVersion) employeeRosterLoading.value = false;
+  }
+}
+
+async function toggleAppointmentEmployees() {
+  const appointment = selectedAppointment.value;
+  if (
+    !appointment ||
+    appointment.businessPartnerId == null ||
+    (appointment.partnerType !== "Contratista" && appointment.partnerType !== "Proveedor")
+  ) return;
+  if (employeeRosterOpen.value && employeeRosterAppointmentId.value === appointment.id) {
+    employeeRosterOpen.value = false;
+    return;
+  }
+  employeeRosterOpen.value = true;
+  await loadAppointmentEmployees(appointment);
+}
+
+async function saveEmployeeMovement(
+  appointment: Appointment,
+  employee: AppointmentEmployee,
+  event: "Llegada" | "Ingreso" | "Retiro",
+) {
+  if (
+    employeeMovementId.value !== null ||
+    quickActionAppointmentId.value !== null ||
+    quickActionEntryId.value !== null ||
+    !employeeMovements(employee).includes(event)
+  ) return;
+  const operationDate = getLocalDate();
+  employeeMovementId.value = employee.id;
+  employeeRosterError.value = "";
+  try {
+    const response = await fetch("/api/daily-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event,
+        date: operationDate,
+        time: getLocalTime(),
+        personName: "",
+        details: quickObservation.value.trim(),
+        appointmentId: appointment.id,
+        externalStaffId: employee.id,
+      }),
+    });
+    const result = await response.json() as { message?: string; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "No se pudo registrar el movimiento del empleado.");
+    quickObservation.value = "";
+    notifyUser(
+      `${employee.fullName}: ${event === "Llegada" ? "llegada registrada" : event === "Ingreso" ? "entrada registrada" : "salida registrada"}.`,
+      "success",
+    );
+    fromDate.value = operationDate;
+    toDate.value = operationDate;
+    page.value = 1;
+    await loadEntries();
+    await loadAppointmentEmployees(appointment);
+    emit("movementSaved");
+  } catch (cause) {
+    console.error("Failed to save appointment employee movement:", cause);
+    notifyUser(cause instanceof Error ? cause.message : "No se pudo registrar el movimiento del empleado.");
+  } finally {
+    employeeMovementId.value = null;
+  }
+}
+
 async function handleQuickSearchEnter() {
   if (quickActionAppointmentId.value !== null || quickActionEntryId.value !== null) return;
   quickActionError.value = "";
@@ -797,6 +934,7 @@ async function handleQuickSearchEnter() {
   if (!value) return;
 
   let scannedAppointmentId: number | null = null;
+  let scannedExternalStaffId: number | null = null;
   let scannedReferenceCode = "";
   try {
     const scannedValue: unknown = JSON.parse(value);
@@ -810,6 +948,18 @@ async function handleQuickSearchEnter() {
       Number.isSafeInteger(scannedValue.id)
     ) {
       scannedAppointmentId = scannedValue.id;
+    }
+    if (
+      typeof scannedValue === "object" &&
+      scannedValue !== null &&
+      "type" in scannedValue &&
+      scannedValue.type === "visitas-appointment" &&
+      "externalStaffId" in scannedValue &&
+      typeof scannedValue.externalStaffId === "number" &&
+      Number.isSafeInteger(scannedValue.externalStaffId) &&
+      scannedValue.externalStaffId > 0
+    ) {
+      scannedExternalStaffId = scannedValue.externalStaffId;
     }
     if (
       typeof scannedValue === "object" &&
@@ -835,6 +985,18 @@ async function handleQuickSearchEnter() {
       return;
     }
     selectQuickAppointment(appointment);
+    if (scannedExternalStaffId !== null) {
+      selectedQuickExternalStaffId.value = scannedExternalStaffId;
+      employeeRosterOpen.value = true;
+      await loadAppointmentEmployees(appointment);
+      if (
+        !employeeRosterError.value &&
+        !appointmentEmployees.value.some((employee) => employee.id === scannedExternalStaffId)
+      ) {
+        selectedQuickExternalStaffId.value = null;
+        notifyUser("El QR identifica un empleado que ya no está registrado en esta empresa.");
+      }
+    }
     return;
   }
 
@@ -932,6 +1094,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="daily-log-page" aria-label="Bitácora de movimientos">
+    <VisitorKioskReceptionSection />
     <header class="daily-log-header">
       <div class="daily-log-header-actions">
         <div class="daily-log-date-range" aria-label="Rango de fechas">
@@ -1263,6 +1426,67 @@ onBeforeUnmount(() => {
                 >{{ selectedPersonStatus }}</strong>
               </p>
             </div>
+            <div
+              v-if="selectedAppointment && selectedAppointment.businessPartnerId != null &&
+                (selectedAppointment.partnerType === 'Contratista' || selectedAppointment.partnerType === 'Proveedor')"
+              class="daily-log-employee-roster"
+            >
+              <button
+                class="daily-log-secondary-button"
+                type="button"
+                :disabled="employeeRosterLoading"
+                @click="toggleAppointmentEmployees"
+              >
+                {{ employeeRosterLoading ? "Cargando empleados…" : employeeRosterOpen ? "Ocultar empleados" : "Ver empleados" }}
+              </button>
+              <div v-if="employeeRosterOpen" class="daily-log-employee-list">
+                <p v-if="employeeRosterError" class="daily-log-quick-error" role="alert">
+                  {{ employeeRosterError }}
+                  <button
+                    v-if="selectedAppointment"
+                    type="button"
+                    @click="loadAppointmentEmployees(selectedAppointment)"
+                  >Reintentar</button>
+                </p>
+                <p v-else-if="employeeRosterLoading" class="daily-log-quick-empty" role="status">
+                  Cargando personal de la empresa…
+                </p>
+                <p v-else-if="appointmentEmployees.length === 0" class="daily-log-quick-empty">
+                  No hay empleados externos registrados para esta empresa.
+                </p>
+                <article
+                  v-for="employee in appointmentEmployees"
+                  :key="employee.id"
+                  class="daily-log-employee"
+                  :class="{ 'is-qr-match': selectedQuickExternalStaffId === employee.id }"
+                >
+                  <div class="daily-log-employee-heading">
+                    <strong>{{ employee.fullName }}</strong>
+                    <span class="daily-log-table-status" :class="`is-${employee.status.toLowerCase().replace(' ', '-')}`">
+                      {{ employee.status }}
+                    </span>
+                  </div>
+                  <div v-if="employeeMovements(employee).length" class="daily-log-employee-actions">
+                    <button
+                      v-for="movement in employeeMovements(employee)"
+                      :key="movement"
+                      class="daily-log-selection-action"
+                      :class="{ 'is-exit': movement === 'Retiro' }"
+                      type="button"
+                      :disabled="
+                        employeeMovementId !== null ||
+                        quickActionAppointmentId !== null ||
+                        quickActionEntryId !== null
+                      "
+                      @click="selectedAppointment && saveEmployeeMovement(selectedAppointment, employee, movement)"
+                    >
+                      {{ employeeMovementId === employee.id ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida" }}
+                    </button>
+                  </div>
+                  <p v-else class="daily-log-selection-complete">La visita de este empleado ya está finalizada.</p>
+                </article>
+              </div>
+            </div>
             <label class="daily-log-quick-observation">
               <span>Observaciones (opcional)</span>
               <input v-model.trim="quickObservation" type="text" maxlength="4000" placeholder="Agrega un detalle si hace falta" />
@@ -1277,6 +1501,7 @@ onBeforeUnmount(() => {
                 :disabled="
                   quickActionAppointmentId !== null ||
                   quickActionEntryId !== null ||
+                  employeeMovementId !== null ||
                   (movement === 'Ingreso' && equipmentEntryChecklistPending)
                 "
                 @click="selectedQuickAppointment ? saveQuickMovement(movement) : saveSelectedEntryMovement(movement)"

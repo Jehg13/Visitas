@@ -240,14 +240,6 @@ onBeforeUnmount(() => {
     if (dashboardRefreshTimer !== undefined)
         window.clearInterval(dashboardRefreshTimer);
 });
-function openFirstSelectedDateQr() {
-    const appointment = selectedAgendaAppointments.value.find((candidate) => candidate.status === "Pendiente" || candidate.status === "En proceso");
-    if (!appointment) {
-        emit("showToast", "No hay citas pendientes en la fecha seleccionada para enviar su QR.");
-        return;
-    }
-    emit("openQr", appointment);
-}
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
 const __VLS_ctx = {};
 let __VLS_components;
@@ -720,18 +712,6 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
     href: "#i-plus",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-    ...{ onClick: (__VLS_ctx.openFirstSelectedDateQr) },
-    ...{ class: "button-secondary" },
-    type: "button",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    ...{ class: "icon" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-    href: "#i-qr",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "table-scroll" },
 });
@@ -813,6 +793,25 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.selectedAgendaApp
         href: "#i-qr",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    if (__VLS_ctx.canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'))
+                        return;
+                    __VLS_ctx.emit('sendCompanyQrs', appointment);
+                } },
+            ...{ class: "qr-button" },
+            type: "button",
+            'aria-label': (`Enviar QR al personal de ${appointment.company}`),
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            ...{ class: "icon" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
+            href: "#i-qr",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    }
     if (__VLS_ctx.canManageAppointments) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ onClick: (...[$event]) => {
@@ -1101,8 +1100,6 @@ for (const [item] of __VLS_getVForSourceType((__VLS_ctx.summaryItems))) {
 /** @type {__VLS_StyleScopedClasses['home-agenda-today']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['table-scroll']} */ ;
 /** @type {__VLS_StyleScopedClasses['appointment-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['appointment-time']} */ ;
@@ -1111,6 +1108,8 @@ for (const [item] of __VLS_getVForSourceType((__VLS_ctx.summaryItems))) {
 /** @type {__VLS_StyleScopedClasses['home-agenda-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
+/** @type {__VLS_StyleScopedClasses['qr-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['qr-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
@@ -1183,7 +1182,6 @@ const __VLS_self = (await import('vue')).defineComponent({
             openHistoryLog: openHistoryLog,
             openTodayLog: openTodayLog,
             openNewAppointment: openNewAppointment,
-            openFirstSelectedDateQr: openFirstSelectedDateQr,
         };
     },
     __typeEmits: {},

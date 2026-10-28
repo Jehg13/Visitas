@@ -1,7 +1,7 @@
 export type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
-export type BusinessPartnerType = "Contratista" | "Proveedor";
-export type BusinessPartnerStatus = "Activa" | "Inactiva";
-export type ExternalStaffType = BusinessPartnerType;
+export type BusinessPartnerType = "Contratista" | "Proveedor" | "Visitante";
+export type BusinessPartnerStatus = "Activa" | "Inactiva" | "No aplica";
+export type ExternalStaffType = "Contratista" | "Proveedor";
 export type SectionAccess = "recepcion" | "anfitriones" | "administrador";
 export type SystemAccessRole = "Administrador" | "Recepción" | "Anfitriones";
 
@@ -83,6 +83,7 @@ export type BusinessPartner = {
   description: string;
   rfc: string;
   category: string;
+  subject: string;
   employeeCount: number;
   type: BusinessPartnerType;
   status: BusinessPartnerStatus;

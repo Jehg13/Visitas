@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 
 type BusinessPartner = {
   id: number;
@@ -17,15 +17,32 @@ type ExternalStaff = {
   relationshipType: "Contratista" | "Proveedor";
   companyName: string;
 };
+type Appointment = {
+  id: number;
+  businessPartnerId?: number | null;
+  date: string;
+  time: string;
+  company: string;
+  host: string;
+  referenceCode: string;
+};
 
 const props = defineProps<{
   companies: BusinessPartner[];
   staff: ExternalStaff[];
   search: string;
   loading: boolean;
+  dispatchAppointment: Appointment | null;
+  sendingStaffId: number | null;
 }>();
 
-const selectedCompanyId = ref<number | null>(null);
+const selectedCompanyId = ref<number | null>(props.dispatchAppointment?.businessPartnerId ?? null);
+watch(
+  () => props.dispatchAppointment,
+  (appointment) => {
+    selectedCompanyId.value = appointment?.businessPartnerId ?? null;
+  },
+);
 const searchQuery = computed(() => props.search.trim().toLocaleLowerCase());
 const companiesWithStaffCount = computed(() =>
   props.companies
@@ -65,12 +82,24 @@ const selectedCompanyStaff = computed(() =>
         .includes(searchQuery.value),
     ),
 );
+const equipmentRecipientId = computed(() =>
+  props.staff
+    .filter((person) => person.businessPartnerId === selectedCompanyId.value)
+    .filter((person) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim()))
+    .sort((first, second) => first.id - second.id)[0]?.id ?? null,
+);
+const equipmentRecipientName = computed(() =>
+  props.staff.find((person) => person.id === equipmentRecipientId.value)?.fullName ?? null,
+);
 
 const emit = defineEmits<{
   "update:search": [value: string];
   create: [businessPartnerId?: number];
   edit: [staff: ExternalStaff];
   remove: [id: number];
+  sendQr: [staff: ExternalStaff];
+  openQr: [staff: ExternalStaff];
+  clearDispatch: [];
 }>();
 </script>
 
@@ -98,9 +127,9 @@ const emit = defineEmits<{
             v-if="selectedCompany"
             class="button-secondary"
             type="button"
-            @click="selectedCompanyId = null"
+            @click="dispatchAppointment ? emit('clearDispatch') : selectedCompanyId = null"
           >
-            Volver a empresas
+            {{ dispatchAppointment ? "Salir del envío" : "Volver a empresas" }}
           </button>
           <button class="button-primary" type="button" @click="emit('create', selectedCompany?.id)">
             <svg class="icon"><use href="#i-plus" /></svg>
@@ -108,6 +137,17 @@ const emit = defineEmits<{
           </button>
         </div>
       </header>
+      <div v-if="dispatchAppointment && selectedCompany" class="external-qr-dispatch-note">
+        <strong>Envío de pases para la cita</strong>
+        <span>{{ dispatchAppointment.date }} · {{ dispatchAppointment.time }} · Anfitrión: {{ dispatchAppointment.host }}</span>
+        <p v-if="equipmentRecipientName">
+          Cada empleado tiene su propio QR. El enlace para declarar equipo y herramientas, de un solo uso, se envía únicamente a
+          {{ equipmentRecipientName }}.
+        </p>
+        <p v-else>
+          Cada empleado tiene su propio QR. Registra un correo electrónico válido para habilitar el envío y definir quién recibirá el enlace de equipo de un solo uso.
+        </p>
+      </div>
       <div class="external-staff-toolbar">
         <label class="agenda-search">
           <svg class="icon"><use href="#i-search" /></svg>
@@ -167,7 +207,13 @@ const emit = defineEmits<{
           </thead>
           <tbody>
             <tr v-for="person in selectedCompanyStaff" :key="person.id">
-              <td><strong class="external-staff-person-name">{{ person.fullName }}</strong></td>
+              <td>
+                <strong class="external-staff-person-name">{{ person.fullName }}</strong>
+                <span
+                  v-if="dispatchAppointment && equipmentRecipientId === person.id"
+                  class="external-qr-link-recipient"
+                >Recibe enlace de equipo</span>
+              </td>
               <td>{{ person.phone || "—" }}</td>
               <td><span class="external-staff-email">{{ person.email || "—" }}</span></td>
               <td><span class="external-type-pill">{{ person.relationshipType }}</span></td>
@@ -177,6 +223,20 @@ const emit = defineEmits<{
                   <button class="staff-edit-button" type="button" @click="emit('edit', person)">
                     Editar
                   </button>
+                  <template v-if="dispatchAppointment">
+                    <button class="qr-button" type="button" @click="emit('openQr', person)">
+                      <svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span>
+                    </button>
+                    <button
+                      class="qr-button"
+                      type="button"
+                      :disabled="!(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) || sendingStaffId === person.id"
+                      :title="!(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? 'Bloqueado: registra un correo electrónico válido para poder enviar el QR.' : undefined"
+                      @click="emit('sendQr', person)"
+                    >
+                      <span>{{ !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? "Bloqueado" : sendingStaffId === person.id ? "Enviando..." : "Enviar QR" }}</span>
+                    </button>
+                  </template>
                   <button
                     class="workspace-remove"
                     type="button"

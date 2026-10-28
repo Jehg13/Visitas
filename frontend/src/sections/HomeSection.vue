@@ -8,6 +8,7 @@ type Appointment = {
   date: string;
   time: string;
   visitor: string;
+  partnerType?: "Contratista" | "Proveedor" | "Visitante";
   email: string;
   referenceCode: string;
   registeredBy: string;
@@ -75,7 +76,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   createAppointment: [date: string];
   openQr: [appointment: Appointment];
-  showToast: [message: string];
+  sendCompanyQrs: [appointment: Appointment];
   editAppointment: [appointment: Appointment];
   cancelAppointment: [appointment: Appointment];
   deleteAppointment: [appointment: Appointment];
@@ -353,16 +354,6 @@ onBeforeUnmount(() => {
   if (dashboardRefreshTimer !== undefined) window.clearInterval(dashboardRefreshTimer);
 });
 
-function openFirstSelectedDateQr() {
-  const appointment = selectedAgendaAppointments.value.find((candidate) =>
-    candidate.status === "Pendiente" || candidate.status === "En proceso",
-  );
-  if (!appointment) {
-    emit("showToast", "No hay citas pendientes en la fecha seleccionada para enviar su QR.");
-    return;
-  }
-  emit("openQr", appointment);
-}
 </script>
 
 <template>
@@ -551,9 +542,6 @@ function openFirstSelectedDateQr() {
           <button class="button-primary" type="button" @click="openNewAppointment">
             <svg class="icon"><use href="#i-plus" /></svg><span>Nueva cita</span>
           </button>
-          <button class="button-secondary" type="button" @click="openFirstSelectedDateQr">
-            <svg class="icon"><use href="#i-qr" /></svg><span>Enviar QR</span>
-          </button>
         </div>
       </header>
 
@@ -593,6 +581,13 @@ function openFirstSelectedDateQr() {
                     :disabled="appointment.status === 'Cancelada'"
                     @click="emit('openQr', appointment)"
                   ><svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span></button>
+                  <button
+                    v-if="canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
+                    class="qr-button"
+                    type="button"
+                    :aria-label="`Enviar QR al personal de ${appointment.company}`"
+                    @click="emit('sendCompanyQrs', appointment)"
+                  ><svg class="icon"><use href="#i-qr" /></svg><span>Enviar QR</span></button>
                   <button
                     v-if="canManageAppointments"
                     class="workspace-remove agenda-delete-action"

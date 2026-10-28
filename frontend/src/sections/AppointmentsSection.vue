@@ -2,6 +2,8 @@
 type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
 type Appointment = {
   id: number;
+  businessPartnerId?: number | null;
+  partnerType?: "Contratista" | "Proveedor" | "Visitante";
   date: string;
   time: string;
   visitor: string;
@@ -43,8 +45,8 @@ const emit = defineEmits<{
   "update:page": [value: number];
   create: [];
   cancel: [appointment: Appointment];
-  sendQr: [appointment: Appointment];
   openQr: [appointment: Appointment];
+  sendCompanyQrs: [appointment: Appointment];
   delete: [appointment: Appointment];
   edit: [appointment: Appointment];
   changeMonth: [delta: number];
@@ -142,19 +144,18 @@ const emit = defineEmits<{
                     @click="emit('cancel', appointment)"
                   >Cancelar</button>
                   <button
-                    v-if="canManageAppointments"
-                    class="agenda-qr-action"
-                    type="button"
-                    :aria-label="`Enviar QR a ${appointment.visitor}`"
-                    :disabled="appointment.status === 'Retirado' || appointment.status === 'Cancelada'"
-                    @click="emit('sendQr', appointment)"
-                  >Enviar QR</button>
-                  <button
                     class="qr-button"
                     type="button"
                     :aria-label="`Ver QR de ${appointment.visitor}`"
                     @click="emit('openQr', appointment)"
                   ><svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span></button>
+                  <button
+                    v-if="canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
+                    class="qr-button"
+                    type="button"
+                    :aria-label="`Enviar QR al personal de ${appointment.company}`"
+                    @click="emit('sendCompanyQrs', appointment)"
+                  ><svg class="icon"><use href="#i-qr" /></svg><span>Enviar QR</span></button>
                   <button
                     v-if="canManageAppointments"
                     class="workspace-remove agenda-delete-action"

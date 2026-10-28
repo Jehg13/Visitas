@@ -68,8 +68,8 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         } },
     value: (__VLS_ctx.businessPartnerSearch),
     type: "search",
-    'aria-label': "Buscar contratistas y proveedores",
-    placeholder: "Buscar por nombre, RFC, categoría o descripción...",
+    'aria-label': "Buscar contratistas, proveedores y visitantes",
+    placeholder: "Buscar por nombre, RFC, categoría, descripción o asunto...",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
     ...{ class: "directory-filter" },
@@ -80,7 +80,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElement
             __VLS_ctx.emit('update:businessPartnerTypeFilter', $event.target.value);
         } },
     value: (__VLS_ctx.businessPartnerTypeFilter),
-    'aria-label': "Filtrar empresas por tipo",
+    'aria-label': "Filtrar registros por tipo",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
     value: "Todas",
@@ -91,6 +91,9 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElement
 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
     value: "Proveedor",
 });
+__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
+    value: "Visitante",
+});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
     ...{ class: "directory-filter" },
 });
@@ -100,7 +103,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElement
             __VLS_ctx.emit('update:businessPartnerCategoryFilter', $event.target.value);
         } },
     value: (__VLS_ctx.businessPartnerCategoryFilter),
-    'aria-label': "Filtrar empresas por categoría",
+    'aria-label': "Filtrar registros por categoría",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
     value: "Todas",
@@ -121,7 +124,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElement
             __VLS_ctx.emit('update:businessPartnerStatusFilter', $event.target.value);
         } },
     value: (__VLS_ctx.businessPartnerStatusFilter),
-    'aria-label': "Filtrar empresas por estado",
+    'aria-label': "Filtrar registros por estado",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
     value: "Todas",
@@ -132,6 +135,9 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElement
 __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
     value: "Inactiva",
 });
+__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
+    value: "No aplica",
+});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "workspace-table-scroll" },
 });
@@ -140,6 +146,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.thead, __VLS_intrinsicElements.thead)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
@@ -168,11 +175,13 @@ for (const [partner] of __VLS_getVForSourceType((__VLS_ctx.paginatedBusinessPart
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     (partner.category);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+    (partner.type === "Visitante" ? partner.subject || "—" : "—");
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     (partner.employeeCount);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "partner-status-pill" },
-        ...{ class: (`partner-status-${partner.status.toLowerCase()}`) },
+        ...{ class: (partner.status === 'No aplica' ? '' : `partner-status-${partner.status.toLowerCase()}`) },
     });
     (partner.status);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
@@ -202,14 +211,14 @@ if (__VLS_ctx.filteredBusinessPartners.length === 0) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
         ...{ class: "workspace-empty" },
-        colspan: "7",
+        colspan: "8",
     });
-    (__VLS_ctx.loading ? "Cargando empresas..." : __VLS_ctx.businessPartners.length === 0 ? "Aún no hay contratistas o proveedores registrados." : "No hay empresas que coincidan con los filtros.");
+    (__VLS_ctx.loading ? "Cargando registros..." : __VLS_ctx.businessPartners.length === 0 ? "Aún no hay contratistas, proveedores o visitantes registrados." : "No hay registros que coincidan con los filtros.");
 }
 if (__VLS_ctx.filteredBusinessPartners.length > __VLS_ctx.partnerRowsPerPage) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.nav, __VLS_intrinsicElements.nav)({
         ...{ class: "directory-pagination" },
-        'aria-label': "Paginación de contratistas y proveedores",
+        'aria-label': "Paginación del directorio",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
     ((__VLS_ctx.businessPartnerPage - 1) * __VLS_ctx.partnerRowsPerPage + 1);
@@ -242,183 +251,6 @@ if (__VLS_ctx.filteredBusinessPartners.length > __VLS_ctx.partnerRowsPerPage) {
         disabled: (__VLS_ctx.businessPartnerPage === __VLS_ctx.businessPartnerPages),
     });
 }
-__VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-    ...{ class: "panel workspace-panel directory-panel" },
-    'aria-labelledby': "general-visitors-title",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
-    ...{ class: "panel-heading workspace-heading" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "panel-title" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    ...{ class: "icon" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-    href: "#i-people",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
-    id: "general-visitors-title",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "workspace-heading-actions" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "workspace-count" },
-});
-(__VLS_ctx.filteredGeneralVisitors.length);
-__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-    ...{ onClick: (...[$event]) => {
-            __VLS_ctx.emit('createVisitor');
-        } },
-    ...{ class: "button-primary" },
-    type: "button",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    ...{ class: "icon" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-    href: "#i-plus",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "directory-toolbar" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-    ...{ class: "agenda-search" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    ...{ class: "icon" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
-    href: "#i-search",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "sr-only" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-    ...{ onInput: (...[$event]) => {
-            __VLS_ctx.emit('update:generalVisitorSearch', $event.target.value);
-        } },
-    value: (__VLS_ctx.generalVisitorSearch),
-    type: "search",
-    'aria-label': "Buscar público general",
-    placeholder: "Buscar por nombre, CURP, teléfono o correo...",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-    ...{ class: "directory-filter" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-    ...{ onChange: (...[$event]) => {
-            __VLS_ctx.emit('update:generalVisitorCurpFilter', $event.target.value);
-        } },
-    value: (__VLS_ctx.generalVisitorCurpFilter),
-    'aria-label': "Filtrar personas por CURP",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Todas",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Con CURP",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-    value: "Sin CURP",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "workspace-table-scroll" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements.table)({
-    ...{ class: "workspace-table general-visitor-table" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.thead, __VLS_intrinsicElements.thead)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.tbody, __VLS_intrinsicElements.tbody)({});
-for (const [visitor] of __VLS_getVForSourceType((__VLS_ctx.paginatedGeneralVisitors))) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({
-        key: (visitor.id),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-    (visitor.fullName);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-    (visitor.curp || "—");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-    (visitor.phone || "—");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-    (visitor.email || "—");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "staff-actions" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                __VLS_ctx.emit('editVisitor', visitor);
-            } },
-        ...{ class: "staff-edit-button" },
-        type: "button",
-        disabled: (__VLS_ctx.generalVisitorSaving || __VLS_ctx.loading),
-        'aria-label': (`Editar a ${visitor.fullName}`),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                __VLS_ctx.emit('removeVisitor', visitor.id);
-            } },
-        ...{ class: "workspace-remove" },
-        type: "button",
-        disabled: (__VLS_ctx.generalVisitorSaving || __VLS_ctx.loading),
-        'aria-label': (`Eliminar a ${visitor.fullName}`),
-    });
-}
-if (__VLS_ctx.filteredGeneralVisitors.length === 0) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
-        ...{ class: "workspace-empty" },
-        colspan: "5",
-    });
-    (__VLS_ctx.loading ? "Cargando personas..." : __VLS_ctx.generalVisitors.length === 0 ? "Aún no hay personas de público general registradas." : "No hay personas que coincidan con los filtros.");
-}
-if (__VLS_ctx.filteredGeneralVisitors.length > __VLS_ctx.partnerRowsPerPage) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.nav, __VLS_intrinsicElements.nav)({
-        ...{ class: "directory-pagination" },
-        'aria-label': "Paginación de público general",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    ((__VLS_ctx.generalVisitorPage - 1) * __VLS_ctx.partnerRowsPerPage + 1);
-    (Math.min(__VLS_ctx.generalVisitorPage * __VLS_ctx.partnerRowsPerPage, __VLS_ctx.filteredGeneralVisitors.length));
-    (__VLS_ctx.filteredGeneralVisitors.length);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.filteredGeneralVisitors.length > __VLS_ctx.partnerRowsPerPage))
-                    return;
-                __VLS_ctx.emit('update:generalVisitorPage', __VLS_ctx.generalVisitorPage - 1);
-            } },
-        ...{ class: "pagination-button" },
-        type: "button",
-        disabled: (__VLS_ctx.generalVisitorPage === 1),
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "pagination-current" },
-    });
-    (__VLS_ctx.generalVisitorPage);
-    (__VLS_ctx.generalVisitorPages);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.filteredGeneralVisitors.length > __VLS_ctx.partnerRowsPerPage))
-                    return;
-                __VLS_ctx.emit('update:generalVisitorPage', __VLS_ctx.generalVisitorPage + 1);
-            } },
-        ...{ class: "pagination-button" },
-        type: "button",
-        disabled: (__VLS_ctx.generalVisitorPage === __VLS_ctx.generalVisitorPages),
-    });
-}
 /** @type {__VLS_StyleScopedClasses['workspace-grid']} */ ;
 /** @type {__VLS_StyleScopedClasses['directory-workspace']} */ ;
 /** @type {__VLS_StyleScopedClasses['panel']} */ ;
@@ -444,33 +276,6 @@ if (__VLS_ctx.filteredGeneralVisitors.length > __VLS_ctx.partnerRowsPerPage) {
 /** @type {__VLS_StyleScopedClasses['business-partner-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['business-partner-description']} */ ;
 /** @type {__VLS_StyleScopedClasses['partner-status-pill']} */ ;
-/** @type {__VLS_StyleScopedClasses['staff-actions']} */ ;
-/** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-empty']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-pagination']} */ ;
-/** @type {__VLS_StyleScopedClasses['pagination-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['pagination-current']} */ ;
-/** @type {__VLS_StyleScopedClasses['pagination-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['panel']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-panel']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-panel']} */ ;
-/** @type {__VLS_StyleScopedClasses['panel-heading']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-heading']} */ ;
-/** @type {__VLS_StyleScopedClasses['panel-title']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-heading-actions']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-count']} */ ;
-/** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-toolbar']} */ ;
-/** @type {__VLS_StyleScopedClasses['agenda-search']} */ ;
-/** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-filter']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-table-scroll']} */ ;
-/** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
-/** @type {__VLS_StyleScopedClasses['general-visitor-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;

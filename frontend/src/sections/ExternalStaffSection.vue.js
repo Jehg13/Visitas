@@ -1,6 +1,9 @@
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 const props = defineProps();
-const selectedCompanyId = ref(null);
+const selectedCompanyId = ref(props.dispatchAppointment?.businessPartnerId ?? null);
+watch(() => props.dispatchAppointment, (appointment) => {
+    selectedCompanyId.value = appointment?.businessPartnerId ?? null;
+});
 const searchQuery = computed(() => props.search.trim().toLocaleLowerCase());
 const companiesWithStaffCount = computed(() => props.companies
     .map((company) => {
@@ -33,6 +36,11 @@ const selectedCompanyStaff = computed(() => props.staff
         .join(" ")
         .toLocaleLowerCase()
         .includes(searchQuery.value)));
+const equipmentRecipientId = computed(() => props.staff
+    .filter((person) => person.businessPartnerId === selectedCompanyId.value)
+    .filter((person) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim()))
+    .sort((first, second) => first.id - second.id)[0]?.id ?? null);
+const equipmentRecipientName = computed(() => props.staff.find((person) => person.id === equipmentRecipientId.value)?.fullName ?? null);
 const emit = defineEmits();
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
 const __VLS_ctx = {};
@@ -92,11 +100,12 @@ if (__VLS_ctx.selectedCompany) {
         ...{ onClick: (...[$event]) => {
                 if (!(__VLS_ctx.selectedCompany))
                     return;
-                __VLS_ctx.selectedCompanyId = null;
+                __VLS_ctx.dispatchAppointment ? __VLS_ctx.emit('clearDispatch') : __VLS_ctx.selectedCompanyId = null;
             } },
         ...{ class: "button-secondary" },
         type: "button",
     });
+    (__VLS_ctx.dispatchAppointment ? "Salir del envío" : "Volver a empresas");
 }
 __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
     ...{ onClick: (...[$event]) => {
@@ -112,6 +121,23 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
     href: "#i-plus",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+if (__VLS_ctx.dispatchAppointment && __VLS_ctx.selectedCompany) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "external-qr-dispatch-note" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    (__VLS_ctx.dispatchAppointment.date);
+    (__VLS_ctx.dispatchAppointment.time);
+    (__VLS_ctx.dispatchAppointment.host);
+    if (__VLS_ctx.equipmentRecipientName) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+        (__VLS_ctx.equipmentRecipientName);
+    }
+    else {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    }
+}
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "external-staff-toolbar" },
 });
@@ -240,6 +266,11 @@ else {
             ...{ class: "external-staff-person-name" },
         });
         (person.fullName);
+        if (__VLS_ctx.dispatchAppointment && __VLS_ctx.equipmentRecipientId === person.id) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                ...{ class: "external-qr-link-recipient" },
+            });
+        }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
         (person.phone || "—");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
@@ -270,6 +301,41 @@ else {
             ...{ class: "staff-edit-button" },
             type: "button",
         });
+        if (__VLS_ctx.dispatchAppointment) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!!(!__VLS_ctx.selectedCompany))
+                            return;
+                        if (!(__VLS_ctx.dispatchAppointment))
+                            return;
+                        __VLS_ctx.emit('openQr', person);
+                    } },
+                ...{ class: "qr-button" },
+                type: "button",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                ...{ class: "icon" },
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
+                href: "#i-qr",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!!(!__VLS_ctx.selectedCompany))
+                            return;
+                        if (!(__VLS_ctx.dispatchAppointment))
+                            return;
+                        __VLS_ctx.emit('sendQr', person);
+                    } },
+                ...{ class: "qr-button" },
+                type: "button",
+                disabled: (!(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) || __VLS_ctx.sendingStaffId === person.id),
+                title: (!(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? 'Bloqueado: registra un correo electrónico válido para poder enviar el QR.' : undefined),
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            (!(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? "Bloqueado" : __VLS_ctx.sendingStaffId === person.id ? "Enviando..." : "Enviar QR");
+        }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ onClick: (...[$event]) => {
                     if (!!(!__VLS_ctx.selectedCompany))
@@ -307,6 +373,7 @@ else {
 /** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-qr-dispatch-note']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-toolbar']} */ ;
 /** @type {__VLS_StyleScopedClasses['agenda-search']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
@@ -331,11 +398,15 @@ else {
 /** @type {__VLS_StyleScopedClasses['external-staff-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-person-name']} */ ;
+/** @type {__VLS_StyleScopedClasses['external-qr-link-recipient']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-email']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-type-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['external-staff-company']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['qr-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['qr-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-empty']} */ ;
 var __VLS_dollars;
@@ -347,6 +418,8 @@ const __VLS_self = (await import('vue')).defineComponent({
             companiesWithStaffCount: companiesWithStaffCount,
             selectedCompany: selectedCompany,
             selectedCompanyStaff: selectedCompanyStaff,
+            equipmentRecipientId: equipmentRecipientId,
+            equipmentRecipientName: equipmentRecipientName,
             emit: emit,
         };
     },

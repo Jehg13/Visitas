@@ -167,19 +167,6 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.paginatedAppointm
             disabled: (appointment.status === 'Retirado' || appointment.status === 'Cancelada'),
         });
     }
-    if (__VLS_ctx.canManageAppointments) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (...[$event]) => {
-                    if (!(__VLS_ctx.canManageAppointments))
-                        return;
-                    __VLS_ctx.emit('sendQr', appointment);
-                } },
-            ...{ class: "agenda-qr-action" },
-            type: "button",
-            'aria-label': (`Enviar QR a ${appointment.visitor}`),
-            disabled: (appointment.status === 'Retirado' || appointment.status === 'Cancelada'),
-        });
-    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
                 __VLS_ctx.emit('openQr', appointment);
@@ -195,6 +182,25 @@ for (const [appointment] of __VLS_getVForSourceType((__VLS_ctx.paginatedAppointm
         href: "#i-qr",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    if (__VLS_ctx.canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'))
+                        return;
+                    __VLS_ctx.emit('sendCompanyQrs', appointment);
+                } },
+            ...{ class: "qr-button" },
+            type: "button",
+            'aria-label': (`Enviar QR al personal de ${appointment.company}`),
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            ...{ class: "icon" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
+            href: "#i-qr",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    }
     if (__VLS_ctx.canManageAppointments) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ onClick: (...[$event]) => {
@@ -383,7 +389,8 @@ for (const [day] of __VLS_getVForSourceType((__VLS_ctx.calendarDays))) {
 /** @type {__VLS_StyleScopedClasses['agenda-actions-readonly']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;
-/** @type {__VLS_StyleScopedClasses['agenda-qr-action']} */ ;
+/** @type {__VLS_StyleScopedClasses['qr-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['qr-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-remove']} */ ;

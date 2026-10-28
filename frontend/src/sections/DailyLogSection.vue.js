@@ -1,5 +1,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { notifyUser } from "../notifications";
+import VisitorKioskReceptionSection from "./VisitorKioskReceptionSection.vue";
 const props = defineProps();
 const emit = defineEmits();
 const today = ref(getLocalDate());
@@ -41,15 +42,23 @@ const scannerError = ref("");
 const scannerVideo = ref(null);
 let scannerControls = null;
 const selectedQuickAppointmentId = ref(null);
+const selectedQuickExternalStaffId = ref(null);
 const selectedEntryId = ref(null);
 const quickObservation = ref("");
 const quickStatusOverrides = ref({});
+const appointmentEmployees = ref([]);
+const employeeRosterOpen = ref(false);
+const employeeRosterLoading = ref(false);
+const employeeRosterError = ref("");
+const employeeRosterAppointmentId = ref(null);
+const employeeMovementId = ref(null);
 const dialogOpen = ref(false);
 const logPersonType = ref("appointment");
 const logSubjectId = ref("");
 const manualPerson = ref("");
 const logDetails = ref("");
 let requestVersion = 0;
+let employeeRosterRequestVersion = 0;
 let searchTimer;
 let refreshTimer;
 const todayAppointments = computed(() => [...props.appointments]
@@ -153,31 +162,34 @@ function quickAppointmentStatus(appointment) {
     return quickStatusOverrides.value[appointment.id] ?? appointment.status;
 }
 function entryStatus(entry) {
-    const appointment = appointmentForEntry(entry);
-    if (appointment)
-        return quickAppointmentStatus(appointment);
     const samePerson = (candidate) => {
-        if (entry.appointmentId !== null)
-            return candidate.appointmentId === entry.appointmentId;
+        if (candidate.appointmentId !== entry.appointmentId)
+            return false;
         if (entry.externalStaffId !== null)
             return candidate.externalStaffId === entry.externalStaffId;
         if (entry.visitorRecordId !== null)
             return candidate.visitorRecordId === entry.visitorRecordId;
-        return candidate.appointmentId === null &&
-            candidate.externalStaffId === null &&
+        return candidate.externalStaffId === null &&
             candidate.visitorRecordId === null &&
             candidate.person.trim().toLocaleLowerCase("es") === entry.person.trim().toLocaleLowerCase("es");
     };
-    const latestMovement = entries.value
-        .filter((candidate) => samePerson(candidate) &&
-        (candidate.event === "Llegada" || candidate.event === "Ingreso" || candidate.event === "Retiro"))
-        .sort((first, second) => `${second.date} ${second.time} ${second.id}`.localeCompare(`${first.date} ${first.time} ${first.id}`))[0];
-    if (latestMovement?.event === "Ingreso")
+    const movement = entry.event === "Observaciones"
+        ? entries.value
+            .filter((candidate) => samePerson(candidate) &&
+            (candidate.event === "Llegada" || candidate.event === "Ingreso" || candidate.event === "Retiro"))
+            .sort((first, second) => `${second.date} ${second.time} ${second.id}`.localeCompare(`${first.date} ${first.time} ${first.id}`))[0]?.event
+        : entry.event;
+    if (movement === "Ingreso")
         return "Dentro";
-    if (latestMovement?.event === "Retiro")
+    if (movement === "Retiro")
         return "Retirado";
-    if (latestMovement?.event === "Llegada")
+    if (movement === "Llegada")
         return "En proceso";
+    if (entry.event === "Observaciones") {
+        const appointment = appointmentForEntry(entry);
+        if (appointment)
+            return quickAppointmentStatus(appointment);
+    }
     return "Pendiente";
 }
 function appointmentForEntry(entry) {
@@ -453,11 +465,21 @@ async function submitEntry() {
 }
 function selectQuickAppointment(appointment) {
     selectedQuickAppointmentId.value = appointment.id;
+    selectedQuickExternalStaffId.value = null;
     selectedEntryId.value = null;
+    clearAppointmentEmployees();
     quickActionError.value = "";
     quickActionNotice.value = "";
     quickObservation.value = "";
     quickSearch.value = appointment.visitor;
+}
+function clearAppointmentEmployees() {
+    employeeRosterRequestVersion += 1;
+    employeeRosterOpen.value = false;
+    employeeRosterLoading.value = false;
+    appointmentEmployees.value = [];
+    employeeRosterAppointmentId.value = null;
+    employeeRosterError.value = "";
 }
 async function openReferenceCodeEntry() {
     referenceCodeOpen.value = true;
@@ -600,6 +622,7 @@ async function saveQuickMovement(event, appointment = selectedQuickAppointment.v
 function selectEntry(entry) {
     selectedEntryId.value = entry.id;
     selectedQuickAppointmentId.value = null;
+    clearAppointmentEmployees();
     quickActionError.value = "";
     quickActionNotice.value = "";
     quickObservation.value = "";
@@ -662,6 +685,103 @@ async function saveSelectedEntryMovement(event) {
         quickActionEntryId.value = null;
     }
 }
+function employeeMovements(employee) {
+    if (employee.status === "Pendiente")
+        return ["Llegada"];
+    if (employee.status === "En proceso")
+        return ["Ingreso", "Retiro"];
+    if (employee.status === "Dentro")
+        return ["Retiro"];
+    return [];
+}
+async function loadAppointmentEmployees(appointment) {
+    const currentRequest = ++employeeRosterRequestVersion;
+    employeeRosterLoading.value = true;
+    employeeRosterError.value = "";
+    try {
+        const response = await fetch(`/api/appointments/${appointment.id}/employees`);
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error ?? "No se pudo cargar el personal de la empresa.");
+        if (!Array.isArray(result.employees) ||
+            result.employees.some((employee) => !Number.isSafeInteger(employee.id) ||
+                typeof employee.fullName !== "string" ||
+                !["Pendiente", "En proceso", "Dentro", "Retirado"].includes(employee.status))) {
+            throw new Error("El servidor devolvió una lista de empleados inválida.");
+        }
+        if (currentRequest !== employeeRosterRequestVersion || selectedAppointment.value?.id !== appointment.id)
+            return;
+        appointmentEmployees.value = result.employees;
+        employeeRosterAppointmentId.value = appointment.id;
+    }
+    catch (cause) {
+        console.error("Failed to load appointment employees:", cause);
+        if (currentRequest === employeeRosterRequestVersion && selectedAppointment.value?.id === appointment.id) {
+            employeeRosterError.value =
+                cause instanceof Error ? cause.message : "No se pudo cargar el personal de la empresa.";
+        }
+    }
+    finally {
+        if (currentRequest === employeeRosterRequestVersion)
+            employeeRosterLoading.value = false;
+    }
+}
+async function toggleAppointmentEmployees() {
+    const appointment = selectedAppointment.value;
+    if (!appointment ||
+        appointment.businessPartnerId == null ||
+        (appointment.partnerType !== "Contratista" && appointment.partnerType !== "Proveedor"))
+        return;
+    if (employeeRosterOpen.value && employeeRosterAppointmentId.value === appointment.id) {
+        employeeRosterOpen.value = false;
+        return;
+    }
+    employeeRosterOpen.value = true;
+    await loadAppointmentEmployees(appointment);
+}
+async function saveEmployeeMovement(appointment, employee, event) {
+    if (employeeMovementId.value !== null ||
+        quickActionAppointmentId.value !== null ||
+        quickActionEntryId.value !== null ||
+        !employeeMovements(employee).includes(event))
+        return;
+    const operationDate = getLocalDate();
+    employeeMovementId.value = employee.id;
+    employeeRosterError.value = "";
+    try {
+        const response = await fetch("/api/daily-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                event,
+                date: operationDate,
+                time: getLocalTime(),
+                personName: "",
+                details: quickObservation.value.trim(),
+                appointmentId: appointment.id,
+                externalStaffId: employee.id,
+            }),
+        });
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error ?? "No se pudo registrar el movimiento del empleado.");
+        quickObservation.value = "";
+        notifyUser(`${employee.fullName}: ${event === "Llegada" ? "llegada registrada" : event === "Ingreso" ? "entrada registrada" : "salida registrada"}.`, "success");
+        fromDate.value = operationDate;
+        toDate.value = operationDate;
+        page.value = 1;
+        await loadEntries();
+        await loadAppointmentEmployees(appointment);
+        emit("movementSaved");
+    }
+    catch (cause) {
+        console.error("Failed to save appointment employee movement:", cause);
+        notifyUser(cause instanceof Error ? cause.message : "No se pudo registrar el movimiento del empleado.");
+    }
+    finally {
+        employeeMovementId.value = null;
+    }
+}
 async function handleQuickSearchEnter() {
     if (quickActionAppointmentId.value !== null || quickActionEntryId.value !== null)
         return;
@@ -674,6 +794,7 @@ async function handleQuickSearchEnter() {
     if (!value)
         return;
     let scannedAppointmentId = null;
+    let scannedExternalStaffId = null;
     let scannedReferenceCode = "";
     try {
         const scannedValue = JSON.parse(value);
@@ -685,6 +806,16 @@ async function handleQuickSearchEnter() {
             typeof scannedValue.id === "number" &&
             Number.isSafeInteger(scannedValue.id)) {
             scannedAppointmentId = scannedValue.id;
+        }
+        if (typeof scannedValue === "object" &&
+            scannedValue !== null &&
+            "type" in scannedValue &&
+            scannedValue.type === "visitas-appointment" &&
+            "externalStaffId" in scannedValue &&
+            typeof scannedValue.externalStaffId === "number" &&
+            Number.isSafeInteger(scannedValue.externalStaffId) &&
+            scannedValue.externalStaffId > 0) {
+            scannedExternalStaffId = scannedValue.externalStaffId;
         }
         if (typeof scannedValue === "object" &&
             scannedValue !== null &&
@@ -706,6 +837,16 @@ async function handleQuickSearchEnter() {
             return;
         }
         selectQuickAppointment(appointment);
+        if (scannedExternalStaffId !== null) {
+            selectedQuickExternalStaffId.value = scannedExternalStaffId;
+            employeeRosterOpen.value = true;
+            await loadAppointmentEmployees(appointment);
+            if (!employeeRosterError.value &&
+                !appointmentEmployees.value.some((employee) => employee.id === scannedExternalStaffId)) {
+                selectedQuickExternalStaffId.value = null;
+                notifyUser("El QR identifica un empleado que ya no está registrado en esta empresa.");
+            }
+        }
         return;
     }
     if (/^\d{8}$/.test(value)) {
@@ -804,6 +945,10 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElemen
     ...{ class: "daily-log-page" },
     'aria-label': "Bitácora de movimientos",
 });
+/** @type {[typeof VisitorKioskReceptionSection, ]} */ ;
+// @ts-ignore
+const __VLS_0 = __VLS_asFunctionalComponent(VisitorKioskReceptionSection, new VisitorKioskReceptionSection({}));
+const __VLS_1 = __VLS_0({}, ...__VLS_functionalComponentArgsRest(__VLS_0));
 __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
     ...{ class: "daily-log-header" },
 });
@@ -1538,6 +1683,112 @@ if (__VLS_ctx.selectedPerson) {
         ...{ class: (`is-${__VLS_ctx.selectedPersonStatus.replace(' ', '-').toLocaleLowerCase()}`) },
     });
     (__VLS_ctx.selectedPersonStatus);
+    if (__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
+        (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "daily-log-employee-roster" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (__VLS_ctx.toggleAppointmentEmployees) },
+            ...{ class: "daily-log-secondary-button" },
+            type: "button",
+            disabled: (__VLS_ctx.employeeRosterLoading),
+        });
+        (__VLS_ctx.employeeRosterLoading ? "Cargando empleados…" : __VLS_ctx.employeeRosterOpen ? "Ocultar empleados" : "Ver empleados");
+        if (__VLS_ctx.employeeRosterOpen) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                ...{ class: "daily-log-employee-list" },
+            });
+            if (__VLS_ctx.employeeRosterError) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                    ...{ class: "daily-log-quick-error" },
+                    role: "alert",
+                });
+                (__VLS_ctx.employeeRosterError);
+                if (__VLS_ctx.selectedAppointment) {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                        ...{ onClick: (...[$event]) => {
+                                if (!(__VLS_ctx.selectedPerson))
+                                    return;
+                                if (!(__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
+                                    (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')))
+                                    return;
+                                if (!(__VLS_ctx.employeeRosterOpen))
+                                    return;
+                                if (!(__VLS_ctx.employeeRosterError))
+                                    return;
+                                if (!(__VLS_ctx.selectedAppointment))
+                                    return;
+                                __VLS_ctx.loadAppointmentEmployees(__VLS_ctx.selectedAppointment);
+                            } },
+                        type: "button",
+                    });
+                }
+            }
+            else if (__VLS_ctx.employeeRosterLoading) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                    ...{ class: "daily-log-quick-empty" },
+                    role: "status",
+                });
+            }
+            else if (__VLS_ctx.appointmentEmployees.length === 0) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                    ...{ class: "daily-log-quick-empty" },
+                });
+            }
+            for (const [employee] of __VLS_getVForSourceType((__VLS_ctx.appointmentEmployees))) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.article, __VLS_intrinsicElements.article)({
+                    key: (employee.id),
+                    ...{ class: "daily-log-employee" },
+                    ...{ class: ({ 'is-qr-match': __VLS_ctx.selectedQuickExternalStaffId === employee.id }) },
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                    ...{ class: "daily-log-employee-heading" },
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+                (employee.fullName);
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                    ...{ class: "daily-log-table-status" },
+                    ...{ class: (`is-${employee.status.toLowerCase().replace(' ', '-')}`) },
+                });
+                (employee.status);
+                if (__VLS_ctx.employeeMovements(employee).length) {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                        ...{ class: "daily-log-employee-actions" },
+                    });
+                    for (const [movement] of __VLS_getVForSourceType((__VLS_ctx.employeeMovements(employee)))) {
+                        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                            ...{ onClick: (...[$event]) => {
+                                    if (!(__VLS_ctx.selectedPerson))
+                                        return;
+                                    if (!(__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
+                                        (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')))
+                                        return;
+                                    if (!(__VLS_ctx.employeeRosterOpen))
+                                        return;
+                                    if (!(__VLS_ctx.employeeMovements(employee).length))
+                                        return;
+                                    __VLS_ctx.selectedAppointment && __VLS_ctx.saveEmployeeMovement(__VLS_ctx.selectedAppointment, employee, movement);
+                                } },
+                            key: (movement),
+                            ...{ class: "daily-log-selection-action" },
+                            ...{ class: ({ 'is-exit': movement === 'Retiro' }) },
+                            type: "button",
+                            disabled: (__VLS_ctx.employeeMovementId !== null ||
+                                __VLS_ctx.quickActionAppointmentId !== null ||
+                                __VLS_ctx.quickActionEntryId !== null),
+                        });
+                        (__VLS_ctx.employeeMovementId === employee.id ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida");
+                    }
+                }
+                else {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                        ...{ class: "daily-log-selection-complete" },
+                    });
+                }
+            }
+        }
+    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
         ...{ class: "daily-log-quick-observation" },
     });
@@ -1567,6 +1818,7 @@ if (__VLS_ctx.selectedPerson) {
                 type: "button",
                 disabled: (__VLS_ctx.quickActionAppointmentId !== null ||
                     __VLS_ctx.quickActionEntryId !== null ||
+                    __VLS_ctx.employeeMovementId !== null ||
                     (movement === 'Ingreso' && __VLS_ctx.equipmentEntryChecklistPending)),
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
@@ -1946,6 +2198,20 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-meta']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-state']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-employee-roster']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-employee-list']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-quick-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-employee']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-qr-match']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-employee-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-table-status']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-employee-actions']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-exit']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-observation']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-action-group']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
@@ -1988,6 +2254,7 @@ var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
         return {
+            VisitorKioskReceptionSection: VisitorKioskReceptionSection,
             today: today,
             fromDate: fromDate,
             toDate: toDate,
@@ -2019,8 +2286,14 @@ const __VLS_self = (await import('vue')).defineComponent({
             scannerError: scannerError,
             scannerVideo: scannerVideo,
             selectedQuickAppointmentId: selectedQuickAppointmentId,
+            selectedQuickExternalStaffId: selectedQuickExternalStaffId,
             selectedEntryId: selectedEntryId,
             quickObservation: quickObservation,
+            appointmentEmployees: appointmentEmployees,
+            employeeRosterOpen: employeeRosterOpen,
+            employeeRosterLoading: employeeRosterLoading,
+            employeeRosterError: employeeRosterError,
+            employeeMovementId: employeeMovementId,
             dialogOpen: dialogOpen,
             logPersonType: logPersonType,
             logSubjectId: logSubjectId,
@@ -2063,6 +2336,10 @@ const __VLS_self = (await import('vue')).defineComponent({
             saveQuickMovement: saveQuickMovement,
             selectEntry: selectEntry,
             saveSelectedEntryMovement: saveSelectedEntryMovement,
+            employeeMovements: employeeMovements,
+            loadAppointmentEmployees: loadAppointmentEmployees,
+            toggleAppointmentEmployees: toggleAppointmentEmployees,
+            saveEmployeeMovement: saveEmployeeMovement,
             handleQuickSearchEnter: handleQuickSearchEnter,
             removeEntry: removeEntry,
             resetFilters: resetFilters,

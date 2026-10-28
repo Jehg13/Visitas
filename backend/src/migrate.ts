@@ -16,6 +16,93 @@ async function migrate() {
     for (const statement of statements) {
       await connection.query(statement);
     }
+    await connection.query(
+      `ALTER TABLE visitor_kiosk_inspection_items
+       MODIFY kiosk_item_id BIGINT UNSIGNED NULL,
+       MODIFY result ENUM('Conforme', 'Incidencia', 'Coincide', 'Faltante', 'Dañado', 'Extra') NOT NULL`,
+    );
+    const [visitorColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'business_partners'
+         AND COLUMN_NAME IN ('subject', 'visitor_record_id')`,
+    );
+    const existingVisitorColumns = new Set(visitorColumns.map((column) => String(column.COLUMN_NAME)));
+    if (!existingVisitorColumns.has("subject")) {
+      await connection.query(
+        "ALTER TABLE business_partners ADD COLUMN subject VARCHAR(500) NULL AFTER category",
+      );
+    }
+    if (!existingVisitorColumns.has("visitor_record_id")) {
+      await connection.query(
+        "ALTER TABLE business_partners ADD COLUMN visitor_record_id BIGINT UNSIGNED NULL AFTER subject",
+      );
+    }
+    await connection.query(
+      "ALTER TABLE general_visitors MODIFY curp CHAR(18) NULL",
+    );
+    await connection.query(
+      "ALTER TABLE business_partners MODIFY rfc VARCHAR(13) NULL",
+    );
+    await connection.query(
+      "ALTER TABLE business_partners MODIFY partner_type ENUM('Contratista', 'Proveedor', 'Visitante') NOT NULL",
+    );
+    const [visitorIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'business_partners'
+         AND INDEX_NAME = 'uq_business_partners_visitor_record'`,
+    );
+    if (visitorIndexes.length === 0) {
+      await connection.query(
+        "ALTER TABLE business_partners ADD UNIQUE INDEX uq_business_partners_visitor_record (visitor_record_id)",
+      );
+    }
+    const [visitorConstraints] = await connection.query<RowDataPacket[]>(
+      `SELECT CONSTRAINT_NAME
+       FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+       WHERE CONSTRAINT_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'business_partners'
+         AND CONSTRAINT_NAME = 'fk_business_partners_visitor'`,
+    );
+    if (visitorConstraints.length === 0) {
+      await connection.query(
+        `ALTER TABLE business_partners
+         ADD CONSTRAINT fk_business_partners_visitor
+         FOREIGN KEY (visitor_record_id) REFERENCES general_visitors (id)
+         ON UPDATE CASCADE ON DELETE RESTRICT`,
+      );
+    }
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS app_migrations (
+         migration_key VARCHAR(120) NOT NULL,
+         completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         PRIMARY KEY (migration_key)
+       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+    );
+    const [visitorBackfill] = await connection.execute<RowDataPacket[]>(
+      "SELECT migration_key FROM app_migrations WHERE migration_key = 'visitor-partners-backfill-v1' LIMIT 1",
+    );
+    if (visitorBackfill.length === 0) {
+      await connection.query(
+        `INSERT INTO business_partners
+           (name, description, rfc, category, subject, visitor_record_id,
+            employee_count, partner_type, is_active)
+         SELECT visitors.full_name, 'Público General', NULL, 'Visitante', NULL, visitors.id,
+                1, 'Visitante', TRUE
+         FROM general_visitors AS visitors
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM business_partners AS partners
+           WHERE partners.visitor_record_id = visitors.id
+         )`,
+      );
+      await connection.execute(
+        "INSERT INTO app_migrations (migration_key) VALUES ('visitor-partners-backfill-v1')",
+      );
+    }
     const equipmentItemColumns = [
       {
         table: "equipment_declaration_items",
