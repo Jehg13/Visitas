@@ -3,6 +3,7 @@
 node_modules
 **/node_modules
 **/dist
+**/*.vue.js
 .env
 .env.*
 !.env.production.example

@@ -153,16 +153,19 @@ Vue Router permite navegar directamente a las secciones del dashboard, por ejemp
 
 ## Despliegue con Docker en VPS
 
-La imagen de producción separa el frontend estático en Nginx, la API en Bun y
-MySQL en contenedores distintos. Solo Nginx publica un puerto al host; MySQL y
-la API permanecen en la red privada de Docker. El volumen `mysql_data` conserva
-la base de datos entre actualizaciones.
+La imagen de producción separa el frontend estático en Nginx y la API en Bun.
+La API se conecta a la base MySQL que ya está instalada y administrada en el
+VPS; este Compose no crea otro servidor MySQL ni publica la base de datos. Solo
+Nginx publica un puerto al host.
 
 1. Copia `.env.production.example` como `.env.production` y configura
-   contraseñas aleatorias distintas para `MYSQL_PASSWORD` y
-   `MYSQL_ROOT_PASSWORD`, además del dominio HTTPS en `PUBLIC_APP_URL`.
-   Puedes generar contraseñas independientes con `openssl rand -hex 32`.
-   No subas `.env.production` al repositorio.
+   `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` y `DB_PASSWORD` con los datos que
+   te entregue la persona responsable del VPS, además del dominio HTTPS en
+   `PUBLIC_APP_URL`. Usa un usuario MySQL propio para la aplicación, no `root`,
+   y no subas `.env.production` al repositorio. Si MySQL está instalado
+   directamente en el mismo VPS, `DB_HOST=host.docker.internal` usa la puerta
+   de enlace del host configurada por Docker; si está en otro servidor, usa su
+   nombre DNS o IP privada.
 2. Desde la raíz del proyecto, construye y levanta los servicios:
 
    ```sh
@@ -176,26 +179,33 @@ la base de datos entre actualizaciones.
    docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api web
    ```
 
+   El servidor MySQL debe permitir conexiones desde la red Docker del VPS y el
+   usuario de la aplicación necesita permisos sobre la base para crear y
+   actualizar tablas e índices durante las migraciones. Si MySQL solo escucha
+   en `127.0.0.1`, la persona que administra el VPS debe habilitar de forma
+   segura la conexión desde Docker y limitarla con firewall; no expongas el
+   puerto 3306 a Internet.
+
    Configura TLS con el proxy inverso del VPS (por ejemplo, Caddy, Traefik o
    Nginx del host) y reenvía el dominio al puerto indicado por `HTTP_PORT`
    (8080 por defecto). La API activa cookies `Secure` en producción, por lo que
    el acceso público debe servirse por HTTPS. Restringe en el firewall el puerto
    publicado a ese proxy si este se ejecuta en el host.
 
-Para publicar una actualización, conserva el volumen de MySQL y ejecuta primero
-la migración con la nueva imagen; después reconstruye y levanta los servicios:
+Para publicar una actualización, haz primero un respaldo de la base MySQL
+existente y ejecuta la migración con la nueva imagen; después reconstruye y
+levanta los servicios:
 
 ```sh
 docker compose --env-file .env.production -f docker-compose.prod.yml run --build --rm migrate
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
-En una instalación nueva, `up` ejecuta la migración antes de iniciar la API. No
-uses `docker compose down -v` en producción: elimina el volumen con los datos
-de MySQL. Haz y verifica respaldos del volumen antes de cualquier actualización
-de esquema. Este despliegue crea una base nueva y vacía; antes de ponerlo en
-producción, restaura en MySQL el respaldo de datos que debas conservar. No
-ejecutes el seed de usuarios de prueba en producción.
+En una instalación nueva, `up` ejecuta la migración antes de iniciar la API.
+Las migraciones crean las tablas de la aplicación si faltan y pueden actualizar
+el esquema existente; no ejecutan el seed de usuarios de prueba. Verifica los
+respaldos antes de cualquier cambio de esquema y no ejecutes el seed en
+producción.
 
 ## Producción: rendimiento y origen
 
