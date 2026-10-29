@@ -8,6 +8,7 @@ type SeedUser = {
   active: string;
   priv_admin: string;
   role: string;
+  sectionAccess: ("recepcion" | "administrador")[];
 };
 
 type ExistingUser = RowDataPacket & {
@@ -74,10 +75,10 @@ async function seedTestUsers() {
         if (passwordUpdate) initialized += 1;
       }
 
-      if (user.role === "Recepción") {
+      for (const section of user.sectionAccess) {
         const [permissionResult] = await connection.execute<ResultSetHeader>(
-          "INSERT IGNORE INTO accesos_secciones (login, seccion) VALUES (?, 'recepcion')",
-          [user.login],
+          "INSERT IGNORE INTO accesos_secciones (login, seccion) VALUES (?, ?)",
+          [user.login, section],
         );
         sectionPermissions += permissionResult.affectedRows;
       }
@@ -85,7 +86,7 @@ async function seedTestUsers() {
 
     await connection.commit();
     console.log(
-      `Seed completado: ${inserted} usuarios insertados, ${updated} perfiles sincronizados, ${sectionPermissions} permisos de Recepción creados y ${initialized} contraseñas inicializadas con Argon2id.`,
+      `Seed completado: ${inserted} usuarios insertados, ${updated} perfiles sincronizados, ${sectionPermissions} permisos de acceso creados y ${initialized} contraseñas inicializadas con Argon2id.`,
     );
   } catch (error) {
     await connection.rollback();

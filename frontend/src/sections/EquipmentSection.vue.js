@@ -22,7 +22,6 @@ const inspectionPhase = ref(null);
 const inspectionItems = ref([]);
 const linkMessage = ref("");
 let searchTimer;
-let refreshTimer;
 let declarationRefreshInProgress = false;
 const matchingStaff = computed(() => staff.value.filter((person) => person.businessPartnerId === businessPartnerId.value));
 const matchingAppointments = computed(() => appointments.value.filter((appointment) => appointment.businessPartnerId === businessPartnerId.value));
@@ -85,15 +84,16 @@ async function refreshDeclarations(silent = false) {
         declarationRefreshInProgress = false;
     }
 }
+function refreshEquipmentAfterRealtimeUpdate() {
+    if (document.visibilityState !== "visible")
+        return;
+    void refreshDeclarations(true);
+    void loadOptions().catch((error) => {
+        console.error("No se pudieron actualizar las opciones de equipo:", error);
+    });
+}
 onMounted(async () => {
-    refreshTimer = window.setInterval(() => {
-        if (document.visibilityState === "visible" && !loading.value) {
-            void refreshDeclarations(true);
-            void loadOptions().catch((error) => {
-                console.error("No se pudieron actualizar las opciones de equipo:", error);
-            });
-        }
-    }, 30000);
+    window.addEventListener("visitas:data-changed", refreshEquipmentAfterRealtimeUpdate);
     try {
         await Promise.all([loadOptions(), loadDeclarations()]);
     }
@@ -109,8 +109,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
     if (searchTimer)
         clearTimeout(searchTimer);
-    if (refreshTimer !== undefined)
-        window.clearInterval(refreshTimer);
+    window.removeEventListener("visitas:data-changed", refreshEquipmentAfterRealtimeUpdate);
 });
 watch(search, () => {
     if (searchTimer)

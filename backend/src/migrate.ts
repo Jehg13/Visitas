@@ -5,9 +5,18 @@ import { randomInt } from "node:crypto";
 const migrationUrl = new URL("../../database/init/002_create_application_tables.sql", import.meta.url);
 const equipmentMigrationUrl = new URL("../../database/init/004_create_equipment_workflow.sql", import.meta.url);
 const appointmentHistoryMigrationUrl = new URL("../../database/init/005_create_appointment_history.sql", import.meta.url);
+const visitorIdentificationMigrationUrl = new URL(
+  "../../database/init/006_expand_visitor_identification_type.sql",
+  import.meta.url,
+);
 
 async function migrate() {
-  const migrationFiles = [migrationUrl, equipmentMigrationUrl, appointmentHistoryMigrationUrl];
+  const migrationFiles = [
+    migrationUrl,
+    equipmentMigrationUrl,
+    appointmentHistoryMigrationUrl,
+    visitorIdentificationMigrationUrl,
+  ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
   const connection = await pool.getConnection();
@@ -16,6 +25,29 @@ async function migrate() {
     for (const statement of statements) {
       await connection.query(statement);
     }
+    const [visitorKioskColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'visitor_kiosk_registrations'
+         AND COLUMN_NAME = 'reception_id_claim_status'`,
+    );
+    if (visitorKioskColumns.length === 0) {
+      await connection.query(
+        `ALTER TABLE visitor_kiosk_registrations
+         ADD COLUMN reception_id_claim_status
+           ENUM('No aplica', 'Pendiente', 'Confirmada', 'No confirmada')
+           NOT NULL DEFAULT 'No aplica'
+           AFTER visitor_declared_id_retained`,
+      );
+    }
+    await connection.query(
+      `UPDATE visitor_kiosk_registrations
+       SET reception_id_claim_status =
+         CASE WHEN reception_received_id_at IS NULL THEN 'Pendiente' ELSE 'Confirmada' END
+       WHERE visitor_declared_id_retained = TRUE
+         AND reception_id_claim_status = 'No aplica'`,
+    );
     await connection.query(
       `ALTER TABLE visitor_kiosk_inspection_items
        MODIFY kiosk_item_id BIGINT UNSIGNED NULL,
@@ -82,6 +114,20 @@ async function migrate() {
          PRIMARY KEY (migration_key)
        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
     );
+    const [legacyAdminAccessMigration] = await connection.execute<RowDataPacket[]>(
+      "SELECT migration_key FROM app_migrations WHERE migration_key = 'legacy-admin-section-access-v1' LIMIT 1",
+    );
+    if (legacyAdminAccessMigration.length === 0) {
+      await connection.query(
+        `INSERT IGNORE INTO accesos_secciones (login, seccion)
+         SELECT login, 'administrador'
+         FROM accesos
+         WHERE priv_admin IN ('Y', '1')`,
+      );
+      await connection.execute(
+        "INSERT INTO app_migrations (migration_key) VALUES ('legacy-admin-section-access-v1')",
+      );
+    }
     const [visitorBackfill] = await connection.execute<RowDataPacket[]>(
       "SELECT migration_key FROM app_migrations WHERE migration_key = 'visitor-partners-backfill-v1' LIMIT 1",
     );

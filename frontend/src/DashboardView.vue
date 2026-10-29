@@ -28,6 +28,7 @@ import type {
   GeneralVisitor,
   Host,
   HostAccountOption,
+  AuthenticatedUser,
   SectionAccess,
   SystemAccessRole,
 } from "./stores/types";
@@ -332,7 +333,7 @@ const externalStaffPartnerOptions = computed(() =>
   ),
 );
 
-let liveRefreshTimer: number | undefined;
+let realtimeEvents: EventSource | null = null;
 
 function refreshVisibleSection() {
   if (document.visibilityState !== "visible") return;
@@ -357,6 +358,33 @@ function refreshVisibleSection() {
   if (activeSection.value === "Anfitriones" && currentUser.value.isAdmin) {
     void loadHostAccounts(true);
   }
+  if (activeSection.value === "Accesos" && currentUser.value.isAdmin) {
+    void refreshAccessAccounts();
+  }
+}
+
+async function refreshAccessAccounts() {
+  try {
+    const response = await fetch("/api/auth/session");
+    const result = await response.json() as {
+      user?: AuthenticatedUser;
+      accounts?: AccessAccount[];
+      error?: string;
+    };
+    if (!response.ok) throw new Error(result.error ?? "No se pudo actualizar la lista de accesos.");
+    if (!result.user || !Array.isArray(result.accounts)) {
+      throw new Error("El servidor devolvió datos de acceso incompletos.");
+    }
+    authStore.setSession(result.user, result.accounts);
+  } catch (error) {
+    console.error("No se pudieron actualizar los accesos en tiempo real:", error);
+  }
+}
+
+function refreshAfterRealtimeUpdate() {
+  if (document.visibilityState !== "visible") return;
+  refreshVisibleSection();
+  window.dispatchEvent(new Event("visitas:data-changed"));
 }
 
 onMounted(() => {
@@ -368,11 +396,16 @@ onMounted(() => {
   if (currentUser.value.isAdmin) {
     void loadHostAccounts();
   }
-  liveRefreshTimer = window.setInterval(refreshVisibleSection, 30000);
+  realtimeEvents = new EventSource("/api/events");
+  realtimeEvents.onopen = refreshAfterRealtimeUpdate;
+  realtimeEvents.onmessage = refreshAfterRealtimeUpdate;
+  document.addEventListener("visibilitychange", refreshAfterRealtimeUpdate);
 });
 
 onBeforeUnmount(() => {
-  if (liveRefreshTimer !== undefined) window.clearInterval(liveRefreshTimer);
+  realtimeEvents?.close();
+  realtimeEvents = null;
+  document.removeEventListener("visibilitychange", refreshAfterRealtimeUpdate);
 });
 
 watch(dashboardTheme, (theme) => {
@@ -486,7 +519,7 @@ async function loadBusinessDirectory(silent = false) {
 function openAccessAccountEditor(account: AccessAccount) {
   editingAccessAccount.value = account;
   accessAccountRoleDraft.value =
-    account.hasFullAccess || account.sectionAccess.includes("administrador")
+    account.sectionAccess.includes("administrador")
       ? "administrador"
       : account.sectionAccess.includes("recepcion")
         ? "recepcion"
@@ -516,6 +549,30 @@ async function saveAccessAccount() {
       return;
     }
     accessAccounts.value = result.accounts;
+    if (account.login === currentUser.value.login) {
+      const updatedAccount = result.accounts.find(({ login }) => login === account.login);
+      if (updatedAccount) {
+        authStore.user = {
+          ...currentUser.value,
+          isAdmin: updatedAccount.sectionAccess.includes("administrador"),
+          sectionAccess: updatedAccount.sectionAccess,
+        };
+        if (!authStore.user.isAdmin) {
+          const nextSection = updatedAccount.sectionAccess.includes("recepcion")
+            ? "Bitácora diaria"
+            : updatedAccount.sectionAccess.includes("anfitriones")
+              ? "Agenda de citas"
+              : "";
+          const nextPath = dashboardSectionPaths[nextSection as keyof typeof dashboardSectionPaths];
+          if (nextPath) {
+            activeSection.value = nextSection;
+            void router.replace(nextPath);
+          } else {
+            emit("logout");
+          }
+        }
+      }
+    }
     editingAccessAccount.value = null;
     showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`, "success");
   } catch (error) {
@@ -2464,7 +2521,6 @@ async function removeBusinessPartner(id: number) {
               v-model="accessAccountRoleDraft"
               type="radio"
               value="administrador"
-              :disabled="editingAccessAccount.hasFullAccess"
             />
             <span><strong>Administrador</strong><small>Acceso completo a la administración.</small></span>
           </label>
@@ -2473,7 +2529,6 @@ async function removeBusinessPartner(id: number) {
               v-model="accessAccountRoleDraft"
               type="radio"
               value="recepcion"
-              :disabled="editingAccessAccount.hasFullAccess"
             />
             <span><strong>Recepción</strong><small>Permite utilizar las secciones de recepción.</small></span>
           </label>
@@ -2482,15 +2537,11 @@ async function removeBusinessPartner(id: number) {
               v-model="accessAccountRoleDraft"
               type="radio"
               value=""
-              :disabled="editingAccessAccount.hasFullAccess"
             />
             <span><strong>Sin acceso</strong><small>No podrá entrar a las secciones de la aplicación.</small></span>
           </label>
-          <p v-if="editingAccessAccount.hasFullAccess" class="access-none-note">
-            Esta cuenta es administradora en la tabla externa `accesos` (`priv_admin`). Ese privilegio no se modifica desde aquí.
-          </p>
-          <p v-else class="access-none-note">
-            La selección se guarda en `accesos_secciones`. El acceso de anfitrión se conserva por separado.
+          <p class="access-none-note">
+            La selección se guarda en las secciones autorizadas de la aplicación. El acceso de anfitrión se conserva por separado.
           </p>
           <button class="button-primary workspace-submit" type="submit" :disabled="accessAccountSaving">
             {{ accessAccountSaving ? "Guardando..." : "Guardar cambios" }}

@@ -216,8 +216,6 @@ function formatRangeDate(date: string) {
     .replace(".", "");
 }
 
-let dashboardRefreshTimer: number | undefined;
-
 function getLocalDate(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -342,16 +340,18 @@ async function loadDashboardData() {
 watch([historyFromDate, historyToDate], () => void loadDashboardData());
 watch(() => props.appointments, () => void loadDashboardData());
 
+function refreshDashboardAfterRealtimeUpdate() {
+  if (document.visibilityState === "visible") void loadDashboardData();
+}
+
 onMounted(() => {
   void loadDashboardData();
-  dashboardRefreshTimer = window.setInterval(() => {
-    if (document.visibilityState === "visible") void loadDashboardData();
-  }, 30000);
+  window.addEventListener("visitas:data-changed", refreshDashboardAfterRealtimeUpdate);
 });
 
 onBeforeUnmount(() => {
   dashboardRequestVersion += 1;
-  if (dashboardRefreshTimer !== undefined) window.clearInterval(dashboardRefreshTimer);
+  window.removeEventListener("visitas:data-changed", refreshDashboardAfterRealtimeUpdate);
 });
 
 </script>

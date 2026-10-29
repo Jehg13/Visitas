@@ -8,7 +8,6 @@ type AccessAccount = {
   active: string | null;
   role: string | null;
   phone: string | null;
-  hasFullAccess: boolean;
   picture: string;
   sectionAccess: ("recepcion" | "anfitriones" | "administrador")[];
 };

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
-import { notifyUser } from "../notifications";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { confirmUser, notifyUser } from "../notifications";
 
 type KioskItem = {
   id: number;
@@ -36,12 +36,14 @@ type KioskInspection = {
 type KioskRegistration = {
   id: number;
   folio: string;
+  visitorRecordId: number;
   visitorName: string;
   companyName: string;
   visitReason: string;
   authorizationStatus: "Pendiente" | "Autorizada" | "Rechazada";
   identificationType: string;
   visitorDeclaredIdRetained: boolean;
+  receptionIdClaimStatus: "No aplica" | "Pendiente" | "Confirmada" | "No confirmada";
   receptionReceivedIdAt: string | null;
   receptionReceivedIdBy: string | null;
   idReturnedAt: string | null;
@@ -59,18 +61,29 @@ type InspectionDraftItem = {
   notes: string;
 };
 
+const props = defineProps<{
+  selectedVisitorRecordId: number | null;
+}>();
+const emit = defineEmits<{
+  movementSaved: [];
+}>();
+
 const registrations = ref<KioskRegistration[]>([]);
 const loading = ref(true);
 const errorMessage = ref("");
 const savingRegistrationId = ref<number | null>(null);
-const selectedRegistration = ref<KioskRegistration | null>(null);
+const registrationDetails = ref<KioskRegistration | null>(null);
 const inspectionRegistration = ref<KioskRegistration | null>(null);
 const inspectionPhase = ref<"Entrada" | "Salida" | null>(null);
 const inspectionDraft = ref<InspectionDraftItem[]>([]);
 const extraItemDescription = ref("");
 const extraItems = ref<string[]>([]);
-let refreshTimer: number | undefined;
-
+let registrationRequestInProgress = false;
+const selectedRegistration = computed(() =>
+  registrations.value.find(
+    (registration) => registration.visitorRecordId === props.selectedVisitorRecordId,
+  ) ?? null,
+);
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.headers.get("content-type")?.includes("application/json")) {
     throw new Error("No se pudo conectar con el módulo de autorregistro.");
@@ -83,6 +96,8 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function loadRegistrations(silent = false) {
+  if (registrationRequestInProgress) return;
+  registrationRequestInProgress = true;
   try {
     const response = await fetch("/api/visitor-kiosk/registrations");
     const result = await parseResponse<{
@@ -95,9 +110,9 @@ async function loadRegistrations(silent = false) {
     }
     registrations.value = result.registrations;
     errorMessage.value = "";
-    if (selectedRegistration.value) {
-      selectedRegistration.value =
-        result.registrations.find((registration) => registration.id === selectedRegistration.value?.id) ?? null;
+    if (registrationDetails.value) {
+      registrationDetails.value =
+        result.registrations.find((registration) => registration.id === registrationDetails.value?.id) ?? null;
     }
     if (inspectionRegistration.value) {
       inspectionRegistration.value =
@@ -111,32 +126,36 @@ async function loadRegistrations(silent = false) {
     }
   } finally {
     loading.value = false;
+    registrationRequestInProgress = false;
   }
+}
+
+function refreshRegistrationsAfterRealtimeUpdate() {
+  if (document.visibilityState === "visible") void loadRegistrations(true);
 }
 
 onMounted(() => {
   void loadRegistrations();
-  refreshTimer = window.setInterval(() => {
-    if (document.visibilityState === "visible") void loadRegistrations(true);
-  }, 30000);
+  window.addEventListener("visitas:data-changed", refreshRegistrationsAfterRealtimeUpdate);
 });
 
 onBeforeUnmount(() => {
-  if (refreshTimer !== undefined) window.clearInterval(refreshTimer);
+  window.removeEventListener("visitas:data-changed", refreshRegistrationsAfterRealtimeUpdate);
 });
 
 async function processRegistration(
   registration: KioskRegistration,
-  action: "authorize" | "reject" | "receive-identification" | "return-identification",
+  action: "authorize" | "reject" | "receive-identification" | "deny-identification" | "return-identification",
 ) {
   if (savingRegistrationId.value !== null) return;
   const actionMessage = {
     authorize: "autorizar esta visita",
     reject: "rechazar esta visita",
     "receive-identification": "confirmar la recepción física de esta identificación",
+    "deny-identification": "registrar que recepción no pudo confirmar el resguardo de esta identificación",
     "return-identification": "registrar la devolución de esta identificación",
   }[action];
-  if (!window.confirm(`¿Deseas ${actionMessage}?`)) return;
+  if (!await confirmUser(`¿Deseas ${actionMessage}?`, action === "deny-identification" ? "Registrar no confirmado" : "Confirmar acción")) return;
 
   savingRegistrationId.value = registration.id;
   try {
@@ -148,6 +167,7 @@ async function processRegistration(
     const result = await parseResponse<{ error?: string }>(response);
     if (!response.ok) throw new Error(result.error ?? "No se pudo procesar el registro.");
     await loadRegistrations();
+    emit("movementSaved");
     notifyUser("La acción se registró correctamente.", "success");
   } catch (error) {
     console.error("No se pudo procesar el autorregistro:", error);
@@ -236,6 +256,7 @@ async function completeChecklist(registration: KioskRegistration) {
     if (!response.ok) throw new Error(result.error ?? "No se pudo completar el checklist.");
     closeChecklist();
     await loadRegistrations();
+    emit("movementSaved");
     notifyUser(
       result.message ?? `Checklist de ${phase.toLowerCase()} completado.`,
       "success",
@@ -250,11 +271,15 @@ async function completeChecklist(registration: KioskRegistration) {
 </script>
 
 <template>
-  <section class="daily-log-panel visitor-kiosk-inbox" aria-labelledby="visitor-kiosk-inbox-title">
+  <section
+    v-if="selectedRegistration"
+    class="daily-log-panel visitor-kiosk-inbox"
+    aria-labelledby="visitor-kiosk-inbox-title"
+  >
     <div class="daily-log-panel-heading">
       <div>
-        <span class="daily-log-panel-kicker">RECEPCIÓN · AUTORREGISTRO</span>
-        <h3 id="visitor-kiosk-inbox-title">Registros del kiosco</h3>
+        <span class="daily-log-panel-kicker">REGISTRO MANUAL · FOLIO {{ selectedRegistration.folio }}</span>
+        <h3 id="visitor-kiosk-inbox-title">Acciones de recepción</h3>
       </div>
       <button class="daily-log-secondary-button" type="button" :disabled="loading" @click="loadRegistrations()">
         Actualizar
@@ -264,121 +289,149 @@ async function completeChecklist(registration: KioskRegistration) {
       {{ errorMessage }}
       <button type="button" @click="loadRegistrations()">Reintentar</button>
     </p>
-    <div v-if="loading && registrations.length === 0" class="daily-log-loading" role="status">
-      Cargando registros…
+    <div class="visitor-kiosk-reception-summary">
+      <div class="visitor-kiosk-reception-overview">
+        <div>
+          <span class="visitor-kiosk-reception-label">Estado de autorización</span>
+          <span
+            class="daily-log-table-status"
+            :class="`is-${selectedRegistration.authorizationStatus === 'Pendiente' ? 'pendiente' : selectedRegistration.authorizationStatus === 'Autorizada' ? 'dentro' : 'retirado'}`"
+          >{{ selectedRegistration.authorizationStatus }}</span>
+        </div>
+        <div>
+          <span class="visitor-kiosk-reception-label">Procedencia</span>
+          <strong>{{ selectedRegistration.companyName }}</strong>
+        </div>
+        <div>
+          <span class="visitor-kiosk-reception-label">Motivo de visita</span>
+          <strong>{{ selectedRegistration.visitReason }}</strong>
+        </div>
+      </div>
+      <div class="visitor-kiosk-reception-identification">
+        <span class="visitor-kiosk-reception-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="11" r="2" /><path d="M6 16a3 3 0 0 1 6 0m3-5h3m-3 3h3" /></svg>
+        </span>
+        <div class="visitor-kiosk-reception-identification-copy">
+          <span class="visitor-kiosk-reception-label">Identificación presentada</span>
+          <strong>{{ selectedRegistration.identificationType }}</strong>
+          <small>
+            {{ selectedRegistration.visitorDeclaredIdRetained
+              ? selectedRegistration.receptionIdClaimStatus === "Pendiente"
+                ? "Pendiente de confirmar por recepción."
+                : selectedRegistration.receptionIdClaimStatus === "No confirmada"
+                  ? "Recepción no confirmó el resguardo; la visita sigue pendiente de autorización."
+                  : `Recibida por ${selectedRegistration.receptionReceivedIdBy}${selectedRegistration.idReturnedAt ? ` · Devuelta por ${selectedRegistration.idReturnedBy}` : ""}`
+              : "Presentada solo para verificación." }}
+          </small>
+        </div>
+        <button
+          v-if="selectedRegistration.visitorDeclaredIdRetained && selectedRegistration.receptionIdClaimStatus === 'Pendiente'"
+          class="visitor-kiosk-reception-button is-identification"
+          type="button"
+          :disabled="savingRegistrationId === selectedRegistration.id"
+          @click="processRegistration(selectedRegistration, 'receive-identification')"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.5 17 19 7" /></svg>
+          Confirmar recepción
+        </button>
+        <button
+          v-if="selectedRegistration.visitorDeclaredIdRetained && selectedRegistration.receptionIdClaimStatus === 'Pendiente'"
+          class="visitor-kiosk-reception-button is-reject"
+          type="button"
+          :disabled="savingRegistrationId === selectedRegistration.id"
+          @click="processRegistration(selectedRegistration, 'deny-identification')"
+        >No se confirmó</button>
+        <button
+          v-if="selectedRegistration.receptionReceivedIdAt && !selectedRegistration.idReturnedAt"
+          class="visitor-kiosk-reception-button is-identification"
+          type="button"
+          :disabled="savingRegistrationId === selectedRegistration.id"
+          @click="processRegistration(selectedRegistration, 'return-identification')"
+        >
+          Registrar devolución
+        </button>
+      </div>
+      <div
+        v-if="selectedRegistration.authorizationStatus === 'Pendiente' &&
+          (!selectedRegistration.visitorDeclaredIdRetained || selectedRegistration.receptionIdClaimStatus !== 'Pendiente')"
+        class="visitor-kiosk-reception-authorization"
+      >
+        <span class="visitor-kiosk-reception-label">Revisión de recepción</span>
+        <div class="visitor-kiosk-reception-actions">
+          <button
+            class="visitor-kiosk-reception-button is-authorize"
+            type="button"
+            :disabled="savingRegistrationId === selectedRegistration.id"
+            @click="processRegistration(selectedRegistration, 'authorize')"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
+            Autorizar visita
+          </button>
+          <button
+            class="visitor-kiosk-reception-button is-reject"
+            type="button"
+            :disabled="savingRegistrationId === selectedRegistration.id"
+            @click="processRegistration(selectedRegistration, 'reject')"
+          >Rechazar</button>
+        </div>
+      </div>
     </div>
-    <div v-else-if="registrations.length === 0" class="daily-log-empty">
-      <h4>Aún no hay autorregistros</h4>
-      <p>Los registros enviados desde el kiosco aparecerán aquí.</p>
-    </div>
-    <div v-else class="daily-log-table-scroll">
-      <table class="daily-log-table visitor-kiosk-table">
-        <thead>
-          <tr>
-            <th>Folio / hora</th>
-            <th>Visitante</th>
-            <th>Empresa / asunto</th>
-            <th>Equipo / herramientas</th>
-            <th>Identificación</th>
-            <th>Autorización</th>
-            <th><span class="sr-only">Acciones</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="registration in registrations" :key="registration.id">
-            <td><strong>{{ registration.folio }}</strong><small class="daily-log-table-date">{{ registration.createdAt }}</small></td>
-            <td>{{ registration.visitorName }}</td>
-            <td><strong>{{ registration.companyName }}</strong><small class="daily-log-table-date">{{ registration.visitReason }}</small></td>
-            <td>
-              <button
-                class="equipment-open-button"
-                type="button"
-                @click="selectedRegistration = registration"
-              >{{ registration.items.length ? `Ver ${registration.items.length} artículo(s)` : "Ver revisión" }}</button>
-            </td>
-            <td>
-              <strong>{{ registration.identificationType }}</strong>
-              <small class="daily-log-table-date">
-                {{ registration.visitorDeclaredIdRetained ? "Visitante declara resguardo" : "Solo verificación" }}
-              </small>
-              <button
-                v-if="registration.visitorDeclaredIdRetained && !registration.receptionReceivedIdAt"
-                class="equipment-open-button"
-                type="button"
-                :disabled="savingRegistrationId === registration.id"
-                @click="processRegistration(registration, 'receive-identification')"
-              >Confirmar recepción</button>
-              <small v-else-if="registration.receptionReceivedIdAt" class="daily-log-table-date">
-                Recibida por {{ registration.receptionReceivedIdBy }}
-                <template v-if="registration.idReturnedAt"> · Devuelta por {{ registration.idReturnedBy }}</template>
-              </small>
-              <button
-                v-if="registration.receptionReceivedIdAt && !registration.idReturnedAt"
-                class="equipment-open-button"
-                type="button"
-                :disabled="savingRegistrationId === registration.id"
-                @click="processRegistration(registration, 'return-identification')"
-              >Registrar devolución</button>
-            </td>
-            <td>
-              <span class="daily-log-table-status" :class="`is-${registration.authorizationStatus === 'Pendiente' ? 'pendiente' : registration.authorizationStatus === 'Autorizada' ? 'dentro' : 'retirado'}`">
-                {{ registration.authorizationStatus }}
-              </span>
-              <small class="daily-log-table-date">
-                Entrada: {{ registration.entryChecklistComplete ? "Checklist completo" : "Pendiente de revisión" }}
-                · Salida: {{ registration.exitChecklistComplete ? "Checklist completo" : "Pendiente" }}
-              </small>
-            </td>
-            <td class="visitor-kiosk-actions-cell">
-              <template v-if="registration.authorizationStatus === 'Pendiente'">
-                <button
-                  class="daily-log-selection-action"
-                  type="button"
-                  :disabled="savingRegistrationId === registration.id"
-                  @click="processRegistration(registration, 'authorize')"
-                >Autorizar</button>
-                <button
-                  class="daily-log-delete"
-                  type="button"
-                  :disabled="savingRegistrationId === registration.id"
-                  @click="processRegistration(registration, 'reject')"
-                >Rechazar</button>
-              </template>
-              <button
-                v-if="registration.authorizationStatus !== 'Rechazada' && !registration.entryChecklistComplete"
-                class="daily-log-selection-action"
-                type="button"
-                :disabled="savingRegistrationId === registration.id"
-                @click="openChecklist(registration, 'Entrada')"
-              >Revisar entrada</button>
-              <button
-                v-else-if="registration.authorizationStatus === 'Autorizada' && !registration.exitChecklistComplete"
-                class="daily-log-selection-action"
-                type="button"
-                :disabled="savingRegistrationId === registration.id"
-                @click="openChecklist(registration, 'Salida')"
-              >Revisar salida</button>
-              <span v-else-if="registration.exitChecklistComplete">Salida registrada</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div v-if="selectedRegistration.items.length > 0" class="visitor-kiosk-reception-equipment">
+      <div class="visitor-kiosk-reception-equipment-heading">
+        <div>
+          <strong>Equipo y herramientas</strong>
+          <small>{{ selectedRegistration.items.length }} artículo(s) declarado(s)</small>
+        </div>
+        <button class="daily-log-secondary-button" type="button" @click="registrationDetails = selectedRegistration">
+          Ver detalle
+        </button>
+      </div>
+      <ul>
+        <li v-for="item in selectedRegistration.items" :key="item.id">
+          <span>{{ item.type }} · {{ item.description }}</span>
+          <small>Cantidad: {{ item.quantity }}</small>
+        </li>
+      </ul>
+      <div class="daily-log-selection-action-group">
+        <button
+          v-if="selectedRegistration.authorizationStatus !== 'Rechazada' && !selectedRegistration.entryChecklistComplete"
+          class="daily-log-selection-action"
+          type="button"
+          :disabled="savingRegistrationId === selectedRegistration.id"
+          @click="openChecklist(selectedRegistration, 'Entrada')"
+        >Revisar checklist de entrada</button>
+        <button
+          v-else-if="selectedRegistration.authorizationStatus === 'Autorizada' && !selectedRegistration.exitChecklistComplete"
+          class="daily-log-selection-action is-exit"
+          type="button"
+          :disabled="savingRegistrationId === selectedRegistration.id"
+          @click="openChecklist(selectedRegistration, 'Salida')"
+        >Revisar checklist de salida</button>
+        <span v-else-if="selectedRegistration.exitChecklistComplete">Checklists completados</span>
+      </div>
     </div>
   </section>
+  <p v-else-if="selectedVisitorRecordId !== null && loading" class="daily-log-loading" role="status">
+    Cargando las acciones del registro manual…
+  </p>
+  <p v-else-if="selectedVisitorRecordId !== null && errorMessage" class="equipment-alert" role="alert">
+    {{ errorMessage }}
+    <button type="button" @click="loadRegistrations()">Reintentar</button>
+  </p>
 
-  <div v-if="selectedRegistration" class="modal-backdrop" @click.self="selectedRegistration = null">
+  <div v-if="registrationDetails" class="modal-backdrop" @click.self="registrationDetails = null">
     <section class="dialog workspace-dialog visitor-kiosk-detail" role="dialog" aria-modal="true" aria-labelledby="visitor-kiosk-detail-title">
-      <button class="dialog-close" type="button" aria-label="Cerrar" @click="selectedRegistration = null">
+      <button class="dialog-close" type="button" aria-label="Cerrar" @click="registrationDetails = null">
         <svg class="icon"><use href="#i-close" /></svg>
       </button>
       <span class="dialog-icon"><svg class="icon"><use href="#i-tool" /></svg></span>
-      <h2 id="visitor-kiosk-detail-title">Equipo y herramientas · {{ selectedRegistration.folio }}</h2>
-      <p class="dialog-description">{{ selectedRegistration.visitorName }} · {{ selectedRegistration.companyName }}</p>
+      <h2 id="visitor-kiosk-detail-title">Equipo y herramientas · {{ registrationDetails.folio }}</h2>
+      <p class="dialog-description">{{ registrationDetails.visitorName }} · {{ registrationDetails.companyName }}</p>
       <div class="daily-log-table-scroll">
         <table class="workspace-table">
           <thead><tr><th>Tipo</th><th>Descripción</th><th>Cantidad</th><th>Marca / modelo / serie / color</th></tr></thead>
           <tbody>
-            <tr v-for="(item, index) in selectedRegistration.items" :key="`${index}-${item.description}`">
+            <tr v-for="(item, index) in registrationDetails.items" :key="`${index}-${item.description}`">
               <td>{{ item.type }}</td>
               <td>{{ item.description }}</td>
               <td>{{ item.quantity }}</td>
@@ -388,11 +441,11 @@ async function completeChecklist(registration: KioskRegistration) {
         </table>
       </div>
       <h3>Checklists de entrada y salida</h3>
-      <p v-if="selectedRegistration.inspections.length === 0" class="dialog-description">
+      <p v-if="registrationDetails.inspections.length === 0" class="dialog-description">
         Aún no se han completado revisiones de artículos.
       </p>
       <ul v-else class="visitor-kiosk-audit-list">
-        <li v-for="inspection in selectedRegistration.inspections" :key="inspection.id">
+        <li v-for="inspection in registrationDetails.inspections" :key="inspection.id">
           <strong>Checklist de {{ inspection.phase.toLowerCase() }}</strong>
           <span>{{ inspection.inspectorName }} · {{ inspection.completedAt }}</span>
           <small v-if="inspection.items.length === 0">Sin artículos; revisión confirmada.</small>
@@ -406,7 +459,7 @@ async function completeChecklist(registration: KioskRegistration) {
       </ul>
       <h3>Historial de acciones</h3>
       <ul class="visitor-kiosk-audit-list">
-        <li v-for="(event, index) in selectedRegistration.audit" :key="`${event.created_at}-${index}`">
+        <li v-for="(event, index) in registrationDetails.audit" :key="`${event.created_at}-${index}`">
           <strong>{{ event.action }}</strong>
           <span>{{ event.actor_name }} · {{ event.created_at }}</span>
           <small v-if="event.details">{{ event.details }}</small>

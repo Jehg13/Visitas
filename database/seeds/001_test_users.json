@@ -5,7 +5,8 @@
     "email": "admin.demo@visitas.local",
     "active": "Y",
     "priv_admin": "Y",
-    "role": "Administrador"
+    "role": "Administrador",
+    "sectionAccess": ["administrador"]
   },
   {
     "login": "demo.recepcion",
@@ -13,7 +14,8 @@
     "email": "recepcion.demo@visitas.local",
     "active": "Y",
     "priv_admin": "N",
-    "role": "Recepción"
+    "role": "Recepción",
+    "sectionAccess": ["recepcion"]
   },
   {
     "login": "jehg13072002",
@@ -21,6 +23,7 @@
     "email": "jehg13072002@gmail.com",
     "active": "Y",
     "priv_admin": "Y",
-    "role": "Programador"
+    "role": "Programador",
+    "sectionAccess": ["administrador"]
   }
 ]

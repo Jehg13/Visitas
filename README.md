@@ -73,14 +73,14 @@ Remove-Item Env:SEED_TEST_PASSWORD
 El seed es repetible e inicializa los usuarios de prueba o sustituye el marcador
 anterior, sin restablecer contraseñas que ya tengan un hash. Incluye perfiles de
 Administrador, Recepción y Programador (`jehg13072002@gmail.com`). El usuario
-Programador tiene `priv_admin = 'Y'` y entra al dashboard completo. Las
-contraseñas se guardan como hashes Argon2id. El login acepta usuario o correo y
-solo permite cuentas activas. Las tres cuentas usan la contraseña ingresada
-para ejecutar el seed; no se guarda en el repositorio ni queda en el entorno
+Programador recibe el permiso `administrador` de la aplicación mediante
+`accesos_secciones`. Las contraseñas se guardan como hashes Argon2id. El login
+acepta usuario o correo y solo permite cuentas activas. Las tres cuentas usan
+la contraseña ingresada para ejecutar el seed; no se guarda en el repositorio ni queda en el entorno
 después de ejecutar `Remove-Item`.
 
-El seed registra también el permiso `recepcion` en `accesos_secciones` para la
-cuenta de prueba de Recepción.
+El seed registra los permisos de aplicación definidos para cada cuenta en
+`accesos_secciones`.
 
 Al iniciar sesión como administrador, la sección Accesos muestra los usuarios de
 `accesos` sin exponer contraseñas ni datos de activación. La tabla exacta no
@@ -88,9 +88,10 @@ tiene columna de departamento, por eso aparece como sin vincular; el `role` se
 muestra como puesto. En Accesos se asigna un único perfil de aplicación:
 Administrador, Recepción o Sin acceso. Estas asignaciones se guardan en
 `accesos_secciones` y no modifican ningún campo de la tabla externa `accesos`,
-incluidos `active` y `priv_admin`. Los privilegios existentes de
-`priv_admin = 'Y'` permanecen administradores y no se pueden retirar desde esta
-interfaz. El acceso a Anfitriones se conserva como permiso aparte y se concede
+incluidos `active` y `priv_admin`. `priv_admin` no determina los permisos de esta
+aplicación. La migración inicial conserva el acceso de administradores existentes
+copiándolo una sola vez a `accesos_secciones`; desde entonces, sus permisos sí se
+pueden cambiar desde esta interfaz. El acceso a Anfitriones se conserva como permiso aparte y se concede
 al registrar una cuenta existente como anfitrión; no se configura desde Accesos.
 El login siempre respeta el estado `active` de la cuenta externa.
 
@@ -109,18 +110,27 @@ ese rol en modo de solo lectura para la Agenda.
 El autorregistro público está disponible en `/registro` y no requiere una
 cuenta de visitante. El formulario guarda de forma transaccional el visitante,
 los artículos, el folio, la declaración sobre identificación y la llegada
-inicial en la bitácora. No crea empresas nuevas. La visita queda pendiente de
-autorización y el endpoint público solo permite enviar registros; la consulta y
-las acciones de recepción requieren sesión con permiso de Recepción o
-Administrador. Los reintentos usan una clave de idempotencia y las solicitudes
-de alta se limitan por IP. Recepción puede revisar artículos, autorizar o
-rechazar la visita, confirmar físicamente una identificación y registrar su
-devolución; cada acción se audita. La bitácora impide registrar el ingreso real
-hasta que la visita esté autorizada y el checklist de entrada se haya completado.
-El checklist registra coincidencias, faltantes, daños, artículos extra y
-observaciones; al completar la salida también registra el retiro. El kiosco
-mantiene una pantalla de espera y muestra el resultado de la revisión de
-recepción antes de volver a la bienvenida.
+inicial en la bitácora. No crea empresas nuevas. Si el visitante declara que
+dejó su identificación para resguardo, recepción primero confirma o marca que
+no pudo confirmar esa declaración; el backend impide autorizar la entrada
+mientras siga pendiente. Después recepción autoriza o rechaza la visita. Si el
+visitante indica que no dejó identificación, el kiosco muestra el folio de
+referencia y recepción sigue el flujo normal de autorización. El kiosco consulta
+en tiempo real el avance de las declaraciones que requieren validación. El
+endpoint público solo permite enviar registros y consultar el estado propio
+mediante una clave de idempotencia; la consulta general y las acciones de
+recepción requieren sesión con permiso de Recepción o Administrador. Las
+solicitudes de alta se limitan por IP. Cada acción de recepción se audita y las
+confirmaciones usan alertas compatibles con el tema claro u oscuro. La visita
+requiere autorización y, cuando hay artículos declarados, completar el
+checklist de entrada antes de registrar el ingreso y el checklist de salida
+antes de registrar el retiro. Sin equipo ni herramientas, la autorización
+registra el ingreso sin mostrar acciones de checklist. Los autorregistros
+aparecen como movimientos manuales en la bitácora; al seleccionar uno, el panel
+lateral ofrece las acciones de identificación y autorización y, solo si hay
+artículos, los checklists. Estos registran coincidencias, faltantes, daños,
+artículos extra y observaciones. El kiosco ofrece un botón de inicio para volver
+a `/registro`.
 
 La navegación del frontend solo controla qué secciones se muestran; cada API
 valida la sesión y el permiso requerido por separado. La ruta heredada
@@ -209,6 +219,13 @@ Nginx publica un puerto al host.
    el acceso público debe servirse por HTTPS. Restringe en el firewall el puerto
    publicado a ese proxy si este se ejecuta en el host.
 
+   La actualización en tiempo real usa Server-Sent Events en `/api/events` y
+   `/api/visitor-kiosk/events`. El Nginx del contenedor desactiva el buffering
+   para esas rutas. Si el proxy TLS del VPS tiene buffering habilitado, excluye
+   ambas rutas de ese buffering y permite conexiones persistentes. El bus SSE
+   vive en memoria; este despliegue está preparado para una réplica de la API.
+   Para escalar horizontalmente, conecta las réplicas a un broker compartido.
+
 Para publicar una actualización, haz primero un respaldo de la base MySQL
 existente y ejecuta la migración con la nueva imagen; después reconstruye y
 levanta los servicios:
@@ -230,6 +247,9 @@ respaldos antes de cualquier cambio de esquema.
 - Publica el frontend y la API bajo el mismo origen HTTPS. Configura el proxy del hosting para
   enviar `/api/*` al servidor Bun y para devolver `index.html` en las rutas de Vue Router.
   Vite solo configura el proxy `/api` durante desarrollo; no sustituye este proxy en producción.
+- Las vistas abiertas reciben cambios del servidor por SSE. Conserva el streaming sin buffering
+  en `/api/events` y `/api/visitor-kiosk/events` a través de cualquier proxy TLS externo.
+  El bus actual es local al proceso y requiere una sola réplica API.
 - Al mantener frontend y API en el mismo origen, CORS no se necesita. No habilites
   `Access-Control-Allow-Origin: *` para esta API; no hay una allowlist CORS configurada.
 - Ejecuta Bun con `NODE_ENV=production` para que las cookies de sesión incluyan `Secure`, y
@@ -282,7 +302,7 @@ docker-compose.yml     Servicio local de base de datos
 - `equipment_declarations` y `equipment_declaration_items`: declaración de un solo uso, asociada con una empresa y, cuando existe, con su cita, visitante o registro de personal externo. Cada fila conserva si el artículo es equipo o herramienta.
 - `equipment_inspections` y `equipment_inspection_items`: verificaciones separadas de Entrada y Salida, con el inspector, tipo de artículo, cantidades/características revisadas, resultados y observaciones de incidencias.
 - `accesos`: estructura local de usuarios compatible con la tabla externa; conserva exactamente sus 13 columnas y nulabilidad, sin agregar campos.
-- `accesos_secciones`: roles/permisos independientes por usuario (`administrador`, `recepcion`, `anfitriones`); no altera `accesos`. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
+- `accesos_secciones`: permisos de aplicación independientes por usuario (`administrador`, `recepcion`, `anfitriones`); son la fuente de autorización y no alteran `accesos`. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
 - `password_reset_tokens`, `auth_login_failures` y `auth_recovery_limits`: enlaces de recuperación de un solo uso, bloqueos progresivos de inicio de sesión y límites anti-spam. Los tokens se almacenan como hash.
 - `visits`: tabla original de la aplicación, se conserva.
 

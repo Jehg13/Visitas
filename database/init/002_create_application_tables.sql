@@ -205,8 +205,10 @@ CREATE TABLE IF NOT EXISTS visitor_kiosk_registrations (
   carries_equipment BOOLEAN NOT NULL DEFAULT FALSE,
   authorization_status ENUM('Pendiente', 'Autorizada', 'Rechazada') NOT NULL DEFAULT 'Pendiente',
   registration_source VARCHAR(32) NOT NULL DEFAULT 'Autorregistro',
-  identification_type VARCHAR(40) NOT NULL,
+  identification_type VARCHAR(200) NOT NULL,
   visitor_declared_id_retained BOOLEAN NOT NULL DEFAULT FALSE,
+  reception_id_claim_status ENUM('No aplica', 'Pendiente', 'Confirmada', 'No confirmada')
+    NOT NULL DEFAULT 'No aplica',
   reception_received_id_at DATETIME NULL,
   reception_received_id_by VARCHAR(255) NULL,
   id_returned_at DATETIME NULL,

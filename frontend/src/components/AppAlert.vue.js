@@ -24,7 +24,11 @@ function show(nextAlert) {
     if (alert.value?.resolve)
         alert.value.resolve(false);
     const activeTheme = document.querySelector(".dashboard-app")?.dataset.theme;
-    dashboardTheme.value = activeTheme === "light" ? "light" : "dark";
+    dashboardTheme.value = activeTheme === "light" || activeTheme === "dark"
+        ? activeTheme
+        : typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark";
     alert.value = nextAlert;
     if (dismissTimer !== undefined)
         window.clearTimeout(dismissTimer);

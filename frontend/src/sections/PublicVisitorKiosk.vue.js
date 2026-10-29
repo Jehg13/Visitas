@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { notifyUser } from "../notifications";
 const identificationTypes = [
     "INE",
     "Gafete",
@@ -17,15 +18,28 @@ const visitReason = ref("");
 const carriesItems = ref(null);
 const items = ref([]);
 const itemDraft = ref(newItem());
-const identificationType = ref("");
+const identificationTypesSelected = ref([]);
 const declaresIdRetained = ref(null);
 const informationConfirmed = ref(false);
 const completed = ref(null);
-const completedStatus = ref("waiting");
+const completedStatus = ref("reference");
 const completedStatusError = ref("");
+const needsReceptionIdCheck = computed(() => declaresIdRetained.value === true);
+const waitingMessage = computed(() => {
+    if (completedStatus.value === "awaiting-id-check") {
+        return "Esperando que recepción confirme la entrega de identificación…";
+    }
+    if (completedStatus.value === "awaiting-entry-authorization") {
+        return "Identificación revisada. Esperando autorización de entrada…";
+    }
+    if (completedStatus.value === "awaiting-entry-checklist") {
+        return "Entrada autorizada. Recepción debe completar el checklist de equipo…";
+    }
+    return "";
+});
 const requestIdempotencyKey = ref(crypto.randomUUID());
 let resetTimer;
-let statusPollingTimer;
+let statusEventSource = null;
 let statusRequestInProgress = false;
 const progress = computed(() => Math.min(step.value, 4));
 const hasValidDraft = computed(() => itemDraft.value.description.trim().length > 0 &&
@@ -75,9 +89,12 @@ onMounted(async () => {
 onBeforeUnmount(() => {
     if (resetTimer !== undefined)
         window.clearTimeout(resetTimer);
-    if (statusPollingTimer !== undefined)
-        window.clearInterval(statusPollingTimer);
+    statusEventSource?.close();
 });
+function closeStatusEventSource() {
+    statusEventSource?.close();
+    statusEventSource = null;
+}
 function clearErrors() {
     fieldErrors.value = {};
     errorMessage.value = "";
@@ -115,8 +132,9 @@ function continueStep() {
     }
     if (step.value === 3) {
         const errors = {};
-        if (!identificationTypes.includes(identificationType.value)) {
-            errors.identificationType = "Selecciona el tipo de identificación presentada.";
+        if (identificationTypesSelected.value.length === 0 ||
+            identificationTypesSelected.value.some((type) => !identificationTypes.includes(type))) {
+            errors.identificationType = "Selecciona al menos un tipo de identificación.";
         }
         if (declaresIdRetained.value === null) {
             errors.declaresIdRetained = "Indica si declaras haber entregado tu identificación para resguardo.";
@@ -126,6 +144,15 @@ function continueStep() {
             return;
     }
     step.value = Math.min(step.value + 1, 4);
+}
+function toggleIdentificationType(type) {
+    if (!identificationTypes.includes(type))
+        return;
+    identificationTypesSelected.value = identificationTypesSelected.value.includes(type)
+        ? identificationTypesSelected.value.filter((selectedType) => selectedType !== type)
+        : [...identificationTypesSelected.value, type];
+    if (identificationTypesSelected.value.length > 0)
+        delete fieldErrors.value.identificationType;
 }
 function previousStep() {
     clearErrors();
@@ -159,21 +186,18 @@ function resetKiosk() {
         window.clearTimeout(resetTimer);
         resetTimer = undefined;
     }
-    if (statusPollingTimer !== undefined) {
-        window.clearInterval(statusPollingTimer);
-        statusPollingTimer = undefined;
-    }
+    closeStatusEventSource();
     visitorName.value = "";
     companyName.value = "";
     visitReason.value = "";
     carriesItems.value = null;
     items.value = [];
     itemDraft.value = newItem();
-    identificationType.value = "";
+    identificationTypesSelected.value = [];
     declaresIdRetained.value = null;
     informationConfirmed.value = false;
     completed.value = null;
-    completedStatus.value = "waiting";
+    completedStatus.value = "reference";
     completedStatusError.value = "";
     requestIdempotencyKey.value = crypto.randomUUID();
     step.value = 0;
@@ -192,6 +216,7 @@ async function refreshCompletedStatus() {
         if (!response.ok)
             throw new Error(result.error ?? "No se pudo consultar la revisión de recepción.");
         if (!["Pendiente", "Autorizada", "Rechazada"].includes(String(result.authorizationStatus)) ||
+            !["No aplica", "Pendiente", "Confirmada", "No confirmada"].includes(String(result.receptionIdClaimStatus)) ||
             typeof result.entryChecklistComplete !== "boolean" ||
             typeof result.entered !== "boolean") {
             throw new Error("El servidor devolvió un estado de revisión inválido.");
@@ -200,14 +225,20 @@ async function refreshCompletedStatus() {
         if (result.authorizationStatus === "Rechazada") {
             completedStatus.value = "rejected";
         }
-        else if (result.authorizationStatus === "Autorizada" && result.entryChecklistComplete && result.entered) {
+        else if (result.authorizationStatus === "Autorizada" && result.entered) {
             completedStatus.value = "entered";
         }
-        if (completedStatus.value !== "waiting") {
-            if (statusPollingTimer !== undefined) {
-                window.clearInterval(statusPollingTimer);
-                statusPollingTimer = undefined;
-            }
+        else if (result.authorizationStatus === "Autorizada" && !result.entryChecklistComplete) {
+            completedStatus.value = "awaiting-entry-checklist";
+        }
+        else if (result.receptionIdClaimStatus === "Confirmada" || result.receptionIdClaimStatus === "No confirmada") {
+            completedStatus.value = "awaiting-entry-authorization";
+        }
+        else {
+            completedStatus.value = "awaiting-id-check";
+        }
+        if (completedStatus.value === "entered" || completedStatus.value === "rejected") {
+            closeStatusEventSource();
             if (resetTimer !== undefined)
                 window.clearTimeout(resetTimer);
             resetTimer = window.setTimeout(resetKiosk, 30000);
@@ -227,7 +258,9 @@ async function submitRegistration() {
         step.value = 1;
         return;
     }
-    if (!identificationTypes.includes(identificationType.value) || declaresIdRetained.value === null) {
+    if (identificationTypesSelected.value.length === 0 ||
+        identificationTypesSelected.value.some((type) => !identificationTypes.includes(type)) ||
+        declaresIdRetained.value === null) {
         fieldErrors.value = {
             identificationType: "Revisa los datos de identificación.",
         };
@@ -253,7 +286,7 @@ async function submitRegistration() {
                 visitReason: visitReason.value,
                 carriesItems: carriesItems.value,
                 items: carriesItems.value ? items.value : [],
-                identificationType: identificationType.value,
+                identificationTypes: identificationTypesSelected.value,
                 declaresIdRetained: declaresIdRetained.value,
             }),
         });
@@ -264,10 +297,16 @@ async function submitRegistration() {
             throw new Error("El servidor no confirmó el registro.");
         }
         completed.value = result;
-        completedStatus.value = "waiting";
+        completedStatus.value = declaresIdRetained.value ? "awaiting-id-check" : "reference";
         step.value = 5;
-        void refreshCompletedStatus();
-        statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 3000);
+        if (declaresIdRetained.value) {
+            statusEventSource = new EventSource(`/api/visitor-kiosk/events?key=${encodeURIComponent(requestIdempotencyKey.value)}`);
+            statusEventSource.onopen = () => void refreshCompletedStatus();
+            statusEventSource.onmessage = () => void refreshCompletedStatus();
+            statusEventSource.onerror = () => {
+                completedStatusError.value = "Conexión en tiempo real interrumpida; intentando reconectar…";
+            };
+        }
         resetTimer = window.setTimeout(resetKiosk, 120000);
     }
     catch (error) {
@@ -275,6 +314,7 @@ async function submitRegistration() {
         errorMessage.value = error instanceof Error
             ? error.message
             : "No se pudo guardar el registro. Inténtalo de nuevo.";
+        notifyUser(errorMessage.value);
     }
     finally {
         sending.value = false;
@@ -336,14 +376,9 @@ if (__VLS_ctx.step === 0) {
         ...{ class: "visitor-kiosk-welcome-mark" },
         'aria-hidden': "true",
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        viewBox: "0 0 48 48",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-        d: "M24 5 8 11v12c0 9 6.8 15.7 16 20 9.2-4.3 16-11 16-20V11L24 5Z",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-        d: "m17 24 5 5 10-11",
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
+        src: "/images/visitor-kiosk-access-icon.png",
+        alt: "",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h1, __VLS_intrinsicElements.h1)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
@@ -448,8 +483,35 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         ...{ class: "visitor-kiosk-eyebrow" },
     });
     (__VLS_ctx.step === 1 ? "IDENTIFICACIÓN DE VISITA" : __VLS_ctx.step === 2 ? "DECLARACIÓN DE ARTÍCULOS" : __VLS_ctx.step === 3 ? "CONTROL DE IDENTIDAD" : "ÚLTIMA REVISIÓN");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.h1, __VLS_intrinsicElements.h1)({});
-    (__VLS_ctx.step === 1 ? "Datos del visitante" : __VLS_ctx.step === 2 ? "Equipo y herramientas" : __VLS_ctx.step === 3 ? "Identificación" : "Revisa tu registro");
+    if (__VLS_ctx.step === 1) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-step-title" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-step-icon" },
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 48 48",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M24 5 8 11v12c0 9 6.8 15.7 16 20 9.2-4.3 16-11 16-20V11L24 5Z",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "24",
+            cy: "19",
+            r: "5",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M14.5 34c1.7-5 5-7.5 9.5-7.5s7.8 2.5 9.5 7.5",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.h1, __VLS_intrinsicElements.h1)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    }
+    else {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.h1, __VLS_intrinsicElements.h1)({});
+        (__VLS_ctx.step === 2 ? "Equipo y herramientas" : __VLS_ctx.step === 3 ? "Identificación" : "Revisa tu registro");
+    }
     if (__VLS_ctx.step === 2) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
     }
@@ -465,8 +527,35 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             ...{ class: "visitor-kiosk-label-title" },
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "12",
+            cy: "8",
+            r: "4",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M4 21a8 8 0 0 1 16 0",
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-field-control" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "12",
+            cy: "8",
+            r: "4",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M4 21a8 8 0 0 1 16 0",
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             value: (__VLS_ctx.visitorName),
@@ -487,15 +576,38 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             ...{ class: "visitor-kiosk-label-title" },
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M3 21h18M5 21V7l7-4v18m7 0V11l-7-4",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M8 9v1m0 3v1m0 3v1m8-5v1m0 3v1",
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-field-control" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M3 21h18M5 21V7l7-4v18m7 0V11l-7-4",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M8 9v1m0 3v1m0 3v1m8-5v1m0 3v1",
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             value: (__VLS_ctx.companyName),
             type: "text",
             list: "visitor-kiosk-company-list",
             maxlength: "180",
-            placeholder: "Escribe o selecciona una empresa",
+            placeholder: "Escribe el nombre de tu empresa",
             required: true,
             'aria-invalid': (!!__VLS_ctx.fieldErrors.companyName),
         });
@@ -524,6 +636,29 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             ...{ class: "visitor-kiosk-text-button" },
             type: "button",
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "9",
+            cy: "7",
+            r: "4",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            ...{ class: "visitor-kiosk-text-button-arrow" },
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M5 12h14m-7-7 7 7-7 7",
+        });
         if (__VLS_ctx.fieldErrors.companyName) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
                 ...{ class: "visitor-kiosk-field-error" },
@@ -534,8 +669,34 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             ...{ class: "visitor-kiosk-label-title" },
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m11 17 2 2a2 2 0 1 0 3-3",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m14 14 2 2a2 2 0 1 0 3-3l-3.5-3.5a2 2 0 0 0-3 0L12 10a3 3 0 0 1-3 0l-.5-.5a2 2 0 0 0-3 0L2 13a2 2 0 0 0 3 3l2.5-2.5",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m7 13 3 3m4-2 2 2",
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-field-control is-multiline" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M8 9h8m-8 4h6",
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea, __VLS_intrinsicElements.textarea)({
             value: (__VLS_ctx.visitReason),
@@ -559,9 +720,23 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             ...{ class: "visitor-kiosk-secondary" },
             type: "button",
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M19 12H5m7 7-7-7 7-7",
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ class: "visitor-kiosk-primary" },
             type: "submit",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M5 12h14m-7-7 7 7-7 7",
         });
     }
     else if (__VLS_ctx.step === 2) {
@@ -594,8 +769,22 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             type: "button",
             ...{ class: ({ 'is-selected': __VLS_ctx.carriesItems === true }) },
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            ...{ class: "visitor-kiosk-choice-icon" },
+            viewBox: "0 0 48 48",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M28 7a10 10 0 0 0 12 12L27 32l-7-7L33 12a10 10 0 0 0-5-5Z",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m20 25-6-6a10 10 0 0 0-7-12l6 6-1 5-5 1-6-6a10 10 0 0 0 12 12l6 6m-6-6L5 39a4 4 0 0 0 6 6l12-12",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-choice-copy" },
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
             ...{ onClick: (...[$event]) => {
                     if (!!(__VLS_ctx.step === 0))
@@ -613,8 +802,24 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             type: "button",
             ...{ class: ({ 'is-selected': __VLS_ctx.carriesItems === false }) },
         });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            ...{ class: "visitor-kiosk-choice-icon is-no" },
+            viewBox: "0 0 48 48",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "24",
+            cy: "24",
+            r: "17",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m12 12 24 24",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-choice-copy" },
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
         if (__VLS_ctx.fieldErrors.carriesItems || __VLS_ctx.fieldErrors.items) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
                 ...{ class: "visitor-kiosk-field-error" },
@@ -626,6 +831,7 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
                 ...{ class: "visitor-kiosk-item-editor" },
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
                 value: (__VLS_ctx.itemDraft.type),
             });
@@ -647,6 +853,7 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
                 required: true,
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
                 type: "number",
                 min: "1",
@@ -656,24 +863,28 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             });
             (__VLS_ctx.itemDraft.quantity);
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
                 value: (__VLS_ctx.itemDraft.brand),
                 type: "text",
                 maxlength: "120",
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
                 value: (__VLS_ctx.itemDraft.model),
                 type: "text",
                 maxlength: "120",
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
                 value: (__VLS_ctx.itemDraft.serialNumber),
                 type: "text",
                 maxlength: "180",
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
                 value: (__VLS_ctx.itemDraft.color),
                 type: "text",
@@ -683,6 +894,13 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
                 ...{ onClick: (__VLS_ctx.addItem) },
                 ...{ class: "visitor-kiosk-add-item" },
                 type: "button",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                viewBox: "0 0 24 24",
+                'aria-hidden': "true",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                d: "M12 5v14m-7-7h14",
             });
             if (__VLS_ctx.fieldErrors.item) {
                 __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
@@ -736,6 +954,18 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
                 ...{ class: "visitor-kiosk-empty-choice" },
             });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                viewBox: "0 0 24 24",
+                'aria-hidden': "true",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+                cx: "12",
+                cy: "12",
+                r: "9",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                d: "m8 12 2.5 2.5L16 9",
+            });
         }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "visitor-kiosk-actions" },
@@ -755,26 +985,143 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "visitor-kiosk-form" },
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-identification-field" },
+        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             ...{ class: "visitor-kiosk-label-title" },
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
             'aria-hidden': "true",
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
-            value: (__VLS_ctx.identificationType),
-            'aria-invalid': (!!__VLS_ctx.fieldErrors.identificationType),
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-identification-options" },
+            role: "group",
+            'aria-label': "Tipos de identificación; puedes elegir varias",
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-            value: "",
-            disabled: true,
-        });
-        for (const [type] of __VLS_getVForSourceType((__VLS_ctx.identificationTypes))) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
+        for (const [type, index] of __VLS_getVForSourceType((__VLS_ctx.identificationTypes))) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!!(__VLS_ctx.step === 0))
+                            return;
+                        if (!(__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4))
+                            return;
+                        if (!!(__VLS_ctx.step === 1))
+                            return;
+                        if (!!(__VLS_ctx.step === 2))
+                            return;
+                        if (!(__VLS_ctx.step === 3))
+                            return;
+                        __VLS_ctx.toggleIdentificationType(type);
+                    } },
                 key: (type),
+                ...{ class: "visitor-kiosk-identification-option" },
+                ...{ class: ({ 'is-selected': __VLS_ctx.identificationTypesSelected.includes(type) }) },
+                type: "button",
+                'aria-pressed': (__VLS_ctx.identificationTypesSelected.includes(type)),
             });
+            if (index === 0) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 32 32",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.rect)({
+                    x: "3.5",
+                    y: "6",
+                    width: "25",
+                    height: "20",
+                    rx: "3",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+                    cx: "11",
+                    cy: "14",
+                    r: "3",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M6.5 22a5 5 0 0 1 9 0m4-8h5m-5 5h5",
+                });
+            }
+            else if (index === 1) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 32 32",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M16 3 27 7v8c0 7-4.7 11.6-11 14-6.3-2.4-11-7-11-14V7l11-4Z",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+                    cx: "16",
+                    cy: "13",
+                    r: "3",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M10 22a6 6 0 0 1 12 0",
+                });
+            }
+            else if (index === 2) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 32 32",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.rect)({
+                    x: "6",
+                    y: "4",
+                    width: "20",
+                    height: "24",
+                    rx: "3",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M11 4v5h10V4m-10 11h10m-10 5h7",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+                    cx: "21.5",
+                    cy: "23",
+                    r: "1",
+                });
+            }
+            else if (index === 3) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 32 32",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.rect)({
+                    x: "4",
+                    y: "7",
+                    width: "24",
+                    height: "18",
+                    rx: "4",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+                    cx: "12",
+                    cy: "15",
+                    r: "3",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M7.5 22a5 5 0 0 1 9 0m3-9h7m-7 5h7m-7 4h5",
+                });
+            }
+            else {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 32 32",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M16 3 27 7v8c0 7-4.7 11.6-11 14-6.3-2.4-11-7-11-14V7l11-4Z",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M16 10v12m-5-6h10",
+                });
+            }
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
             (type);
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                ...{ class: "visitor-kiosk-identification-check" },
+                viewBox: "0 0 24 24",
+                'aria-hidden': "true",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                d: "m5 12 4 4L19 6",
+            });
         }
         if (__VLS_ctx.fieldErrors.identificationType) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
@@ -804,9 +1151,6 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             });
             (__VLS_ctx.fieldErrors.declaresIdRetained);
         }
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "visitor-kiosk-notice" },
-        });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "visitor-kiosk-actions" },
         });
@@ -847,11 +1191,11 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.dt, __VLS_intrinsicElements.dt)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.dd, __VLS_intrinsicElements.dd)({});
-        (__VLS_ctx.identificationType);
+        (__VLS_ctx.identificationTypesSelected.join(", "));
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.dt, __VLS_intrinsicElements.dt)({});
         __VLS_asFunctionalElement(__VLS_intrinsicElements.dd, __VLS_intrinsicElements.dd)({});
-        (__VLS_ctx.declaresIdRetained ? "Declara que la entregó para resguardo" : "Declara que solo la presentó para verificación");
+        (__VLS_ctx.declaresIdRetained ? "Declara que las entregó para resguardo" : "Declara que solo las presentó para verificación");
         __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
             ...{ class: "visitor-kiosk-confirmation" },
         });
@@ -859,6 +1203,11 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
             type: "checkbox",
         });
         (__VLS_ctx.informationConfirmed);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-confirmation-copy" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
         if (__VLS_ctx.fieldErrors.informationConfirmed) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
                 ...{ class: "visitor-kiosk-field-error" },
@@ -905,37 +1254,114 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
         ...{ class: "visitor-kiosk-welcome visitor-kiosk-success" },
         role: "status",
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
+        ...{ class: "visitor-kiosk-neon-frame" },
+        src: "/images/visitor-kiosk-neon-frame.png",
+        alt: "",
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "visitor-kiosk-welcome-mark" },
+        ...{ class: "visitor-kiosk-success-content" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-success-mark" },
+        ...{ class: (`is-${__VLS_ctx.completedStatus}`) },
         'aria-hidden': "true",
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-        viewBox: "0 0 48 48",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
-        cx: "24",
-        cy: "24",
-        r: "20",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-        d: "m14 24 7 7 14-15",
-    });
+    if (__VLS_ctx.completedStatus === 'entered') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 48 48",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "24",
+            cy: "24",
+            r: "20",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m14 24 7 7 14-15",
+        });
+    }
+    else if (__VLS_ctx.completedStatus === 'rejected') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 48 48",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "24",
+            cy: "24",
+            r: "20",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m17 17 14 14m0-14L17 31",
+        });
+    }
+    else if (__VLS_ctx.completedStatus === 'reference') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 48 48",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "24",
+            cy: "24",
+            r: "20",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M17 13h10l6 6v16H17z",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M27 13v7h6m-12 5h8m-8 5h8",
+        });
+    }
+    else {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 48 48",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+            cx: "24",
+            cy: "24",
+            r: "20",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M24 13v12l8 5",
+        });
+    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "visitor-kiosk-eyebrow" },
     });
-    (__VLS_ctx.completedStatus === "entered" ? "REVISIÓN COMPLETADA" : __VLS_ctx.completedStatus === "rejected" ? "REVISIÓN RECHAZADA" : "REGISTRO RECIBIDO");
+    (__VLS_ctx.completedStatus === "entered"
+        ? "REVISIÓN COMPLETADA"
+        : __VLS_ctx.completedStatus === "rejected"
+            ? "REVISIÓN RECHAZADA"
+            : __VLS_ctx.completedStatus === "reference"
+                ? "REGISTRO RECIBIDO"
+                : __VLS_ctx.completedStatus === "awaiting-id-check"
+                    ? "VALIDACIÓN DE IDENTIFICACIÓN"
+                    : "AUTORIZACIÓN EN PROCESO");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h1, __VLS_intrinsicElements.h1)({});
-    (__VLS_ctx.completedStatus === "entered" ? "Tu ingreso fue registrado" : __VLS_ctx.completedStatus === "rejected" ? "Acude con recepción" : "Esperando revisión de recepción");
+    (__VLS_ctx.completedStatus === "entered"
+        ? "Tu ingreso fue registrado"
+        : __VLS_ctx.completedStatus === "rejected"
+            ? "Acude con recepción"
+            : __VLS_ctx.completedStatus === "reference"
+                ? "Tu código de referencia"
+                : __VLS_ctx.completedStatus === "awaiting-id-check"
+                    ? "Recepción verificará tu identificación"
+                    : __VLS_ctx.completedStatus === "awaiting-entry-checklist"
+                        ? "Completa la revisión de equipo"
+                        : "Esperando autorización de entrada");
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-success-accent" },
+        'aria-hidden': "true",
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "visitor-kiosk-folio" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
     (__VLS_ctx.completed.folio);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "visitor-kiosk-success-name" },
-    });
-    (__VLS_ctx.completed.visitorName);
+    if (__VLS_ctx.completedStatus !== 'reference') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "visitor-kiosk-success-name" },
+        });
+        (__VLS_ctx.completed.visitorName);
+    }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "visitor-kiosk-intro" },
     });
@@ -943,8 +1369,18 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
         ? "Recepción completó el checklist de entrada y registró tu ingreso en la bitácora."
         : __VLS_ctx.completedStatus === "rejected"
             ? "Recepción no autorizó el registro. Solicita asistencia antes de ingresar."
-            : "Tu llegada ya quedó anotada. Espera mientras recepción revisa el checklist de equipos y autoriza el ingreso.");
-    if (__VLS_ctx.completedStatus === 'waiting') {
+            : __VLS_ctx.completedStatus === "reference"
+                ? "Presenta este folio a recepción para continuar con la autorización de entrada."
+                : __VLS_ctx.completedStatus === "awaiting-id-check"
+                    ? "Tu llegada está registrada. Recepción debe confirmar primero que recibió tu identificación para resguardo."
+                    : __VLS_ctx.completedStatus === "awaiting-entry-checklist"
+                        ? "Recepción autorizó tu entrada. El checklist de equipo debe completarse antes de registrar el ingreso."
+                        : __VLS_ctx.completedStatus === "awaiting-entry-authorization"
+                            ? "La declaración de resguardo ya fue revisada. Espera la decisión de recepción sobre tu entrada."
+                            : __VLS_ctx.carriesItems
+                                ? "Tu llegada quedó anotada. Espera mientras recepción revisa el checklist de equipos y autoriza el ingreso."
+                                : "Tu llegada quedó anotada. Espera mientras recepción revisa y autoriza el ingreso.");
+    if (__VLS_ctx.waitingMessage) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "visitor-kiosk-waiting" },
             role: "status",
@@ -954,8 +1390,9 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
             'aria-hidden': "true",
         });
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        (__VLS_ctx.waitingMessage);
     }
-    if (__VLS_ctx.completedStatusError) {
+    if (__VLS_ctx.needsReceptionIdCheck && __VLS_ctx.completedStatusError) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
             ...{ class: "visitor-kiosk-status-error" },
             role: "alert",
@@ -966,6 +1403,21 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
         ...{ onClick: (__VLS_ctx.resetKiosk) },
         ...{ class: "visitor-kiosk-secondary" },
         type: "button",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        ...{ class: "visitor-kiosk-home-arrow" },
+        viewBox: "0 0 24 24",
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "M5 12h14m-6-6 6 6-6 6",
     });
 }
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk']} */ ;
@@ -988,14 +1440,21 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-progress']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-step-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-eyebrow']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-step-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-step-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-label-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-control']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-label-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-control']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-hint']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-text-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-text-button-arrow']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-label-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-control']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-multiline']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-secondary']} */ ;
@@ -1006,7 +1465,12 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['has-equipment-list']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-choice-group']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-choice-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-choice-copy']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-choice-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-no']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-choice-copy']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-editor']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-description']} */ ;
@@ -1019,17 +1483,22 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-form']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-identification-field']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-label-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-identification-options']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-identification-option']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-identification-check']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-id-question']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-notice']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-summary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-confirmation']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-confirmation-copy']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-error-copy']} */ ;
@@ -1038,8 +1507,11 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-welcome']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-success']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-welcome-mark']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-neon-frame']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-success-content']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-success-mark']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-eyebrow']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-success-accent']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-folio']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-success-name']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-intro']} */ ;
@@ -1047,6 +1519,7 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-waiting-indicator']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-status-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-secondary']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-home-arrow']} */ ;
 var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
@@ -1063,15 +1536,18 @@ const __VLS_self = (await import('vue')).defineComponent({
             carriesItems: carriesItems,
             items: items,
             itemDraft: itemDraft,
-            identificationType: identificationType,
+            identificationTypesSelected: identificationTypesSelected,
             declaresIdRetained: declaresIdRetained,
             informationConfirmed: informationConfirmed,
             completed: completed,
             completedStatus: completedStatus,
             completedStatusError: completedStatusError,
+            needsReceptionIdCheck: needsReceptionIdCheck,
+            waitingMessage: waitingMessage,
             progress: progress,
             clearErrors: clearErrors,
             continueStep: continueStep,
+            toggleIdentificationType: toggleIdentificationType,
             previousStep: previousStep,
             addItem: addItem,
             removeItem: removeItem,

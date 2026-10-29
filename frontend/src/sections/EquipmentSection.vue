@@ -105,7 +105,6 @@ const inspectionPhase = ref<"entrada" | "salida" | null>(null);
 const inspectionItems = ref<InspectionDraftItem[]>([]);
 const linkMessage = ref("");
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
-let refreshTimer: number | undefined;
 let declarationRefreshInProgress = false;
 
 const matchingStaff = computed(() =>
@@ -180,15 +179,16 @@ async function refreshDeclarations(silent = false) {
   }
 }
 
+function refreshEquipmentAfterRealtimeUpdate() {
+  if (document.visibilityState !== "visible") return;
+  void refreshDeclarations(true);
+  void loadOptions().catch((error: unknown) => {
+    console.error("No se pudieron actualizar las opciones de equipo:", error);
+  });
+}
+
 onMounted(async () => {
-  refreshTimer = window.setInterval(() => {
-    if (document.visibilityState === "visible" && !loading.value) {
-      void refreshDeclarations(true);
-      void loadOptions().catch((error: unknown) => {
-        console.error("No se pudieron actualizar las opciones de equipo:", error);
-      });
-    }
-  }, 30000);
+  window.addEventListener("visitas:data-changed", refreshEquipmentAfterRealtimeUpdate);
   try {
     await Promise.all([loadOptions(), loadDeclarations()]);
   } catch (error) {
@@ -202,7 +202,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer);
-  if (refreshTimer !== undefined) window.clearInterval(refreshTimer);
+  window.removeEventListener("visitas:data-changed", refreshEquipmentAfterRealtimeUpdate);
 });
 
 watch(search, () => {

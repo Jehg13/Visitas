@@ -273,7 +273,7 @@ const selectableHostAccounts = computed(() => hostAccountOptions.value.filter((a
     host.id !== editingHostId.value)));
 const externalStaffPartnerOptions = computed(() => businessPartners.value.filter((partner) => partner.type !== "Visitante" &&
     partner.type === externalStaffRelationshipType.value));
-let liveRefreshTimer;
+let realtimeEvents = null;
 function refreshVisibleSection() {
     if (document.visibilityState !== "visible")
         return;
@@ -294,6 +294,30 @@ function refreshVisibleSection() {
     if (activeSection.value === "Anfitriones" && currentUser.value.isAdmin) {
         void loadHostAccounts(true);
     }
+    if (activeSection.value === "Accesos" && currentUser.value.isAdmin) {
+        void refreshAccessAccounts();
+    }
+}
+async function refreshAccessAccounts() {
+    try {
+        const response = await fetch("/api/auth/session");
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error ?? "No se pudo actualizar la lista de accesos.");
+        if (!result.user || !Array.isArray(result.accounts)) {
+            throw new Error("El servidor devolvió datos de acceso incompletos.");
+        }
+        authStore.setSession(result.user, result.accounts);
+    }
+    catch (error) {
+        console.error("No se pudieron actualizar los accesos en tiempo real:", error);
+    }
+}
+function refreshAfterRealtimeUpdate() {
+    if (document.visibilityState !== "visible")
+        return;
+    refreshVisibleSection();
+    window.dispatchEvent(new Event("visitas:data-changed"));
 }
 onMounted(() => {
     if (currentUser.value.isAdmin || isReception.value)
@@ -305,11 +329,15 @@ onMounted(() => {
     if (currentUser.value.isAdmin) {
         void loadHostAccounts();
     }
-    liveRefreshTimer = window.setInterval(refreshVisibleSection, 30000);
+    realtimeEvents = new EventSource("/api/events");
+    realtimeEvents.onopen = refreshAfterRealtimeUpdate;
+    realtimeEvents.onmessage = refreshAfterRealtimeUpdate;
+    document.addEventListener("visibilitychange", refreshAfterRealtimeUpdate);
 });
 onBeforeUnmount(() => {
-    if (liveRefreshTimer !== undefined)
-        window.clearInterval(liveRefreshTimer);
+    realtimeEvents?.close();
+    realtimeEvents = null;
+    document.removeEventListener("visibilitychange", refreshAfterRealtimeUpdate);
 });
 watch(dashboardTheme, (theme) => {
     try {
@@ -432,7 +460,7 @@ async function loadBusinessDirectory(silent = false) {
 function openAccessAccountEditor(account) {
     editingAccessAccount.value = account;
     accessAccountRoleDraft.value =
-        account.hasFullAccess || account.sectionAccess.includes("administrador")
+        account.sectionAccess.includes("administrador")
             ? "administrador"
             : account.sectionAccess.includes("recepcion")
                 ? "recepcion"
@@ -461,6 +489,31 @@ async function saveAccessAccount() {
             return;
         }
         accessAccounts.value = result.accounts;
+        if (account.login === currentUser.value.login) {
+            const updatedAccount = result.accounts.find(({ login }) => login === account.login);
+            if (updatedAccount) {
+                authStore.user = {
+                    ...currentUser.value,
+                    isAdmin: updatedAccount.sectionAccess.includes("administrador"),
+                    sectionAccess: updatedAccount.sectionAccess,
+                };
+                if (!authStore.user.isAdmin) {
+                    const nextSection = updatedAccount.sectionAccess.includes("recepcion")
+                        ? "Bitácora diaria"
+                        : updatedAccount.sectionAccess.includes("anfitriones")
+                            ? "Agenda de citas"
+                            : "";
+                    const nextPath = dashboardSectionPaths[nextSection];
+                    if (nextPath) {
+                        activeSection.value = nextSection;
+                        void router.replace(nextPath);
+                    }
+                    else {
+                        emit("logout");
+                    }
+                }
+            }
+        }
         editingAccessAccount.value = null;
         showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`, "success");
     }
@@ -3193,7 +3246,6 @@ if (__VLS_ctx.editingAccessAccount) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "radio",
         value: "administrador",
-        disabled: (__VLS_ctx.editingAccessAccount.hasFullAccess),
     });
     (__VLS_ctx.accessAccountRoleDraft);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
@@ -3205,7 +3257,6 @@ if (__VLS_ctx.editingAccessAccount) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "radio",
         value: "recepcion",
-        disabled: (__VLS_ctx.editingAccessAccount.hasFullAccess),
     });
     (__VLS_ctx.accessAccountRoleDraft);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
@@ -3217,22 +3268,14 @@ if (__VLS_ctx.editingAccessAccount) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
         type: "radio",
         value: "",
-        disabled: (__VLS_ctx.editingAccessAccount.hasFullAccess),
     });
     (__VLS_ctx.accessAccountRoleDraft);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
-    if (__VLS_ctx.editingAccessAccount.hasFullAccess) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "access-none-note" },
-        });
-    }
-    else {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "access-none-note" },
-        });
-    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "access-none-note" },
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ class: "button-primary workspace-submit" },
         type: "submit",
@@ -3752,7 +3795,6 @@ if (__VLS_ctx.externalStaffDialogOpen) {
 /** @type {__VLS_StyleScopedClasses['host-toggle']} */ ;
 /** @type {__VLS_StyleScopedClasses['host-toggle']} */ ;
 /** @type {__VLS_StyleScopedClasses['host-toggle']} */ ;
-/** @type {__VLS_StyleScopedClasses['access-none-note']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-none-note']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-submit']} */ ;

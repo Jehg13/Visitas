@@ -8,7 +8,6 @@ type AccessAccount = {
   active: string | null;
   role: string | null;
   phone: string | null;
-  hasFullAccess: boolean;
   picture: string;
   sectionAccess: ("recepcion" | "anfitriones" | "administrador")[];
 };
@@ -34,7 +33,7 @@ const filteredAccounts = computed(() => {
       account.email ?? "",
       account.role ?? "",
       account.phone ?? "",
-      account.hasFullAccess || account.sectionAccess.includes("administrador")
+      account.sectionAccess.includes("administrador")
         ? "administrador"
         : account.sectionAccess.includes("recepcion")
           ? "recepción"
@@ -113,7 +112,7 @@ const filteredAccounts = computed(() => {
           <td>
             <div class="host-state-pills">
               <span
-                v-if="account.hasFullAccess || account.sectionAccess.includes('administrador')"
+                v-if="account.sectionAccess.includes('administrador')"
                 class="access-role-pill access-role-admin"
               >Administrador</span>
               <span

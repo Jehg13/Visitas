@@ -150,7 +150,6 @@ const logDetails = ref("");
 let requestVersion = 0;
 let employeeRosterRequestVersion = 0;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
-let refreshTimer: number | undefined;
 
 const todayAppointments = computed(() =>
   [...props.appointments]
@@ -164,7 +163,7 @@ const filteredQuickAppointments = computed(() => {
   const query = quickSearch.value.trim().toLocaleLowerCase("es");
   if (!query) return todayAppointments.value;
   return todayAppointments.value.filter((appointment) =>
-    [appointment.visitor, appointment.company, appointment.host, appointment.time]
+    [appointment.visitor, appointment.company]
       .some((value) => value.toLocaleLowerCase("es").includes(query)),
   );
 });
@@ -1068,33 +1067,34 @@ watch(search, () => {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void loadEntries(), 250);
 });
+
+function refreshDailyLogAfterRealtimeUpdate() {
+  if (
+    document.visibilityState === "visible" &&
+    fromDate.value &&
+    toDate.value &&
+    fromDate.value <= toDate.value
+  ) {
+    void loadEntries();
+  }
+}
+
 onMounted(() => {
   void loadEntries();
   quickSearchInput.value?.focus();
-  refreshTimer = window.setInterval(() => {
-    if (
-      document.visibilityState === "visible" &&
-      !loading.value &&
-      fromDate.value &&
-      toDate.value &&
-      fromDate.value <= toDate.value
-    ) {
-      void loadEntries();
-    }
-  }, 30000);
+  window.addEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
 });
 
 onBeforeUnmount(() => {
   requestVersion += 1;
   if (searchTimer) clearTimeout(searchTimer);
-  if (refreshTimer !== undefined) window.clearInterval(refreshTimer);
+  window.removeEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
   closeQrScanner();
 });
 </script>
 
 <template>
   <section class="daily-log-page" aria-label="Bitácora de movimientos">
-    <VisitorKioskReceptionSection />
     <header class="daily-log-header">
       <div class="daily-log-header-actions">
         <div class="daily-log-date-range" aria-label="Rango de fechas">
@@ -1176,7 +1176,6 @@ onBeforeUnmount(() => {
             <div>
               <span class="daily-log-panel-kicker">ACCESO RÁPIDO</span>
               <h3 id="daily-log-quick-title">Registro rápido</h3>
-              <p>Escanea el QR de la cita con el lector o busca por nombre o empresa.</p>
             </div>
             <div class="daily-log-quick-heading-actions">
               <button class="daily-log-secondary-button" type="button" @click="openReferenceCodeEntry">
@@ -1227,13 +1226,13 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="scannerError" class="daily-log-quick-error" role="alert">{{ scannerError }}</p>
           <label class="daily-log-quick-search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3M7 12h10" /></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
             <input
               ref="quickSearchInput"
               v-model="quickSearch"
               type="search"
-              placeholder="Buscar por nombre o empresa, o escanear QR…"
-              aria-label="Buscar cita o escanear QR"
+              placeholder="Buscar cita por nombre…"
+              aria-label="Buscar cita por nombre"
               :disabled="appointmentsLoading"
               @input="selectedQuickAppointmentId = null; selectedEntryId = null; quickActionError = ''; quickActionNotice = ''"
               @keydown.enter.prevent="handleQuickSearchEnter"
@@ -1287,7 +1286,7 @@ onBeforeUnmount(() => {
           <form class="daily-log-filters" @submit.prevent="page = 1; loadEntries()">
             <label class="daily-log-search">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
-              <input v-model.trim="search" type="search" placeholder="Buscar por nombre, empresa o teléfono…" aria-label="Buscar persona, empresa o anfitrión" />
+              <input v-model.trim="search" type="search" placeholder="Buscar por nombre o empresa…" aria-label="Buscar por nombre o empresa" />
             </label>
             <label>
               <span class="sr-only">Filtrar por movimiento</span>
@@ -1299,7 +1298,13 @@ onBeforeUnmount(() => {
                 <option value="Observaciones">Observaciones</option>
               </select>
             </label>
-            <button class="daily-log-reset-button" type="button" @click="resetFilters">Limpiar filtros</button>
+            <button class="daily-log-reset-button" type="button" @click="resetFilters">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 7v5h-5M4 17v-5h5" />
+                <path d="M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5a7 7 0 0 0 11.8-2" />
+              </svg>
+              Limpiar filtros
+            </button>
           </form>
 
           <div v-if="loading && entries.length === 0" class="daily-log-loading" role="status">
@@ -1335,7 +1340,10 @@ onBeforeUnmount(() => {
                 <tr
                   v-for="entry in entries"
                   :key="entry.id"
-                  :class="{ 'is-selected': selectedEntryId === entry.id }"
+                  :class="{
+                    'is-selected': selectedEntryId === entry.id,
+                    'is-manual': entry.details.startsWith('Registro manual · Folio '),
+                  }"
                   :aria-selected="selectedEntryId === entry.id"
                   tabindex="0"
                   @click="selectEntry(entry)"
@@ -1352,6 +1360,9 @@ onBeforeUnmount(() => {
                   <td>
                     <strong class="daily-log-table-person">{{ entry.person }}</strong>
                     <small class="daily-log-table-date">{{ formatDate(entry.date) }}</small>
+                    <small v-if="entry.details.startsWith('Registro manual · Folio ')" class="daily-log-manual-tag">
+                      Registro manual
+                    </small>
                   </td>
                   <td class="daily-log-table-company">{{ entry.company || "N/A" }}</td>
                   <td>{{ entry.host || "N/A" }}</td>
@@ -1533,10 +1544,12 @@ onBeforeUnmount(() => {
             <p v-if="quickActionNotice" class="daily-log-quick-notice" role="status">{{ quickActionNotice }}</p>
             <p v-if="quickActionError" class="daily-log-quick-error" role="alert">{{ quickActionError }}</p>
           </template>
-          <p v-else class="daily-log-selection-hint">
-            Escanea el QR de una cita o selecciona un movimiento de la tabla para consultar los datos y registrar el siguiente paso.
-          </p>
         </section>
+
+        <VisitorKioskReceptionSection
+          :selected-visitor-record-id="selectedQuickAppointment ? null : selectedEntry?.visitorRecordId ?? null"
+          @movement-saved="loadEntries"
+        />
 
         <section class="daily-log-recent-panel" aria-labelledby="daily-log-recent-title">
           <div class="daily-log-panel-heading">
@@ -1557,11 +1570,19 @@ onBeforeUnmount(() => {
             <span class="daily-log-recent-marker" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path :d="eventIcon(entry.event)" /></svg>
             </span>
-            <span class="daily-log-recent-time">{{ entry.time }}</span>
             <span class="daily-log-recent-copy">
-              <strong>{{ entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event }}</strong>
+              <span class="daily-log-recent-topline">
+                <strong>{{ entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event }}</strong>
+                <span class="daily-log-recent-time">{{ entry.time }}</span>
+              </span>
               <span>{{ entry.person }}<template v-if="entry.company"> · {{ entry.company }}</template></span>
-              <small>{{ entry.details || eventVerb(entry.event) }}</small>
+              <small :class="{ 'is-manual': entry.details.startsWith('Registro manual · Folio ') }">
+                <template v-if="entry.details.startsWith('Registro manual · Folio ')">
+                  <span class="daily-log-recent-manual-tag">Registro manual</span>
+                  {{ entry.details.slice("Registro manual · ".length) }}
+                </template>
+                <template v-else>{{ entry.details || eventVerb(entry.event) }}</template>
+              </small>
             </span>
           </button>
           <div v-if="recentEntries.length === 0" class="daily-log-recent-empty" role="status">

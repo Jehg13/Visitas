@@ -13,6 +13,81 @@ const sectionAccessValues = ["recepcion", "anfitriones", "administrador"] as con
 const managedAccessValues = ["recepcion", "administrador"] as const;
 type SectionAccess = (typeof sectionAccessValues)[number];
 type DatabaseConnection = Awaited<ReturnType<typeof pool.getConnection>>;
+type RealtimeSubscriber = {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  publicKey: string | null;
+  heartbeat: ReturnType<typeof setInterval>;
+};
+
+const realtimeSubscribers = new Set<RealtimeSubscriber>();
+const realtimeEncoder = new TextEncoder();
+const maxRealtimeSubscribers = 500;
+const maxPublicRealtimeSubscribersPerKey = 5;
+
+function createRealtimeResponse(publicKey: string | null = null) {
+  if (
+    realtimeSubscribers.size >= maxRealtimeSubscribers ||
+    (publicKey !== null &&
+      [...realtimeSubscribers].filter((subscriber) => subscriber.publicKey === publicKey).length >=
+        maxPublicRealtimeSubscribersPerKey)
+  ) {
+    return Response.json({ error: "Hay demasiadas conexiones en tiempo real. Inténtalo más tarde." }, {
+      status: 503,
+      headers: { "Retry-After": "15" },
+    });
+  }
+
+  let subscriber: RealtimeSubscriber | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      subscriber = {
+        controller,
+        publicKey,
+        heartbeat: setInterval(() => {
+          try {
+            controller.enqueue(realtimeEncoder.encode(": keepalive\n\n"));
+          } catch {
+            if (subscriber) {
+              clearInterval(subscriber.heartbeat);
+              realtimeSubscribers.delete(subscriber);
+              subscriber = null;
+            }
+          }
+        }, 20_000),
+      };
+      realtimeSubscribers.add(subscriber);
+      controller.enqueue(realtimeEncoder.encode(": connected\n\n"));
+    },
+    cancel() {
+      if (subscriber) {
+        clearInterval(subscriber.heartbeat);
+        realtimeSubscribers.delete(subscriber);
+        subscriber = null;
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Cache-Control": "no-cache, no-transform",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+function publishRealtimeUpdate(publicKey?: string) {
+  const message = realtimeEncoder.encode("data: update\n\n");
+  for (const subscriber of realtimeSubscribers) {
+    if (subscriber.publicKey !== null && subscriber.publicKey !== publicKey) continue;
+    try {
+      subscriber.controller.enqueue(message);
+    } catch {
+      clearInterval(subscriber.heartbeat);
+      realtimeSubscribers.delete(subscriber);
+    }
+  }
+}
 
 type AccessAccountRow = RowDataPacket & {
   login: string;
@@ -21,7 +96,6 @@ type AccessAccountRow = RowDataPacket & {
   active: string | null;
   role: string | null;
   phone: string | null;
-  priv_admin: string | null;
   picture: Buffer | null;
 };
 
@@ -36,7 +110,6 @@ type UserSectionAccessRow = RowDataPacket & {
 
 type AccessLoginRow = RowDataPacket & {
   login: string;
-  priv_admin?: string | null;
   section_admin?: number;
 };
 
@@ -86,14 +159,17 @@ type ExternalStaffRow = RowDataPacket & {
 
 type VisitorKioskRegistrationRow = RowDataPacket & {
   id: number;
+  idempotency_key?: string;
   folio: string;
   visitor_record_id: number;
   visitor_name: string;
+  kiosk_items_present: number | boolean;
   company_name: string;
   visit_reason: string;
   authorization_status: "Pendiente" | "Autorizada" | "Rechazada";
   identification_type: string;
   visitor_declared_id_retained: number | boolean;
+  reception_id_claim_status: "No aplica" | "Pendiente" | "Confirmada" | "No confirmada";
   reception_received_id_at: Date | string | null;
   reception_received_id_by: string | null;
   id_returned_at: Date | string | null;
@@ -581,13 +657,21 @@ type VisitorKioskItemInput = {
   quantity: number;
 };
 
+const visitorIdentificationTypes = [
+  "INE",
+  "Gafete",
+  "Pasaporte",
+  "Licencia de conducir",
+  "Otra identificación",
+] as const;
+
 type VisitorKioskRegistrationInput = {
   visitorName: string;
   companyName: string;
   visitReason: string;
   carriesItems: boolean;
   items: VisitorKioskItemInput[];
-  identificationType: string;
+  identificationTypes: (typeof visitorIdentificationTypes)[number][];
   declaresIdRetained: boolean;
 };
 
@@ -597,13 +681,6 @@ type VisitorKioskInspectionInput = {
   notes: string;
 };
 
-const visitorIdentificationTypes = [
-  "INE",
-  "Gafete",
-  "Pasaporte",
-  "Licencia de conducir",
-  "Otra identificación",
-] as const;
 const visitorKioskRateLimits = new Map<string, { count: number; resetAt: number }>();
 
 function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistrationInput | null {
@@ -614,7 +691,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     visitReason,
     carriesItems,
     items,
-    identificationType,
+    identificationTypes,
     declaresIdRetained,
   } = value;
   if (
@@ -625,8 +702,15 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     !Array.isArray(items) || items.length > 50 ||
     (!carriesItems && items.length !== 0) ||
     (carriesItems && items.length === 0) ||
-    typeof identificationType !== "string" ||
-    !visitorIdentificationTypes.includes(identificationType as (typeof visitorIdentificationTypes)[number]) ||
+    !Array.isArray(identificationTypes) ||
+    identificationTypes.length === 0 ||
+    identificationTypes.length > visitorIdentificationTypes.length ||
+    identificationTypes.some(
+      (type) =>
+        typeof type !== "string" ||
+        !visitorIdentificationTypes.includes(type as VisitorKioskRegistrationInput["identificationTypes"][number]),
+    ) ||
+    new Set(identificationTypes).size !== identificationTypes.length ||
     typeof declaresIdRetained !== "boolean"
   ) {
     return null;
@@ -666,7 +750,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     visitReason: visitReason.trim(),
     carriesItems,
     items: parsedItems,
-    identificationType,
+    identificationTypes: identificationTypes as (typeof visitorIdentificationTypes)[number][],
     declaresIdRetained,
   };
 }
@@ -709,7 +793,9 @@ async function writeVisitorKioskMovement(
   actorLogin: string,
   actorName: string,
 ) {
-  const details = `Autorregistro · Folio ${registration.folio} · Checklist de ${event === "Ingreso" ? "entrada" : "salida"} completado`;
+  const details = event === "Ingreso" && !Boolean(registration.kiosk_items_present)
+    ? `Registro manual · Folio ${registration.folio} · Ingreso autorizado sin equipo ni herramientas`
+    : `Registro manual · Folio ${registration.folio} · Checklist de ${event === "Ingreso" ? "entrada" : "salida"} completado`;
   const [existing] = await connection.execute<RowDataPacket[]>(
     `SELECT id
      FROM daily_log_entries
@@ -746,19 +832,30 @@ async function handleVisitorKioskRequest(
     }
     try {
       const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT r.authorization_status,
-                EXISTS (
-                  SELECT 1 FROM visitor_kiosk_inspections i
-                  WHERE i.registration_id = r.id AND i.phase = 'Entrada'
+        `SELECT r.authorization_status, r.reception_id_claim_status,
+                (
+                  EXISTS (
+                    SELECT 1 FROM visitor_kiosk_inspections i
+                    WHERE i.registration_id = r.id AND i.phase = 'Entrada'
+                  )
+                  OR NOT EXISTS (
+                    SELECT 1 FROM visitor_kiosk_items k
+                    WHERE k.registration_id = r.id
+                  )
                 ) AS entry_checklist_complete,
                 EXISTS (
                   SELECT 1
                   FROM daily_log_entries d
                   WHERE d.visitor_record_id = r.visitor_record_id
                     AND d.event_type = 'Ingreso'
-                    AND d.details = CONCAT(
-                      'Autorregistro · Folio ', r.folio,
-                      ' · Checklist de entrada completado'
+                    AND (
+                      d.details = CONCAT(
+                        'Autorregistro · Folio ', r.folio,
+                        ' · Checklist de entrada completado'
+                      )
+                      OR d.details LIKE CONCAT(
+                        'Registro manual · Folio ', r.folio, ' · %'
+                      )
                     )
                 ) AS entered
          FROM visitor_kiosk_registrations r
@@ -769,6 +866,7 @@ async function handleVisitorKioskRequest(
       if (!rows[0]) return Response.json({ error: "No se encontró el registro." }, { status: 404 });
       return Response.json({
         authorizationStatus: rows[0].authorization_status,
+        receptionIdClaimStatus: rows[0].reception_id_claim_status,
         entryChecklistComplete: Boolean(rows[0].entry_checklist_complete),
         entered: Boolean(rows[0].entered),
       });
@@ -835,7 +933,10 @@ async function handleVisitorKioskRequest(
       await connection.beginTransaction();
       transactionStep = "comprobar clave de idempotencia";
       const [existingRegistrations] = await connection.execute<RowDataPacket[]>(
-        "SELECT folio, visitor_name FROM visitor_kiosk_registrations WHERE idempotency_key = ? LIMIT 1 FOR UPDATE",
+        `SELECT r.folio, v.full_name AS visitor_name
+         FROM visitor_kiosk_registrations r
+         INNER JOIN general_visitors v ON v.id = r.visitor_record_id
+         WHERE r.idempotency_key = ? LIMIT 1 FOR UPDATE`,
         [requestKey],
       );
       if (existingRegistrations[0]) {
@@ -879,16 +980,17 @@ async function handleVisitorKioskRequest(
       const [registrationResult] = await connection.execute<ResultSetHeader>(
         `INSERT INTO visitor_kiosk_registrations
            (visitor_record_id, folio, company_name, visit_reason, carries_equipment, identification_type,
-            visitor_declared_id_retained, idempotency_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            visitor_declared_id_retained, reception_id_claim_status, idempotency_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           visitorResult.insertId,
           folio,
           input.companyName,
           input.visitReason,
           input.carriesItems,
-          input.identificationType,
+          input.identificationTypes.join(", "),
           input.declaresIdRetained,
+          input.declaresIdRetained ? "Pendiente" : "No aplica",
           requestKey,
         ],
       );
@@ -915,10 +1017,10 @@ async function handleVisitorKioskRequest(
         `INSERT INTO daily_log_entries
            (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
             details, visitor_record_id)
-         VALUES (CURDATE(), CURTIME(), 'Llegada', ?, 'autorregistro', 'Autorregistro', ?, ?)`,
+         VALUES (CURDATE(), CURTIME(), 'Llegada', ?, 'autorregistro', 'Registro manual', ?, ?)`,
         [
           input.visitorName,
-          `Autorregistro · Folio ${folio} · Pendiente de autorización · Motivo: ${input.visitReason}`,
+          `Registro manual · Folio ${folio} · Pendiente de autorización · Motivo: ${input.visitReason}`,
           visitorResult.insertId,
         ],
       );
@@ -929,7 +1031,7 @@ async function handleVisitorKioskRequest(
          VALUES (?, 'Registrado', NULL, 'Autorregistro', ?)`,
         [
           registrationResult.insertId,
-          `Visitante declaró ${input.declaresIdRetained ? "" : "no "}haber entregado identificación para resguardo.`,
+          `Visitante declaró ${input.declaresIdRetained ? "" : "no "}haber entregado sus identificaciones para resguardo.`,
         ],
       );
       await connection.commit();
@@ -943,7 +1045,10 @@ async function handleVisitorKioskRequest(
         error.code === "ER_DUP_ENTRY"
       ) {
         const [existingRegistrations] = await pool.execute<RowDataPacket[]>(
-          "SELECT folio, visitor_name FROM visitor_kiosk_registrations WHERE idempotency_key = ? LIMIT 1",
+          `SELECT r.folio, v.full_name AS visitor_name
+           FROM visitor_kiosk_registrations r
+           INNER JOIN general_visitors v ON v.id = r.visitor_record_id
+           WHERE r.idempotency_key = ? LIMIT 1`,
           [requestKey],
         );
         if (existingRegistrations[0]) {
@@ -995,8 +1100,13 @@ async function handleVisitorKioskRequest(
       if (registrationPath[1]) return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
       const [rows] = await pool.query<VisitorKioskRegistrationRow[]>(
         `SELECT r.id, r.folio, r.visitor_record_id, v.full_name AS visitor_name,
+                EXISTS (
+                  SELECT 1 FROM visitor_kiosk_items k
+                  WHERE k.registration_id = r.id
+                ) AS kiosk_items_present,
                 r.company_name, r.visit_reason, r.authorization_status, r.identification_type,
-                r.visitor_declared_id_retained, r.reception_received_id_at, r.reception_received_id_by,
+                r.visitor_declared_id_retained, r.reception_id_claim_status,
+                r.reception_received_id_at, r.reception_received_id_by,
                 r.id_returned_at, r.id_returned_by,
                 EXISTS (
                   SELECT 1 FROM visitor_kiosk_inspections i
@@ -1097,12 +1207,14 @@ async function handleVisitorKioskRequest(
         registrations: rows.map((row) => ({
           id: Number(row.id),
           folio: row.folio,
+          visitorRecordId: Number(row.visitor_record_id),
           visitorName: row.visitor_name,
           companyName: row.company_name,
           visitReason: row.visit_reason,
           authorizationStatus: row.authorization_status,
           identificationType: row.identification_type,
           visitorDeclaredIdRetained: Boolean(row.visitor_declared_id_retained),
+          receptionIdClaimStatus: row.reception_id_claim_status,
           receptionReceivedIdAt: row.reception_received_id_at,
           receptionReceivedIdBy: row.reception_received_id_by,
           idReturnedAt: row.id_returned_at,
@@ -1142,6 +1254,7 @@ async function handleVisitorKioskRequest(
         "authorize",
         "reject",
         "receive-identification",
+        "deny-identification",
         "return-identification",
         "complete-entry-checklist",
         "complete-exit-checklist",
@@ -1163,21 +1276,27 @@ async function handleVisitorKioskRequest(
     try {
       await connection.beginTransaction();
       const [rows] = await connection.execute<VisitorKioskRegistrationRow[]>(
-        `SELECT id, folio, visitor_record_id, visitor_name, company_name, visit_reason,
-                authorization_status, identification_type, visitor_declared_id_retained,
-                reception_received_id_at, reception_received_id_by, id_returned_at, id_returned_by,
+        `SELECT r.id, r.idempotency_key, r.folio, r.visitor_record_id, v.full_name AS visitor_name,
+                EXISTS (
+                  SELECT 1 FROM visitor_kiosk_items k
+                  WHERE k.registration_id = r.id
+                ) AS kiosk_items_present,
+                r.company_name, r.visit_reason,
+                r.authorization_status, r.identification_type, r.visitor_declared_id_retained,
+                r.reception_id_claim_status,
+                r.reception_received_id_at, r.reception_received_id_by, r.id_returned_at, r.id_returned_by,
                 EXISTS (
                   SELECT 1 FROM visitor_kiosk_inspections i
-                  WHERE i.registration_id = visitor_kiosk_registrations.id
-                    AND i.phase = 'Entrada'
+                  WHERE i.registration_id = r.id AND i.phase = 'Entrada'
                 ) AS entry_checklist_complete,
                 EXISTS (
                   SELECT 1 FROM visitor_kiosk_inspections i
-                  WHERE i.registration_id = visitor_kiosk_registrations.id
-                    AND i.phase = 'Salida'
+                  WHERE i.registration_id = r.id AND i.phase = 'Salida'
                 ) AS exit_checklist_complete,
-                created_at
-         FROM visitor_kiosk_registrations WHERE id = ? LIMIT 1 FOR UPDATE`,
+                r.created_at
+         FROM visitor_kiosk_registrations r
+         INNER JOIN general_visitors v ON v.id = r.visitor_record_id
+         WHERE r.id = ? LIMIT 1 FOR UPDATE`,
         [registrationId],
       );
       const registration = rows[0];
@@ -1194,12 +1313,26 @@ async function handleVisitorKioskRequest(
             await connection.rollback();
             return Response.json({ error: "Este registro ya fue procesado por recepción." }, { status: 409 });
           }
+          if (
+            body.action === "authorize" &&
+            Boolean(registration.visitor_declared_id_retained) &&
+            registration.reception_id_claim_status === "Pendiente"
+          ) {
+            await connection.rollback();
+            return Response.json(
+              { error: "Confirma o indica que no se recibió la identificación antes de autorizar la entrada." },
+              { status: 409 },
+            );
+          }
           await connection.execute(
             "UPDATE visitor_kiosk_registrations SET authorization_status = ? WHERE id = ?",
             [body.action === "authorize" ? "Autorizada" : "Rechazada", registrationId],
           );
           auditAction = body.action === "authorize" ? "Visita autorizada" : "Visita rechazada";
-          if (body.action === "authorize" && Boolean(registration.entry_checklist_complete)) {
+          if (
+            body.action === "authorize" &&
+            (Boolean(registration.entry_checklist_complete) || !Boolean(registration.kiosk_items_present))
+          ) {
             await writeVisitorKioskMovement(
               connection,
               registration,
@@ -1210,18 +1343,41 @@ async function handleVisitorKioskRequest(
           }
           break;
         case "receive-identification":
-          if (!registration.visitor_declared_id_retained || registration.reception_received_id_at) {
+          if (
+            !registration.visitor_declared_id_retained ||
+            registration.reception_id_claim_status !== "Pendiente" ||
+            registration.reception_received_id_at
+          ) {
             await connection.rollback();
             return Response.json({ error: "La recepción física no puede confirmarse para este registro." }, { status: 409 });
           }
           await connection.execute(
             `UPDATE visitor_kiosk_registrations
-             SET reception_received_id_at = NOW(), reception_received_id_by = ?
+             SET reception_received_id_at = NOW(), reception_received_id_by = ?,
+                 reception_id_claim_status = 'Confirmada'
              WHERE id = ?`,
             [user.login, registrationId],
           );
           auditAction = "Identificación recibida por recepción";
           auditDetails = "Recepción confirmó la recepción física del documento.";
+          break;
+        case "deny-identification":
+          if (
+            !registration.visitor_declared_id_retained ||
+            registration.reception_id_claim_status !== "Pendiente" ||
+            registration.reception_received_id_at
+          ) {
+            await connection.rollback();
+            return Response.json({ error: "La declaración de resguardo ya fue procesada." }, { status: 409 });
+          }
+          await connection.execute(
+            `UPDATE visitor_kiosk_registrations
+             SET reception_id_claim_status = 'No confirmada'
+             WHERE id = ?`,
+            [registrationId],
+          );
+          auditAction = "Resguardo de identificación no confirmado";
+          auditDetails = "Recepción no pudo confirmar que la identificación se hubiera dejado para resguardo; la visita queda pendiente de autorización.";
           break;
         case "return-identification":
           if (!registration.reception_received_id_at || registration.id_returned_at) {
@@ -1240,6 +1396,13 @@ async function handleVisitorKioskRequest(
         case "complete-entry-checklist":
         case "complete-exit-checklist": {
           const phase = body.action === "complete-entry-checklist" ? "Entrada" : "Salida";
+          if (!Boolean(registration.kiosk_items_present)) {
+            await connection.rollback();
+            return Response.json(
+              { error: "Este registro no declara equipos ni herramientas, por lo que no requiere checklist." },
+              { status: 409 },
+            );
+          }
           if (registration.authorization_status === "Rechazada") {
             await connection.rollback();
             return Response.json({ error: "No se puede revisar un registro rechazado." }, { status: 409 });
@@ -1338,6 +1501,7 @@ async function handleVisitorKioskRequest(
         [registrationId, auditAction, user.login, user.name?.trim() || user.login, auditDetails || null],
       );
       await connection.commit();
+      publishRealtimeUpdate(registration.idempotency_key);
       return Response.json({ message: "La acción se registró." });
     } catch (error) {
       await connection.rollback();
@@ -1623,11 +1787,9 @@ async function listDailyLogEntries(
   const conditions = ["d.entry_date BETWEEN ? AND ?"];
   const parameters: Array<string | number> = [fromDate, toDate];
   if (search) {
-    conditions.push(
-      "(d.person_name LIKE ? OR COALESCE(d.company_name, '') LIKE ? OR COALESCE(d.host_name, '') LIKE ?)",
-    );
+    conditions.push("(d.person_name LIKE ? OR COALESCE(d.company_name, '') LIKE ?)");
     const searchTerm = `%${search}%`;
-    parameters.push(searchTerm, searchTerm, searchTerm);
+    parameters.push(searchTerm, searchTerm);
   }
   if (event) {
     conditions.push("d.event_type = ?");
@@ -1669,21 +1831,25 @@ async function listDailyLogEntries(
      ORDER BY host_name`,
   );
   return {
-    entries: rows.map((row) => ({
-      id: Number(row.id),
-      date: row.entry_date,
-      time: row.entry_time,
-      event: row.event_type,
-      person: row.person_name,
-      actorName: row.recorded_by_name,
-      details: row.details ?? "",
-      appointmentId: row.appointment_id === null ? null : Number(row.appointment_id),
-      externalStaffId: row.external_staff_id === null ? null : Number(row.external_staff_id),
-      visitorRecordId: row.visitor_record_id === null ? null : Number(row.visitor_record_id),
-      company: row.company_name ?? "",
-      host: row.host_name ?? "",
-      category: row.category,
-    })),
+    entries: rows.map((row) => {
+      const company = row.company_name?.trim();
+      const isManualRegistration = row.details?.startsWith("Registro manual · Folio ") ?? false;
+      return {
+        id: Number(row.id),
+        date: row.entry_date,
+        time: row.entry_time,
+        event: row.event_type,
+        person: row.person_name,
+        actorName: row.recorded_by_name,
+        details: row.details ?? "",
+        appointmentId: row.appointment_id === null ? null : Number(row.appointment_id),
+        externalStaffId: row.external_staff_id === null ? null : Number(row.external_staff_id),
+        visitorRecordId: row.visitor_record_id === null ? null : Number(row.visitor_record_id),
+        company: company || (isManualRegistration ? "Público general" : ""),
+        host: row.host_name ?? "",
+        category: row.category,
+      };
+    }),
     total,
     hosts: hostRows.map((row) => String(row.host_name)),
   };
@@ -1845,7 +2011,7 @@ function pictureDataUrl(picture: Buffer | null) {
 
 async function listAccessAccounts() {
   const [accounts] = await pool.query<AccessAccountRow[]>(
-    `SELECT login, name, email, active, role, phone, priv_admin, picture
+    `SELECT login, name, email, active, role, phone, picture
      FROM accesos
      ORDER BY login`,
   );
@@ -1866,7 +2032,6 @@ async function listAccessAccounts() {
     active: account.active,
     role: account.role,
     phone: account.phone,
-    hasFullAccess: ["Y", "1"].includes(account.priv_admin ?? ""),
     picture: pictureDataUrl(account.picture),
     sectionAccess: sectionsByLogin.get(account.login) ?? [],
   }));
@@ -2454,6 +2619,34 @@ const server = Bun.serve({
   async fetch(request, server) {
     const url = new URL(request.url);
 
+    if (request.method === "GET" && url.pathname === "/api/events") {
+      if (!(await getRequestUser(request))) {
+        return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+      }
+      return createRealtimeResponse();
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/visitor-kiosk/events") {
+      const requestKey = url.searchParams.get("key") ?? "";
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestKey)) {
+        return Response.json({ error: "La conexión de estado no es válida." }, { status: 400 });
+      }
+      try {
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          "SELECT id FROM visitor_kiosk_registrations WHERE idempotency_key = ? LIMIT 1",
+          [requestKey],
+        );
+        if (!rows[0]) {
+          return Response.json({ error: "No se encontró el registro." }, { status: 404 });
+        }
+        return createRealtimeResponse(requestKey);
+      } catch (error) {
+        console.error("Failed to connect visitor kiosk to live updates:", error);
+        return Response.json({ error: "No se pudo conectar con las actualizaciones del registro." }, { status: 500 });
+      }
+    }
+
+    const response = await (async () => {
     const visitorKioskResponse = await handleVisitorKioskRequest(
       request,
       url,
@@ -3528,6 +3721,10 @@ const server = Bun.serve({
           const [kioskRegistrations] = await pool.execute<RowDataPacket[]>(
             `SELECT r.id, r.folio, r.authorization_status,
                     EXISTS (
+                      SELECT 1 FROM visitor_kiosk_items k
+                      WHERE k.registration_id = r.id
+                    ) AS kiosk_items_present,
+                    EXISTS (
                       SELECT 1 FROM visitor_kiosk_inspections i
                       WHERE i.registration_id = r.id AND i.phase = 'Entrada'
                     ) AS entry_checklist_complete,
@@ -3552,13 +3749,23 @@ const server = Bun.serve({
               { status: 409 },
             );
           }
-          if (input.event === "Ingreso" && kioskRegistration && !Boolean(kioskRegistration.entry_checklist_complete)) {
+          if (
+            input.event === "Ingreso" &&
+            kioskRegistration &&
+            Boolean(kioskRegistration.kiosk_items_present) &&
+            !Boolean(kioskRegistration.entry_checklist_complete)
+          ) {
             return Response.json(
               { error: "Recepción debe completar el checklist de entrada antes de registrar el ingreso." },
               { status: 409 },
             );
           }
-          if (input.event === "Retiro" && kioskRegistration && !Boolean(kioskRegistration.exit_checklist_complete)) {
+          if (
+            input.event === "Retiro" &&
+            kioskRegistration &&
+            Boolean(kioskRegistration.kiosk_items_present) &&
+            !Boolean(kioskRegistration.exit_checklist_complete)
+          ) {
             return Response.json(
               { error: "Recepción debe completar el checklist de salida antes de registrar el retiro." },
               { status: 409 },
@@ -5220,7 +5427,7 @@ const server = Bun.serve({
         }
 
         const [matches] = await pool.execute<AccessLoginRow[]>(
-          `SELECT login, priv_admin,
+          `SELECT login,
                   EXISTS (
                     SELECT 1 FROM accesos_secciones s
                     WHERE s.login = accesos.login AND s.seccion = 'administrador'
@@ -5236,21 +5443,16 @@ const server = Bun.serve({
         const connection = await pool.getConnection();
         try {
           await connection.beginTransaction();
-          const targetIsAdmin =
-            ["Y", "1"].includes(matches[0].priv_admin ?? "") ||
-            Boolean(matches[0].section_admin);
+          const targetIsAdmin = Boolean(matches[0].section_admin);
           if (targetIsAdmin && !body.sections.includes("administrador")) {
             const [admins] = await connection.execute<RowDataPacket[]>(
-              `SELECT a.login
-               FROM accesos a
-               WHERE a.active IN ('Y', '1')
-                 AND (
-                   a.priv_admin IN ('Y', '1')
-                   OR EXISTS (
-                     SELECT 1 FROM accesos_secciones s
-                     WHERE s.login = a.login AND s.seccion = 'administrador'
-                   )
-                 )
+              `              SELECT a.login
+              FROM accesos a
+              WHERE a.active IN ('Y', '1')
+                AND EXISTS (
+                  SELECT 1 FROM accesos_secciones s
+                  WHERE s.login = a.login AND s.seccion = 'administrador'
+                )
                  AND a.login <> ?
                LIMIT 1`,
               [accountLogin],
@@ -5327,6 +5529,19 @@ const server = Bun.serve({
     }
 
     return Response.json({ error: "Ruta no encontrada." }, { status: 404 });
+    })();
+
+    const visitorRegistrationAction =
+      request.method === "PATCH" &&
+      /^\/api\/visitor-kiosk\/registrations\/\d+$/.test(url.pathname);
+    if (
+      response.ok &&
+      ["POST", "PUT", "PATCH", "DELETE"].includes(request.method) &&
+      !visitorRegistrationAction
+    ) {
+      publishRealtimeUpdate();
+    }
+    return response;
   },
 });
 

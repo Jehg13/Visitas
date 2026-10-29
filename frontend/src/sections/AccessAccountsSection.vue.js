@@ -11,7 +11,7 @@ const filteredAccounts = computed(() => {
         account.email ?? "",
         account.role ?? "",
         account.phone ?? "",
-        account.hasFullAccess || account.sectionAccess.includes("administrador")
+        account.sectionAccess.includes("administrador")
             ? "administrador"
             : account.sectionAccess.includes("recepcion")
                 ? "recepción"
@@ -152,7 +152,7 @@ if (__VLS_ctx.accounts.length > 0) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "host-state-pills" },
         });
-        if (account.hasFullAccess || account.sectionAccess.includes('administrador')) {
+        if (account.sectionAccess.includes('administrador')) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
                 ...{ class: "access-role-pill access-role-admin" },
             });

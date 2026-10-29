@@ -60,7 +60,6 @@ const logDetails = ref("");
 let requestVersion = 0;
 let employeeRosterRequestVersion = 0;
 let searchTimer;
-let refreshTimer;
 const todayAppointments = computed(() => [...props.appointments]
     .filter((appointment) => appointment.date === today.value &&
     appointment.status !== "Cancelada")
@@ -69,7 +68,7 @@ const filteredQuickAppointments = computed(() => {
     const query = quickSearch.value.trim().toLocaleLowerCase("es");
     if (!query)
         return todayAppointments.value;
-    return todayAppointments.value.filter((appointment) => [appointment.visitor, appointment.company, appointment.host, appointment.time]
+    return todayAppointments.value.filter((appointment) => [appointment.visitor, appointment.company]
         .some((value) => value.toLocaleLowerCase("es").includes(query)));
 });
 const selectedQuickAppointment = computed(() => todayAppointments.value.find((appointment) => appointment.id === selectedQuickAppointmentId.value) ?? null);
@@ -916,25 +915,24 @@ watch(search, () => {
         clearTimeout(searchTimer);
     searchTimer = setTimeout(() => void loadEntries(), 250);
 });
+function refreshDailyLogAfterRealtimeUpdate() {
+    if (document.visibilityState === "visible" &&
+        fromDate.value &&
+        toDate.value &&
+        fromDate.value <= toDate.value) {
+        void loadEntries();
+    }
+}
 onMounted(() => {
     void loadEntries();
     quickSearchInput.value?.focus();
-    refreshTimer = window.setInterval(() => {
-        if (document.visibilityState === "visible" &&
-            !loading.value &&
-            fromDate.value &&
-            toDate.value &&
-            fromDate.value <= toDate.value) {
-            void loadEntries();
-        }
-    }, 30000);
+    window.addEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
 });
 onBeforeUnmount(() => {
     requestVersion += 1;
     if (searchTimer)
         clearTimeout(searchTimer);
-    if (refreshTimer !== undefined)
-        window.clearInterval(refreshTimer);
+    window.removeEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
     closeQrScanner();
 });
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
@@ -945,10 +943,6 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElemen
     ...{ class: "daily-log-page" },
     'aria-label': "Bitácora de movimientos",
 });
-/** @type {[typeof VisitorKioskReceptionSection, ]} */ ;
-// @ts-ignore
-const __VLS_0 = __VLS_asFunctionalComponent(VisitorKioskReceptionSection, new VisitorKioskReceptionSection({}));
-const __VLS_1 = __VLS_0({}, ...__VLS_functionalComponentArgsRest(__VLS_0));
 __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
     ...{ class: "daily-log-header" },
 });
@@ -1138,7 +1132,6 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.
 __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
     id: "daily-log-quick-title",
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "daily-log-quick-heading-actions" },
 });
@@ -1229,8 +1222,13 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.s
     viewBox: "0 0 24 24",
     'aria-hidden': "true",
 });
+__VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+    cx: "10.8",
+    cy: "10.8",
+    r: "6.8",
+});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3M7 12h10",
+    d: "m16 16 5 5",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     ...{ onInput: (...[$event]) => {
@@ -1242,8 +1240,8 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     ...{ onKeydown: (__VLS_ctx.handleQuickSearchEnter) },
     ref: "quickSearchInput",
     type: "search",
-    placeholder: "Buscar por nombre o empresa, o escanear QR…",
-    'aria-label': "Buscar cita o escanear QR",
+    placeholder: "Buscar cita por nombre…",
+    'aria-label': "Buscar cita por nombre",
     disabled: (__VLS_ctx.appointmentsLoading),
 });
 (__VLS_ctx.quickSearch);
@@ -1377,8 +1375,8 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     type: "search",
-    placeholder: "Buscar por nombre, empresa o teléfono…",
-    'aria-label': "Buscar persona, empresa o anfitrión",
+    placeholder: "Buscar por nombre o empresa…",
+    'aria-label': "Buscar por nombre o empresa",
 });
 (__VLS_ctx.search);
 __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
@@ -1408,6 +1406,16 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElement
     ...{ onClick: (__VLS_ctx.resetFilters) },
     ...{ class: "daily-log-reset-button" },
     type: "button",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+    viewBox: "0 0 24 24",
+    'aria-hidden': "true",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+    d: "M20 7v5h-5M4 17v-5h5",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+    d: "M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5a7 7 0 0 0 11.8-2",
 });
 if (__VLS_ctx.loading && __VLS_ctx.entries.length === 0) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -1500,7 +1508,10 @@ else {
                     __VLS_ctx.selectEntry(entry);
                 } },
             key: (entry.id),
-            ...{ class: ({ 'is-selected': __VLS_ctx.selectedEntryId === entry.id }) },
+            ...{ class: ({
+                    'is-selected': __VLS_ctx.selectedEntryId === entry.id,
+                    'is-manual': entry.details.startsWith('Registro manual · Folio '),
+                }) },
             'aria-selected': (__VLS_ctx.selectedEntryId === entry.id),
             tabindex: "0",
         });
@@ -1530,6 +1541,11 @@ else {
             ...{ class: "daily-log-table-date" },
         });
         (__VLS_ctx.formatDate(entry.date));
+        if (entry.details.startsWith('Registro manual · Folio ')) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
+                ...{ class: "daily-log-manual-tag" },
+            });
+        }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
             ...{ class: "daily-log-table-company" },
         });
@@ -1883,11 +1899,23 @@ if (__VLS_ctx.selectedPerson) {
         (__VLS_ctx.quickActionError);
     }
 }
-else {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "daily-log-selection-hint" },
-    });
-}
+/** @type {[typeof VisitorKioskReceptionSection, ]} */ ;
+// @ts-ignore
+const __VLS_0 = __VLS_asFunctionalComponent(VisitorKioskReceptionSection, new VisitorKioskReceptionSection({
+    ...{ 'onMovementSaved': {} },
+    selectedVisitorRecordId: (__VLS_ctx.selectedQuickAppointment ? null : __VLS_ctx.selectedEntry?.visitorRecordId ?? null),
+}));
+const __VLS_1 = __VLS_0({
+    ...{ 'onMovementSaved': {} },
+    selectedVisitorRecordId: (__VLS_ctx.selectedQuickAppointment ? null : __VLS_ctx.selectedEntry?.visitorRecordId ?? null),
+}, ...__VLS_functionalComponentArgsRest(__VLS_0));
+let __VLS_3;
+let __VLS_4;
+let __VLS_5;
+const __VLS_6 = {
+    onMovementSaved: (__VLS_ctx.loadEntries)
+};
+var __VLS_2;
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
     ...{ class: "daily-log-recent-panel" },
     'aria-labelledby': "daily-log-recent-title",
@@ -1928,21 +1956,34 @@ for (const [entry] of __VLS_getVForSourceType((__VLS_ctx.recentEntries))) {
         d: (__VLS_ctx.eventIcon(entry.event)),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "daily-log-recent-time" },
-    });
-    (entry.time);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "daily-log-recent-copy" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-recent-topline" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
     (entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-recent-time" },
+    });
+    (entry.time);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
     (entry.person);
     if (entry.company) {
         (entry.company);
     }
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
-    (entry.details || __VLS_ctx.eventVerb(entry.event));
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
+        ...{ class: ({ 'is-manual': entry.details.startsWith('Registro manual · Folio ') }) },
+    });
+    if (entry.details.startsWith('Registro manual · Folio ')) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "daily-log-recent-manual-tag" },
+        });
+        (entry.details.slice("Registro manual · ".length));
+    }
+    else {
+        (entry.details || __VLS_ctx.eventVerb(entry.event));
+    }
 }
 if (__VLS_ctx.recentEntries.length === 0) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -2179,10 +2220,12 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-manual']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-time']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-event']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-person']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-manual-tag']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-company']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-actor']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-status']} */ ;
@@ -2223,7 +2266,6 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-notice']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-selection-hint']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
@@ -2231,8 +2273,11 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-entry']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-marker']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-time']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-topline']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-time']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-manual']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-manual-tag']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-empty']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-recent-empty-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;

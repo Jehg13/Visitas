@@ -1,16 +1,19 @@
-import { onBeforeUnmount, onMounted, ref } from "vue";
-import { notifyUser } from "../notifications";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { confirmUser, notifyUser } from "../notifications";
+const props = defineProps();
+const emit = defineEmits();
 const registrations = ref([]);
 const loading = ref(true);
 const errorMessage = ref("");
 const savingRegistrationId = ref(null);
-const selectedRegistration = ref(null);
+const registrationDetails = ref(null);
 const inspectionRegistration = ref(null);
 const inspectionPhase = ref(null);
 const inspectionDraft = ref([]);
 const extraItemDescription = ref("");
 const extraItems = ref([]);
-let refreshTimer;
+let registrationRequestInProgress = false;
+const selectedRegistration = computed(() => registrations.value.find((registration) => registration.visitorRecordId === props.selectedVisitorRecordId) ?? null);
 async function parseResponse(response) {
     if (!response.headers.get("content-type")?.includes("application/json")) {
         throw new Error("No se pudo conectar con el módulo de autorregistro.");
@@ -23,6 +26,9 @@ async function parseResponse(response) {
     }
 }
 async function loadRegistrations(silent = false) {
+    if (registrationRequestInProgress)
+        return;
+    registrationRequestInProgress = true;
     try {
         const response = await fetch("/api/visitor-kiosk/registrations");
         const result = await parseResponse(response);
@@ -33,9 +39,9 @@ async function loadRegistrations(silent = false) {
         }
         registrations.value = result.registrations;
         errorMessage.value = "";
-        if (selectedRegistration.value) {
-            selectedRegistration.value =
-                result.registrations.find((registration) => registration.id === selectedRegistration.value?.id) ?? null;
+        if (registrationDetails.value) {
+            registrationDetails.value =
+                result.registrations.find((registration) => registration.id === registrationDetails.value?.id) ?? null;
         }
         if (inspectionRegistration.value) {
             inspectionRegistration.value =
@@ -52,18 +58,19 @@ async function loadRegistrations(silent = false) {
     }
     finally {
         loading.value = false;
+        registrationRequestInProgress = false;
     }
+}
+function refreshRegistrationsAfterRealtimeUpdate() {
+    if (document.visibilityState === "visible")
+        void loadRegistrations(true);
 }
 onMounted(() => {
     void loadRegistrations();
-    refreshTimer = window.setInterval(() => {
-        if (document.visibilityState === "visible")
-            void loadRegistrations(true);
-    }, 30000);
+    window.addEventListener("visitas:data-changed", refreshRegistrationsAfterRealtimeUpdate);
 });
 onBeforeUnmount(() => {
-    if (refreshTimer !== undefined)
-        window.clearInterval(refreshTimer);
+    window.removeEventListener("visitas:data-changed", refreshRegistrationsAfterRealtimeUpdate);
 });
 async function processRegistration(registration, action) {
     if (savingRegistrationId.value !== null)
@@ -72,9 +79,10 @@ async function processRegistration(registration, action) {
         authorize: "autorizar esta visita",
         reject: "rechazar esta visita",
         "receive-identification": "confirmar la recepción física de esta identificación",
+        "deny-identification": "registrar que recepción no pudo confirmar el resguardo de esta identificación",
         "return-identification": "registrar la devolución de esta identificación",
     }[action];
-    if (!window.confirm(`¿Deseas ${actionMessage}?`))
+    if (!await confirmUser(`¿Deseas ${actionMessage}?`, action === "deny-identification" ? "Registrar no confirmado" : "Confirmar acción"))
         return;
     savingRegistrationId.value = registration.id;
     try {
@@ -87,6 +95,7 @@ async function processRegistration(registration, action) {
         if (!response.ok)
             throw new Error(result.error ?? "No se pudo procesar el registro.");
         await loadRegistrations();
+        emit("movementSaved");
         notifyUser("La acción se registró correctamente.", "success");
     }
     catch (error) {
@@ -174,6 +183,7 @@ async function completeChecklist(registration) {
             throw new Error(result.error ?? "No se pudo completar el checklist.");
         closeChecklist();
         await loadRegistrations();
+        emit("movementSaved");
         notifyUser(result.message ?? `Checklist de ${phase.toLowerCase()} completado.`, "success");
     }
     catch (error) {
@@ -188,29 +198,293 @@ debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
 const __VLS_ctx = {};
 let __VLS_components;
 let __VLS_directives;
-__VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-    ...{ class: "daily-log-panel visitor-kiosk-inbox" },
-    'aria-labelledby': "visitor-kiosk-inbox-title",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "daily-log-panel-heading" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "daily-log-panel-kicker" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
-    id: "visitor-kiosk-inbox-title",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-    ...{ onClick: (...[$event]) => {
-            __VLS_ctx.loadRegistrations();
-        } },
-    ...{ class: "daily-log-secondary-button" },
-    type: "button",
-    disabled: (__VLS_ctx.loading),
-});
-if (__VLS_ctx.errorMessage) {
+if (__VLS_ctx.selectedRegistration) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
+        ...{ class: "daily-log-panel visitor-kiosk-inbox" },
+        'aria-labelledby': "visitor-kiosk-inbox-title",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "daily-log-panel-heading" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-panel-kicker" },
+    });
+    (__VLS_ctx.selectedRegistration.folio);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+        id: "visitor-kiosk-inbox-title",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (...[$event]) => {
+                if (!(__VLS_ctx.selectedRegistration))
+                    return;
+                __VLS_ctx.loadRegistrations();
+            } },
+        ...{ class: "daily-log-secondary-button" },
+        type: "button",
+        disabled: (__VLS_ctx.loading),
+    });
+    if (__VLS_ctx.errorMessage) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "equipment-alert" },
+            role: "alert",
+        });
+        (__VLS_ctx.errorMessage);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.errorMessage))
+                        return;
+                    __VLS_ctx.loadRegistrations();
+                } },
+            type: "button",
+        });
+    }
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-reception-summary" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-reception-overview" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-reception-label" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-table-status" },
+        ...{ class: (`is-${__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente' ? 'pendiente' : __VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' ? 'dentro' : 'retirado'}`) },
+    });
+    (__VLS_ctx.selectedRegistration.authorizationStatus);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-reception-label" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.selectedRegistration.companyName);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-reception-label" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.selectedRegistration.visitReason);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-reception-identification" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-reception-icon" },
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.rect)({
+        x: "3",
+        y: "5",
+        width: "18",
+        height: "14",
+        rx: "2",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+        cx: "9",
+        cy: "11",
+        r: "2",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "M6 16a3 3 0 0 1 6 0m3-5h3m-3 3h3",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-reception-identification-copy" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-reception-label" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.selectedRegistration.identificationType);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+    (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained
+        ? __VLS_ctx.selectedRegistration.receptionIdClaimStatus === "Pendiente"
+            ? "Pendiente de confirmar por recepción."
+            : __VLS_ctx.selectedRegistration.receptionIdClaimStatus === "No confirmada"
+                ? "Recepción no confirmó el resguardo; la visita sigue pendiente de autorización."
+                : `Recibida por ${__VLS_ctx.selectedRegistration.receptionReceivedIdBy}${__VLS_ctx.selectedRegistration.idReturnedAt ? ` · Devuelta por ${__VLS_ctx.selectedRegistration.idReturnedBy}` : ""}`
+        : "Presentada solo para verificación.");
+    if (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente'))
+                        return;
+                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'receive-identification');
+                } },
+            ...{ class: "visitor-kiosk-reception-button is-identification" },
+            type: "button",
+            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "M5 12.5 9.5 17 19 7",
+        });
+    }
+    if (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente'))
+                        return;
+                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'deny-identification');
+                } },
+            ...{ class: "visitor-kiosk-reception-button is-reject" },
+            type: "button",
+            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+        });
+    }
+    if (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt))
+                        return;
+                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'return-identification');
+                } },
+            ...{ class: "visitor-kiosk-reception-button is-identification" },
+            type: "button",
+            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+        });
+    }
+    if (__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente' &&
+        (!__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained || __VLS_ctx.selectedRegistration.receptionIdClaimStatus !== 'Pendiente')) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-reception-authorization" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+            ...{ class: "visitor-kiosk-reception-label" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-reception-actions" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente' &&
+                        (!__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained || __VLS_ctx.selectedRegistration.receptionIdClaimStatus !== 'Pendiente')))
+                        return;
+                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'authorize');
+                } },
+            ...{ class: "visitor-kiosk-reception-button is-authorize" },
+            type: "button",
+            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+            viewBox: "0 0 24 24",
+            'aria-hidden': "true",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+            d: "m5 12 4 4L19 6",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente' &&
+                        (!__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained || __VLS_ctx.selectedRegistration.receptionIdClaimStatus !== 'Pendiente')))
+                        return;
+                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'reject');
+                } },
+            ...{ class: "visitor-kiosk-reception-button is-reject" },
+            type: "button",
+            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+        });
+    }
+    if (__VLS_ctx.selectedRegistration.items.length > 0) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-reception-equipment" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-reception-equipment-heading" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+        (__VLS_ctx.selectedRegistration.items.length);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+            ...{ onClick: (...[$event]) => {
+                    if (!(__VLS_ctx.selectedRegistration))
+                        return;
+                    if (!(__VLS_ctx.selectedRegistration.items.length > 0))
+                        return;
+                    __VLS_ctx.registrationDetails = __VLS_ctx.selectedRegistration;
+                } },
+            ...{ class: "daily-log-secondary-button" },
+            type: "button",
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.ul, __VLS_intrinsicElements.ul)({});
+        for (const [item] of __VLS_getVForSourceType((__VLS_ctx.selectedRegistration.items))) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.li, __VLS_intrinsicElements.li)({
+                key: (item.id),
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+            (item.type);
+            (item.description);
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({});
+            (item.quantity);
+        }
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "daily-log-selection-action-group" },
+        });
+        if (__VLS_ctx.selectedRegistration.authorizationStatus !== 'Rechazada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!(__VLS_ctx.selectedRegistration))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.items.length > 0))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.authorizationStatus !== 'Rechazada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete))
+                            return;
+                        __VLS_ctx.openChecklist(__VLS_ctx.selectedRegistration, 'Entrada');
+                    } },
+                ...{ class: "daily-log-selection-action" },
+                type: "button",
+                disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+            });
+        }
+        else if (__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.exitChecklistComplete) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!(__VLS_ctx.selectedRegistration))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.items.length > 0))
+                            return;
+                        if (!!(__VLS_ctx.selectedRegistration.authorizationStatus !== 'Rechazada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.exitChecklistComplete))
+                            return;
+                        __VLS_ctx.openChecklist(__VLS_ctx.selectedRegistration, 'Salida');
+                    } },
+                ...{ class: "daily-log-selection-action is-exit" },
+                type: "button",
+                disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+            });
+        }
+        else if (__VLS_ctx.selectedRegistration.exitChecklistComplete) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        }
+    }
+}
+else if (__VLS_ctx.selectedVisitorRecordId !== null && __VLS_ctx.loading) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "daily-log-loading" },
+        role: "status",
+    });
+}
+else if (__VLS_ctx.selectedVisitorRecordId !== null && __VLS_ctx.errorMessage) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "equipment-alert" },
         role: "alert",
@@ -218,216 +492,23 @@ if (__VLS_ctx.errorMessage) {
     (__VLS_ctx.errorMessage);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.errorMessage))
+                if (!!(__VLS_ctx.selectedRegistration))
+                    return;
+                if (!!(__VLS_ctx.selectedVisitorRecordId !== null && __VLS_ctx.loading))
+                    return;
+                if (!(__VLS_ctx.selectedVisitorRecordId !== null && __VLS_ctx.errorMessage))
                     return;
                 __VLS_ctx.loadRegistrations();
             } },
         type: "button",
     });
 }
-if (__VLS_ctx.loading && __VLS_ctx.registrations.length === 0) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-loading" },
-        role: "status",
-    });
-}
-else if (__VLS_ctx.registrations.length === 0) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-empty" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.h4, __VLS_intrinsicElements.h4)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-}
-else {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-table-scroll" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements.table)({
-        ...{ class: "daily-log-table visitor-kiosk-table" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.thead, __VLS_intrinsicElements.thead)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-        ...{ class: "sr-only" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.tbody, __VLS_intrinsicElements.tbody)({});
-    for (const [registration] of __VLS_getVForSourceType((__VLS_ctx.registrations))) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({
-            key: (registration.id),
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        (registration.folio);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
-            ...{ class: "daily-log-table-date" },
-        });
-        (registration.createdAt);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        (registration.visitorName);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        (registration.companyName);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
-            ...{ class: "daily-log-table-date" },
-        });
-        (registration.visitReason);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (...[$event]) => {
-                    if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                        return;
-                    if (!!(__VLS_ctx.registrations.length === 0))
-                        return;
-                    __VLS_ctx.selectedRegistration = registration;
-                } },
-            ...{ class: "equipment-open-button" },
-            type: "button",
-        });
-        (registration.items.length ? `Ver ${registration.items.length} artículo(s)` : "Ver revisión");
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        (registration.identificationType);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
-            ...{ class: "daily-log-table-date" },
-        });
-        (registration.visitorDeclaredIdRetained ? "Visitante declara resguardo" : "Solo verificación");
-        if (registration.visitorDeclaredIdRetained && !registration.receptionReceivedIdAt) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(__VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!(registration.visitorDeclaredIdRetained && !registration.receptionReceivedIdAt))
-                            return;
-                        __VLS_ctx.processRegistration(registration, 'receive-identification');
-                    } },
-                ...{ class: "equipment-open-button" },
-                type: "button",
-                disabled: (__VLS_ctx.savingRegistrationId === registration.id),
-            });
-        }
-        else if (registration.receptionReceivedIdAt) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
-                ...{ class: "daily-log-table-date" },
-            });
-            (registration.receptionReceivedIdBy);
-            if (registration.idReturnedAt) {
-                (registration.idReturnedBy);
-            }
-        }
-        if (registration.receptionReceivedIdAt && !registration.idReturnedAt) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(__VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!(registration.receptionReceivedIdAt && !registration.idReturnedAt))
-                            return;
-                        __VLS_ctx.processRegistration(registration, 'return-identification');
-                    } },
-                ...{ class: "equipment-open-button" },
-                type: "button",
-                disabled: (__VLS_ctx.savingRegistrationId === registration.id),
-            });
-        }
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-            ...{ class: "daily-log-table-status" },
-            ...{ class: (`is-${registration.authorizationStatus === 'Pendiente' ? 'pendiente' : registration.authorizationStatus === 'Autorizada' ? 'dentro' : 'retirado'}`) },
-        });
-        (registration.authorizationStatus);
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
-            ...{ class: "daily-log-table-date" },
-        });
-        (registration.entryChecklistComplete ? "Checklist completo" : "Pendiente de revisión");
-        (registration.exitChecklistComplete ? "Checklist completo" : "Pendiente");
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
-            ...{ class: "visitor-kiosk-actions-cell" },
-        });
-        if (registration.authorizationStatus === 'Pendiente') {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(__VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!(registration.authorizationStatus === 'Pendiente'))
-                            return;
-                        __VLS_ctx.processRegistration(registration, 'authorize');
-                    } },
-                ...{ class: "daily-log-selection-action" },
-                type: "button",
-                disabled: (__VLS_ctx.savingRegistrationId === registration.id),
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(__VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!(registration.authorizationStatus === 'Pendiente'))
-                            return;
-                        __VLS_ctx.processRegistration(registration, 'reject');
-                    } },
-                ...{ class: "daily-log-delete" },
-                type: "button",
-                disabled: (__VLS_ctx.savingRegistrationId === registration.id),
-            });
-        }
-        if (registration.authorizationStatus !== 'Rechazada' && !registration.entryChecklistComplete) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(__VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!(registration.authorizationStatus !== 'Rechazada' && !registration.entryChecklistComplete))
-                            return;
-                        __VLS_ctx.openChecklist(registration, 'Entrada');
-                    } },
-                ...{ class: "daily-log-selection-action" },
-                type: "button",
-                disabled: (__VLS_ctx.savingRegistrationId === registration.id),
-            });
-        }
-        else if (registration.authorizationStatus === 'Autorizada' && !registration.exitChecklistComplete) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!!(__VLS_ctx.loading && __VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(__VLS_ctx.registrations.length === 0))
-                            return;
-                        if (!!(registration.authorizationStatus !== 'Rechazada' && !registration.entryChecklistComplete))
-                            return;
-                        if (!(registration.authorizationStatus === 'Autorizada' && !registration.exitChecklistComplete))
-                            return;
-                        __VLS_ctx.openChecklist(registration, 'Salida');
-                    } },
-                ...{ class: "daily-log-selection-action" },
-                type: "button",
-                disabled: (__VLS_ctx.savingRegistrationId === registration.id),
-            });
-        }
-        else if (registration.exitChecklistComplete) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-        }
-    }
-}
-if (__VLS_ctx.selectedRegistration) {
+if (__VLS_ctx.registrationDetails) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.selectedRegistration))
+                if (!(__VLS_ctx.registrationDetails))
                     return;
-                __VLS_ctx.selectedRegistration = null;
+                __VLS_ctx.registrationDetails = null;
             } },
         ...{ class: "modal-backdrop" },
     });
@@ -439,9 +520,9 @@ if (__VLS_ctx.selectedRegistration) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
         ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.selectedRegistration))
+                if (!(__VLS_ctx.registrationDetails))
                     return;
-                __VLS_ctx.selectedRegistration = null;
+                __VLS_ctx.registrationDetails = null;
             } },
         ...{ class: "dialog-close" },
         type: "button",
@@ -465,12 +546,12 @@ if (__VLS_ctx.selectedRegistration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
         id: "visitor-kiosk-detail-title",
     });
-    (__VLS_ctx.selectedRegistration.folio);
+    (__VLS_ctx.registrationDetails.folio);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
         ...{ class: "dialog-description" },
     });
-    (__VLS_ctx.selectedRegistration.visitorName);
-    (__VLS_ctx.selectedRegistration.companyName);
+    (__VLS_ctx.registrationDetails.visitorName);
+    (__VLS_ctx.registrationDetails.companyName);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "daily-log-table-scroll" },
     });
@@ -484,7 +565,7 @@ if (__VLS_ctx.selectedRegistration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.tbody, __VLS_intrinsicElements.tbody)({});
-    for (const [item, index] of __VLS_getVForSourceType((__VLS_ctx.selectedRegistration.items))) {
+    for (const [item, index] of __VLS_getVForSourceType((__VLS_ctx.registrationDetails.items))) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.tr, __VLS_intrinsicElements.tr)({
             key: (`${index}-${item.description}`),
         });
@@ -498,7 +579,7 @@ if (__VLS_ctx.selectedRegistration) {
         ([item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—");
     }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({});
-    if (__VLS_ctx.selectedRegistration.inspections.length === 0) {
+    if (__VLS_ctx.registrationDetails.inspections.length === 0) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
             ...{ class: "dialog-description" },
         });
@@ -507,7 +588,7 @@ if (__VLS_ctx.selectedRegistration) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.ul, __VLS_intrinsicElements.ul)({
             ...{ class: "visitor-kiosk-audit-list" },
         });
-        for (const [inspection] of __VLS_getVForSourceType((__VLS_ctx.selectedRegistration.inspections))) {
+        for (const [inspection] of __VLS_getVForSourceType((__VLS_ctx.registrationDetails.inspections))) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.li, __VLS_intrinsicElements.li)({
                 key: (inspection.id),
             });
@@ -542,7 +623,7 @@ if (__VLS_ctx.selectedRegistration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.ul, __VLS_intrinsicElements.ul)({
         ...{ class: "visitor-kiosk-audit-list" },
     });
-    for (const [event, index] of __VLS_getVForSourceType((__VLS_ctx.selectedRegistration.audit))) {
+    for (const [event, index] of __VLS_getVForSourceType((__VLS_ctx.registrationDetails.audit))) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.li, __VLS_intrinsicElements.li)({
             key: (`${event.created_at}-${index}`),
         });
@@ -715,26 +796,38 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-alert']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-loading']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-empty']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table-scroll']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-table']} */ ;
-/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
-/** @type {__VLS_StyleScopedClasses['equipment-open-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
-/** @type {__VLS_StyleScopedClasses['equipment-open-button']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
-/** @type {__VLS_StyleScopedClasses['equipment-open-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-summary']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-overview']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-label']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-table-status']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-table-date']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-actions-cell']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-identification']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-identification-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-identification']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-reject']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-identification']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-authorization']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-actions']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-authorize']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-reject']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-equipment']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-equipment-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-selection-action-group']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-delete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-selection-action']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-exit']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-loading']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-alert']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-dialog']} */ ;
@@ -772,16 +865,16 @@ var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
         return {
-            registrations: registrations,
             loading: loading,
             errorMessage: errorMessage,
             savingRegistrationId: savingRegistrationId,
-            selectedRegistration: selectedRegistration,
+            registrationDetails: registrationDetails,
             inspectionRegistration: inspectionRegistration,
             inspectionPhase: inspectionPhase,
             inspectionDraft: inspectionDraft,
             extraItemDescription: extraItemDescription,
             extraItems: extraItems,
+            selectedRegistration: selectedRegistration,
             loadRegistrations: loadRegistrations,
             processRegistration: processRegistration,
             openChecklist: openChecklist,
@@ -791,10 +884,14 @@ const __VLS_self = (await import('vue')).defineComponent({
             completeChecklist: completeChecklist,
         };
     },
+    __typeEmits: {},
+    __typeProps: {},
 });
 export default (await import('vue')).defineComponent({
     setup() {
         return {};
     },
+    __typeEmits: {},
+    __typeProps: {},
 });
 ; /* PartiallyEnd: #4569/main.vue */

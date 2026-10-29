@@ -9,7 +9,6 @@ type AccessRow = RowDataPacket & {
   email: string | null;
   active: string | null;
   role: string | null;
-  priv_admin: string | null;
   section_admin: number;
 };
 
@@ -29,7 +28,6 @@ type UserIdentityRow = RowDataPacket & {
   email: string | null;
   active: string | null;
   role: string | null;
-  priv_admin: string | null;
   section_admin: number;
 };
 
@@ -39,7 +37,7 @@ const dummyPasswordHash = Bun.password.hash(crypto.randomUUID(), {
 
 export async function getActiveUser(login: string): Promise<AuthenticatedUser | null> {
   const [rows] = await pool.execute<UserIdentityRow[]>(
-    `SELECT login, pswd, name, email, active, role, priv_admin,
+    `SELECT login, pswd, name, email, active, role,
             EXISTS (
               SELECT 1 FROM accesos_secciones s
               WHERE s.login = accesos.login AND s.seccion = 'administrador'
@@ -57,7 +55,7 @@ export async function getActiveUser(login: string): Promise<AuthenticatedUser | 
     name: user.name,
     email: user.email,
     role: user.role,
-    isAdmin: ["Y", "1"].includes(user.priv_admin ?? "") || Boolean(user.section_admin),
+    isAdmin: Boolean(user.section_admin),
     sessionKey: user.pswd,
   };
 }
@@ -67,7 +65,7 @@ export async function authenticateUser(
   password: string,
   connection?: PromisePoolConnection,
 ): Promise<AuthenticatedUser | null> {
-  const query = `SELECT login, pswd, name, email, active, role, priv_admin,
+  const query = `SELECT login, pswd, name, email, active, role,
           EXISTS (
             SELECT 1 FROM accesos_secciones s
             WHERE s.login = accesos.login AND s.seccion = 'administrador'
@@ -102,7 +100,7 @@ export async function authenticateUser(
     name: user.name,
     email: user.email,
     role: user.role,
-    isAdmin: ["Y", "1"].includes(user.priv_admin ?? "") || Boolean(user.section_admin),
+    isAdmin: Boolean(user.section_admin),
     sessionKey: user.pswd,
   };
 }
