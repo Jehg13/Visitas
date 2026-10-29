@@ -4106,7 +4106,7 @@ input:focus-visible {
 }
 
 .external-staff-table {
-  min-width: 980px;
+  min-width: 1540px;
   table-layout: fixed;
 }
 
@@ -5427,7 +5427,7 @@ input:focus-visible {
   }
 
   .external-staff-table {
-    min-width: 900px;
+    min-width: 1540px;
   }
 
   .general-visitor-table {

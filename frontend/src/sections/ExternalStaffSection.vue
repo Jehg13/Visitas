@@ -36,12 +36,20 @@ const props = defineProps<{
   sendingStaffId: number | null;
 }>();
 
+const staffTableScroll = ref<HTMLDivElement | null>(null);
 const selectedCompanyId = ref<number | null>(props.dispatchAppointment?.businessPartnerId ?? null);
 watch(
   () => props.dispatchAppointment,
   (appointment) => {
     selectedCompanyId.value = appointment?.businessPartnerId ?? null;
   },
+);
+watch(
+  [selectedCompanyId, () => props.dispatchAppointment?.id],
+  () => {
+    if (staffTableScroll.value) staffTableScroll.value.scrollLeft = 0;
+  },
+  { flush: "post" },
 );
 const searchQuery = computed(() => props.search.trim().toLocaleLowerCase());
 const companiesWithStaffCount = computed(() =>
@@ -197,12 +205,20 @@ const emit = defineEmits<{
           </p>
         </div>
       </div>
-      <div v-else class="workspace-table-scroll external-staff-table-scroll">
+      <div v-else ref="staffTableScroll" class="workspace-table-scroll external-staff-table-scroll">
         <table class="workspace-table external-staff-table">
+          <colgroup>
+            <col class="external-staff-name-column" />
+            <col class="external-staff-phone-column" />
+            <col class="external-staff-email-column" />
+            <col class="external-staff-relationship-column" />
+            <col class="external-staff-company-column" />
+            <col class="external-staff-actions-column" />
+          </colgroup>
           <thead>
             <tr>
               <th>Nombre completo</th><th>Teléfono</th><th>Correo electrónico</th>
-              <th>Vínculo</th><th>Empresa</th><th><span class="sr-only">Acciones</span></th>
+              <th>Vínculo</th><th>Empresa</th><th>Acciones</th>
             </tr>
           </thead>
           <tbody>

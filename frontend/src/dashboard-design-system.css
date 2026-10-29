@@ -4277,9 +4277,33 @@
 }
 
 .dashboard-app .dashboard-main .external-staff-table {
-  width: 100%;
-  min-width: 980px;
+  width: 1540px;
+  min-width: 1540px;
   table-layout: fixed;
+}
+
+.dashboard-app .external-staff-table .external-staff-name-column {
+  width: 230px;
+}
+
+.dashboard-app .external-staff-table .external-staff-phone-column {
+  width: 150px;
+}
+
+.dashboard-app .external-staff-table .external-staff-email-column {
+  width: 260px;
+}
+
+.dashboard-app .external-staff-table .external-staff-relationship-column {
+  width: 160px;
+}
+
+.dashboard-app .external-staff-table .external-staff-company-column {
+  width: 260px;
+}
+
+.dashboard-app .external-staff-table .external-staff-actions-column {
+  width: 480px;
 }
 
 .dashboard-app .external-staff-table th {
@@ -4296,36 +4320,6 @@
   font-weight: 750;
   letter-spacing: 0.045em;
   text-transform: uppercase;
-}
-
-.dashboard-app .external-staff-table th:nth-child(1),
-.dashboard-app .external-staff-table td:nth-child(1) {
-  width: 20%;
-}
-
-.dashboard-app .external-staff-table th:nth-child(2),
-.dashboard-app .external-staff-table td:nth-child(2) {
-  width: 13%;
-}
-
-.dashboard-app .external-staff-table th:nth-child(3),
-.dashboard-app .external-staff-table td:nth-child(3) {
-  width: 20%;
-}
-
-.dashboard-app .external-staff-table th:nth-child(4),
-.dashboard-app .external-staff-table td:nth-child(4) {
-  width: 14%;
-}
-
-.dashboard-app .external-staff-table th:nth-child(5),
-.dashboard-app .external-staff-table td:nth-child(5) {
-  width: 20%;
-}
-
-.dashboard-app .external-staff-table th:nth-child(6),
-.dashboard-app .external-staff-table td:nth-child(6) {
-  width: 13%;
 }
 
 .dashboard-app .external-staff-table td {
@@ -4400,8 +4394,25 @@
   gap: 5px;
 }
 
+.dashboard-app .external-staff-table td:last-child,
+.dashboard-app .external-staff-table .staff-actions > :is(
+  .staff-edit-button,
+  .qr-button,
+  .workspace-remove
+) {
+  white-space: nowrap;
+}
+
+.dashboard-app .external-staff-table .staff-actions > :is(
+  .staff-edit-button,
+  .qr-button,
+  .workspace-remove
+) {
+  flex: 0 0 auto;
+}
+
 .dashboard-app .external-staff-table .staff-actions :is(.staff-edit-button, .workspace-remove) {
-  min-width: 58px;
+  min-width: 76px;
   min-height: 32px;
   padding: 6px 8px;
   font-size: 0.67rem;
@@ -4483,7 +4494,8 @@
 
 @media (max-width: 940px) {
   .dashboard-app .dashboard-main .external-staff-table {
-    min-width: 900px;
+    width: 1540px;
+    min-width: 1540px;
   }
 }
 
