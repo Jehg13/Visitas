@@ -95,7 +95,7 @@ const emit = defineEmits<{
           </select>
         </label>
       </div>
-      <div class="workspace-table-scroll">
+      <div class="workspace-table-scroll business-directory-table-scroll">
         <table class="workspace-table business-partner-table">
           <thead>
             <tr><th>Nombre</th><th>Descripción</th><th>RFC</th><th>Categoría</th><th>Asunto</th><th>Empleados</th><th>Estado</th><th>Acciones</th></tr>

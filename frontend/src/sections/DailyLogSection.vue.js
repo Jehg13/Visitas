@@ -44,6 +44,11 @@ let scannerControls = null;
 const selectedQuickAppointmentId = ref(null);
 const selectedQuickExternalStaffId = ref(null);
 const selectedEntryId = ref(null);
+const selectedManualVisitorRecordId = ref(null);
+const detailDrawerOpen = ref(false);
+const detailDrawerCloseButton = ref(null);
+const detailDrawerElement = ref(null);
+let detailDrawerTrigger = null;
 const quickObservation = ref("");
 const quickStatusOverrides = ref({});
 const appointmentEmployees = ref([]);
@@ -431,6 +436,7 @@ async function submitEntry() {
         dialogOpen.value = false;
         selectedQuickAppointmentId.value = null;
         selectedEntryId.value = null;
+        selectedManualVisitorRecordId.value = null;
         quickSearch.value = "";
         quickObservation.value = "";
         const successMessage = result.duplicate
@@ -446,7 +452,7 @@ async function submitEntry() {
             entry.date === payload.date &&
             entry.person.trim().toLocaleLowerCase("es") === savedPersonName);
         if (savedEntry)
-            selectedEntryId.value = savedEntry.id;
+            selectEntry(savedEntry);
         emit("movementSaved");
         logSubjectId.value = "";
         manualPerson.value = "";
@@ -466,6 +472,8 @@ function selectQuickAppointment(appointment) {
     selectedQuickAppointmentId.value = appointment.id;
     selectedQuickExternalStaffId.value = null;
     selectedEntryId.value = null;
+    selectedManualVisitorRecordId.value = null;
+    openDetailDrawer();
     clearAppointmentEmployees();
     quickActionError.value = "";
     quickActionNotice.value = "";
@@ -483,25 +491,54 @@ function clearAppointmentEmployees() {
 async function openReferenceCodeEntry() {
     referenceCodeOpen.value = true;
     referenceCodeInputValue.value = "";
+    selectedManualVisitorRecordId.value = null;
     quickActionError.value = "";
     quickActionNotice.value = "";
     await nextTick();
     referenceCodeInput.value?.focus();
 }
-function submitReferenceCode() {
+async function submitReferenceCode() {
     const referenceCode = referenceCodeInputValue.value.trim();
     if (!/^\d{8}$/.test(referenceCode)) {
         notifyUser("El código de referencia debe contener 8 dígitos.");
         return;
     }
     const appointment = todayAppointments.value.find((candidate) => candidate.referenceCode === referenceCode);
-    if (!appointment) {
-        notifyUser("No encontramos una cita de hoy con ese código de referencia.");
+    if (appointment) {
+        selectQuickAppointment(appointment);
+        referenceCodeOpen.value = false;
+        referenceCodeInputValue.value = "";
         return;
     }
-    selectQuickAppointment(appointment);
-    referenceCodeOpen.value = false;
-    referenceCodeInputValue.value = "";
+    try {
+        const response = await fetch("/api/visitor-kiosk/registrations");
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.error ?? "No se pudieron consultar los registros manuales.");
+        }
+        if (!Array.isArray(result.registrations)) {
+            throw new Error("El servidor devolvió una lista de registros manuales inválida.");
+        }
+        const registration = result.registrations.find((candidate) => candidate.folio === referenceCode &&
+            Number.isSafeInteger(candidate.visitorRecordId) &&
+            candidate.visitorRecordId > 0);
+        if (!registration) {
+            notifyUser("No encontramos una cita de hoy ni un registro manual con ese código.");
+            return;
+        }
+        selectedQuickAppointmentId.value = null;
+        selectedEntryId.value = null;
+        selectedManualVisitorRecordId.value = registration.visitorRecordId;
+        openDetailDrawer();
+        quickActionError.value = "";
+        quickActionNotice.value = "";
+        referenceCodeOpen.value = false;
+        referenceCodeInputValue.value = "";
+    }
+    catch (error) {
+        console.error("No se pudo buscar el folio del registro manual:", error);
+        notifyUser(error instanceof Error ? error.message : "No se pudo buscar el registro manual.");
+    }
 }
 async function openQrScanner() {
     if (scannerOpen.value)
@@ -621,6 +658,8 @@ async function saveQuickMovement(event, appointment = selectedQuickAppointment.v
 function selectEntry(entry) {
     selectedEntryId.value = entry.id;
     selectedQuickAppointmentId.value = null;
+    selectedManualVisitorRecordId.value = null;
+    openDetailDrawer();
     clearAppointmentEmployees();
     quickActionError.value = "";
     quickActionNotice.value = "";
@@ -788,6 +827,7 @@ async function handleQuickSearchEnter() {
     quickActionNotice.value = "";
     selectedQuickAppointmentId.value = null;
     selectedEntryId.value = null;
+    selectedManualVisitorRecordId.value = null;
     refreshLocalDate();
     const value = quickSearch.value.trim();
     if (!value)
@@ -927,14 +967,57 @@ onMounted(() => {
     void loadEntries();
     quickSearchInput.value?.focus();
     window.addEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
+    window.addEventListener("keydown", handleDetailDrawerKeydown);
 });
 onBeforeUnmount(() => {
     requestVersion += 1;
     if (searchTimer)
         clearTimeout(searchTimer);
     window.removeEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
+    window.removeEventListener("keydown", handleDetailDrawerKeydown);
     closeQrScanner();
 });
+watch(detailDrawerOpen, async (isOpen) => {
+    if (isOpen) {
+        await nextTick();
+        detailDrawerCloseButton.value?.focus();
+        return;
+    }
+    await nextTick();
+    if (detailDrawerTrigger?.isConnected)
+        detailDrawerTrigger.focus();
+    detailDrawerTrigger = null;
+});
+function openDetailDrawer() {
+    if (!detailDrawerOpen.value && document.activeElement instanceof HTMLElement) {
+        detailDrawerTrigger = document.activeElement;
+    }
+    detailDrawerOpen.value = true;
+}
+function closeDetailDrawer() {
+    detailDrawerOpen.value = false;
+}
+function handleDetailDrawerKeydown(event) {
+    if (!detailDrawerOpen.value)
+        return;
+    if (event.key === "Escape") {
+        closeDetailDrawer();
+        return;
+    }
+    if (event.key !== "Tab" || !detailDrawerElement.value)
+        return;
+    const focusableElements = detailDrawerElement.value.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])');
+    const first = focusableElements.item(0);
+    const last = focusableElements.item(focusableElements.length - 1);
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+    }
+    else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+    }
+}
 debugger; /* PartiallyEnd: #3632/scriptSetup.vue */
 const __VLS_ctx = {};
 let __VLS_components;
@@ -1129,7 +1212,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.d
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
     ...{ class: "daily-log-panel-kicker" },
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+__VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
     id: "daily-log-quick-title",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -1234,6 +1317,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     ...{ onInput: (...[$event]) => {
             __VLS_ctx.selectedQuickAppointmentId = null;
             __VLS_ctx.selectedEntryId = null;
+            __VLS_ctx.selectedManualVisitorRecordId = null;
             __VLS_ctx.quickActionError = '';
             __VLS_ctx.quickActionNotice = '';
         } },
@@ -1343,7 +1427,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.d
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
     ...{ class: "daily-log-panel-kicker" },
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+__VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
     id: "daily-log-activity-title",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
@@ -1449,7 +1533,7 @@ else if (!__VLS_ctx.loading && __VLS_ctx.entries.length === 0) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
         d: "M17 24h14m-7-7v14",
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.h4, __VLS_intrinsicElements.h4)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({});
     (__VLS_ctx.total === 0 && !__VLS_ctx.search && !__VLS_ctx.eventFilter && !__VLS_ctx.categoryFilter && !__VLS_ctx.hostFilter ? "Sin movimientos registrados" : "No encontramos resultados");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
     (__VLS_ctx.total === 0 && !__VLS_ctx.search && !__VLS_ctx.eventFilter && !__VLS_ctx.categoryFilter && !__VLS_ctx.hostFilter ? "Todavía no hay actividad registrada para este periodo." : "Prueba con otra búsqueda o limpia los filtros para consultar más movimientos.");
@@ -1641,281 +1725,6 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElement
     type: "button",
     disabled: (__VLS_ctx.page >= __VLS_ctx.pages || __VLS_ctx.loading),
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.aside, __VLS_intrinsicElements.aside)({
-    ...{ class: "daily-log-side-column" },
-    'aria-label': "Detalle y actividad reciente",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-    ...{ class: "daily-log-selection-card" },
-    'aria-labelledby': "daily-log-selection-title",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "daily-log-selection-heading" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "daily-log-selection-icon" },
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-    viewBox: "0 0 24 24",
-    'aria-hidden': "true",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
-    cx: "12",
-    cy: "8",
-    r: "4",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "M4 21a8 8 0 0 1 16 0",
-});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-    ...{ class: "daily-log-panel-kicker" },
-});
-(__VLS_ctx.selectedAppointment ? "REGISTRO CON CITA" : "VISITA SELECCIONADA");
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
-    id: "daily-log-selection-title",
-});
-(__VLS_ctx.selectedPersonName || "Selecciona un registro");
-if (__VLS_ctx.selectedPerson) {
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "daily-log-selection-meta" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-    (__VLS_ctx.selectedPersonCompany || "N/A");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-    (__VLS_ctx.selectedPersonHost || "N/A");
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-    (__VLS_ctx.selectedPersonDateTime);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({
-        ...{ class: "daily-log-selection-state" },
-        ...{ class: (`is-${__VLS_ctx.selectedPersonStatus.replace(' ', '-').toLocaleLowerCase()}`) },
-    });
-    (__VLS_ctx.selectedPersonStatus);
-    if (__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
-        (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-            ...{ class: "daily-log-employee-roster" },
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (__VLS_ctx.toggleAppointmentEmployees) },
-            ...{ class: "daily-log-secondary-button" },
-            type: "button",
-            disabled: (__VLS_ctx.employeeRosterLoading),
-        });
-        (__VLS_ctx.employeeRosterLoading ? "Cargando empleados…" : __VLS_ctx.employeeRosterOpen ? "Ocultar empleados" : "Ver empleados");
-        if (__VLS_ctx.employeeRosterOpen) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                ...{ class: "daily-log-employee-list" },
-            });
-            if (__VLS_ctx.employeeRosterError) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-                    ...{ class: "daily-log-quick-error" },
-                    role: "alert",
-                });
-                (__VLS_ctx.employeeRosterError);
-                if (__VLS_ctx.selectedAppointment) {
-                    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                        ...{ onClick: (...[$event]) => {
-                                if (!(__VLS_ctx.selectedPerson))
-                                    return;
-                                if (!(__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
-                                    (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')))
-                                    return;
-                                if (!(__VLS_ctx.employeeRosterOpen))
-                                    return;
-                                if (!(__VLS_ctx.employeeRosterError))
-                                    return;
-                                if (!(__VLS_ctx.selectedAppointment))
-                                    return;
-                                __VLS_ctx.loadAppointmentEmployees(__VLS_ctx.selectedAppointment);
-                            } },
-                        type: "button",
-                    });
-                }
-            }
-            else if (__VLS_ctx.employeeRosterLoading) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-                    ...{ class: "daily-log-quick-empty" },
-                    role: "status",
-                });
-            }
-            else if (__VLS_ctx.appointmentEmployees.length === 0) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-                    ...{ class: "daily-log-quick-empty" },
-                });
-            }
-            for (const [employee] of __VLS_getVForSourceType((__VLS_ctx.appointmentEmployees))) {
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.article, __VLS_intrinsicElements.article)({
-                    key: (employee.id),
-                    ...{ class: "daily-log-employee" },
-                    ...{ class: ({ 'is-qr-match': __VLS_ctx.selectedQuickExternalStaffId === employee.id }) },
-                });
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                    ...{ class: "daily-log-employee-heading" },
-                });
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-                (employee.fullName);
-                __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-                    ...{ class: "daily-log-table-status" },
-                    ...{ class: (`is-${employee.status.toLowerCase().replace(' ', '-')}`) },
-                });
-                (employee.status);
-                if (__VLS_ctx.employeeMovements(employee).length) {
-                    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-                        ...{ class: "daily-log-employee-actions" },
-                    });
-                    for (const [movement] of __VLS_getVForSourceType((__VLS_ctx.employeeMovements(employee)))) {
-                        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                            ...{ onClick: (...[$event]) => {
-                                    if (!(__VLS_ctx.selectedPerson))
-                                        return;
-                                    if (!(__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
-                                        (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')))
-                                        return;
-                                    if (!(__VLS_ctx.employeeRosterOpen))
-                                        return;
-                                    if (!(__VLS_ctx.employeeMovements(employee).length))
-                                        return;
-                                    __VLS_ctx.selectedAppointment && __VLS_ctx.saveEmployeeMovement(__VLS_ctx.selectedAppointment, employee, movement);
-                                } },
-                            key: (movement),
-                            ...{ class: "daily-log-selection-action" },
-                            ...{ class: ({ 'is-exit': movement === 'Retiro' }) },
-                            type: "button",
-                            disabled: (__VLS_ctx.employeeMovementId !== null ||
-                                __VLS_ctx.quickActionAppointmentId !== null ||
-                                __VLS_ctx.quickActionEntryId !== null),
-                        });
-                        (__VLS_ctx.employeeMovementId === employee.id ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida");
-                    }
-                }
-                else {
-                    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-                        ...{ class: "daily-log-selection-complete" },
-                    });
-                }
-            }
-        }
-    }
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-        ...{ class: "daily-log-quick-observation" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        value: (__VLS_ctx.quickObservation),
-        type: "text",
-        maxlength: "4000",
-        placeholder: "Agrega un detalle si hace falta",
-    });
-    if (__VLS_ctx.selectedAvailableMovements.length) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-            ...{ class: "daily-log-selection-action-group" },
-        });
-        for (const [movement] of __VLS_getVForSourceType((__VLS_ctx.selectedAvailableMovements))) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!(__VLS_ctx.selectedPerson))
-                            return;
-                        if (!(__VLS_ctx.selectedAvailableMovements.length))
-                            return;
-                        __VLS_ctx.selectedQuickAppointment ? __VLS_ctx.saveQuickMovement(movement) : __VLS_ctx.saveSelectedEntryMovement(movement);
-                    } },
-                key: (movement),
-                ...{ class: "daily-log-selection-action" },
-                ...{ class: ({ 'is-exit': movement === 'Retiro' }) },
-                type: "button",
-                disabled: (__VLS_ctx.quickActionAppointmentId !== null ||
-                    __VLS_ctx.quickActionEntryId !== null ||
-                    __VLS_ctx.employeeMovementId !== null ||
-                    (movement === 'Ingreso' && __VLS_ctx.equipmentEntryChecklistPending)),
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-                viewBox: "0 0 24 24",
-                'aria-hidden': "true",
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-                d: (__VLS_ctx.eventIcon(movement)),
-            });
-            (__VLS_ctx.quickActionAppointmentId !== null || __VLS_ctx.quickActionEntryId !== null ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida");
-        }
-        if (__VLS_ctx.selectedAvailableMovements.includes('Ingreso') && __VLS_ctx.equipmentEntryChecklistPending) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-                ...{ class: "daily-log-selection-complete" },
-                role: "status",
-            });
-        }
-    }
-    else if (__VLS_ctx.selectedEntry && __VLS_ctx.selectedEntry.date !== __VLS_ctx.today) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-            ...{ class: "daily-log-readonly-notice" },
-            role: "status",
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-            ...{ class: "daily-log-readonly-icon" },
-            'aria-hidden': "true",
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-            viewBox: "0 0 24 24",
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
-            cx: "12",
-            cy: "12",
-            r: "9",
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-            d: "M12 7v5l3 2",
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
-            ...{ class: "daily-log-readonly-copy" },
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-    }
-    else {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "daily-log-selection-complete" },
-        });
-    }
-    if (__VLS_ctx.quickActionNotice) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "daily-log-quick-notice" },
-            role: "status",
-        });
-        (__VLS_ctx.quickActionNotice);
-    }
-    if (__VLS_ctx.quickActionError) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-            ...{ class: "daily-log-quick-error" },
-            role: "alert",
-        });
-        (__VLS_ctx.quickActionError);
-    }
-}
-/** @type {[typeof VisitorKioskReceptionSection, ]} */ ;
-// @ts-ignore
-const __VLS_0 = __VLS_asFunctionalComponent(VisitorKioskReceptionSection, new VisitorKioskReceptionSection({
-    ...{ 'onMovementSaved': {} },
-    selectedVisitorRecordId: (__VLS_ctx.selectedQuickAppointment ? null : __VLS_ctx.selectedEntry?.visitorRecordId ?? null),
-}));
-const __VLS_1 = __VLS_0({
-    ...{ 'onMovementSaved': {} },
-    selectedVisitorRecordId: (__VLS_ctx.selectedQuickAppointment ? null : __VLS_ctx.selectedEntry?.visitorRecordId ?? null),
-}, ...__VLS_functionalComponentArgsRest(__VLS_0));
-let __VLS_3;
-let __VLS_4;
-let __VLS_5;
-const __VLS_6 = {
-    onMovementSaved: (__VLS_ctx.loadEntries)
-};
-var __VLS_2;
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
     ...{ class: "daily-log-recent-panel" },
     'aria-labelledby': "daily-log-recent-title",
@@ -1927,7 +1736,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.d
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
     ...{ class: "daily-log-panel-kicker" },
 });
-__VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+__VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
     id: "daily-log-recent-title",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
@@ -2007,6 +1816,321 @@ if (__VLS_ctx.recentEntries.length === 0) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+}
+if (__VLS_ctx.detailDrawerOpen) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.closeDetailDrawer) },
+        ...{ class: "daily-log-drawer-backdrop" },
+        type: "button",
+        'aria-label': "Cerrar detalle de visita",
+    });
+}
+if (__VLS_ctx.detailDrawerOpen) {
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.aside, __VLS_intrinsicElements.aside)({
+        ref: "detailDrawerElement",
+        ...{ class: "daily-log-side-column daily-log-detail-drawer" },
+        role: "dialog",
+        'aria-modal': "true",
+        'aria-labelledby': "daily-log-selection-title",
+        'aria-label': "Detalle de la visita seleccionada",
+    });
+    /** @type {typeof __VLS_ctx.detailDrawerElement} */ ;
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
+        ...{ class: "daily-log-selection-card" },
+        'aria-labelledby': "daily-log-selection-title",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "daily-log-selection-heading" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-selection-icon" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+        cx: "12",
+        cy: "8",
+        r: "4",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "M4 21a8 8 0 0 1 16 0",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "daily-log-panel-kicker" },
+    });
+    (__VLS_ctx.selectedAppointment ? "REGISTRO CON CITA" : "VISITA SELECCIONADA");
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
+        id: "daily-log-selection-title",
+    });
+    (__VLS_ctx.selectedPersonName || "Selecciona un registro");
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+        ...{ onClick: (__VLS_ctx.closeDetailDrawer) },
+        ref: "detailDrawerCloseButton",
+        ...{ class: "daily-log-drawer-close" },
+        type: "button",
+        'aria-label': "Cerrar detalle",
+    });
+    /** @type {typeof __VLS_ctx.detailDrawerCloseButton} */ ;
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "m6 6 12 12M18 6 6 18",
+    });
+    if (__VLS_ctx.selectedPerson) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "daily-log-selection-meta" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.selectedPersonCompany || "N/A");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.selectedPersonHost || "N/A");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.selectedPersonDateTime);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({
+            ...{ class: "daily-log-selection-state" },
+            ...{ class: (`is-${__VLS_ctx.selectedPersonStatus.replace(' ', '-').toLocaleLowerCase()}`) },
+        });
+        (__VLS_ctx.selectedPersonStatus);
+        if (__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
+            (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                ...{ class: "daily-log-employee-roster" },
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (__VLS_ctx.toggleAppointmentEmployees) },
+                ...{ class: "daily-log-secondary-button" },
+                type: "button",
+                disabled: (__VLS_ctx.employeeRosterLoading),
+            });
+            (__VLS_ctx.employeeRosterLoading ? "Cargando empleados…" : __VLS_ctx.employeeRosterOpen ? "Ocultar empleados" : "Ver empleados");
+            if (__VLS_ctx.employeeRosterOpen) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                    ...{ class: "daily-log-employee-list" },
+                });
+                if (__VLS_ctx.employeeRosterError) {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                        ...{ class: "daily-log-quick-error" },
+                        role: "alert",
+                    });
+                    (__VLS_ctx.employeeRosterError);
+                    if (__VLS_ctx.selectedAppointment) {
+                        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                            ...{ onClick: (...[$event]) => {
+                                    if (!(__VLS_ctx.detailDrawerOpen))
+                                        return;
+                                    if (!(__VLS_ctx.selectedPerson))
+                                        return;
+                                    if (!(__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
+                                        (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')))
+                                        return;
+                                    if (!(__VLS_ctx.employeeRosterOpen))
+                                        return;
+                                    if (!(__VLS_ctx.employeeRosterError))
+                                        return;
+                                    if (!(__VLS_ctx.selectedAppointment))
+                                        return;
+                                    __VLS_ctx.loadAppointmentEmployees(__VLS_ctx.selectedAppointment);
+                                } },
+                            type: "button",
+                        });
+                    }
+                }
+                else if (__VLS_ctx.employeeRosterLoading) {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                        ...{ class: "daily-log-quick-empty" },
+                        role: "status",
+                    });
+                }
+                else if (__VLS_ctx.appointmentEmployees.length === 0) {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                        ...{ class: "daily-log-quick-empty" },
+                    });
+                }
+                for (const [employee] of __VLS_getVForSourceType((__VLS_ctx.appointmentEmployees))) {
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.article, __VLS_intrinsicElements.article)({
+                        key: (employee.id),
+                        ...{ class: "daily-log-employee" },
+                        ...{ class: ({ 'is-qr-match': __VLS_ctx.selectedQuickExternalStaffId === employee.id }) },
+                    });
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                        ...{ class: "daily-log-employee-heading" },
+                    });
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+                    (employee.fullName);
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                        ...{ class: "daily-log-table-status" },
+                        ...{ class: (`is-${employee.status.toLowerCase().replace(' ', '-')}`) },
+                    });
+                    (employee.status);
+                    if (__VLS_ctx.employeeMovements(employee).length) {
+                        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                            ...{ class: "daily-log-employee-actions" },
+                        });
+                        for (const [movement] of __VLS_getVForSourceType((__VLS_ctx.employeeMovements(employee)))) {
+                            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                                ...{ onClick: (...[$event]) => {
+                                        if (!(__VLS_ctx.detailDrawerOpen))
+                                            return;
+                                        if (!(__VLS_ctx.selectedPerson))
+                                            return;
+                                        if (!(__VLS_ctx.selectedAppointment && __VLS_ctx.selectedAppointment.businessPartnerId != null &&
+                                            (__VLS_ctx.selectedAppointment.partnerType === 'Contratista' || __VLS_ctx.selectedAppointment.partnerType === 'Proveedor')))
+                                            return;
+                                        if (!(__VLS_ctx.employeeRosterOpen))
+                                            return;
+                                        if (!(__VLS_ctx.employeeMovements(employee).length))
+                                            return;
+                                        __VLS_ctx.selectedAppointment && __VLS_ctx.saveEmployeeMovement(__VLS_ctx.selectedAppointment, employee, movement);
+                                    } },
+                                key: (movement),
+                                ...{ class: "daily-log-selection-action" },
+                                ...{ class: ({ 'is-exit': movement === 'Retiro' }) },
+                                type: "button",
+                                disabled: (__VLS_ctx.employeeMovementId !== null ||
+                                    __VLS_ctx.quickActionAppointmentId !== null ||
+                                    __VLS_ctx.quickActionEntryId !== null),
+                            });
+                            (__VLS_ctx.employeeMovementId === employee.id ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida");
+                        }
+                    }
+                    else {
+                        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                            ...{ class: "daily-log-selection-complete" },
+                        });
+                    }
+                }
+            }
+        }
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+            ...{ class: "daily-log-quick-observation" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            value: (__VLS_ctx.quickObservation),
+            type: "text",
+            maxlength: "4000",
+            placeholder: "Agrega un detalle si hace falta",
+        });
+        if (__VLS_ctx.selectedAvailableMovements.length) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                ...{ class: "daily-log-selection-action-group" },
+            });
+            for (const [movement] of __VLS_getVForSourceType((__VLS_ctx.selectedAvailableMovements))) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                    ...{ onClick: (...[$event]) => {
+                            if (!(__VLS_ctx.detailDrawerOpen))
+                                return;
+                            if (!(__VLS_ctx.selectedPerson))
+                                return;
+                            if (!(__VLS_ctx.selectedAvailableMovements.length))
+                                return;
+                            __VLS_ctx.selectedQuickAppointment ? __VLS_ctx.saveQuickMovement(movement) : __VLS_ctx.saveSelectedEntryMovement(movement);
+                        } },
+                    key: (movement),
+                    ...{ class: "daily-log-selection-action" },
+                    ...{ class: ({ 'is-exit': movement === 'Retiro' }) },
+                    type: "button",
+                    disabled: (__VLS_ctx.quickActionAppointmentId !== null ||
+                        __VLS_ctx.quickActionEntryId !== null ||
+                        __VLS_ctx.employeeMovementId !== null ||
+                        (movement === 'Ingreso' && __VLS_ctx.equipmentEntryChecklistPending)),
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 24 24",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: (__VLS_ctx.eventIcon(movement)),
+                });
+                (__VLS_ctx.quickActionAppointmentId !== null || __VLS_ctx.quickActionEntryId !== null ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida");
+            }
+            if (__VLS_ctx.selectedAvailableMovements.includes('Ingreso') && __VLS_ctx.equipmentEntryChecklistPending) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                    ...{ class: "daily-log-selection-complete" },
+                    role: "status",
+                });
+            }
+        }
+        else if (__VLS_ctx.selectedEntry && __VLS_ctx.selectedEntry.date !== __VLS_ctx.today) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                ...{ class: "daily-log-readonly-notice" },
+                role: "status",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                ...{ class: "daily-log-readonly-icon" },
+                'aria-hidden': "true",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                viewBox: "0 0 24 24",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.circle)({
+                cx: "12",
+                cy: "12",
+                r: "9",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                d: "M12 7v5l3 2",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                ...{ class: "daily-log-readonly-copy" },
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        }
+        else {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                ...{ class: "daily-log-selection-complete" },
+            });
+        }
+        if (__VLS_ctx.quickActionNotice) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                ...{ class: "daily-log-quick-notice" },
+                role: "status",
+            });
+            (__VLS_ctx.quickActionNotice);
+        }
+        if (__VLS_ctx.quickActionError) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+                ...{ class: "daily-log-quick-error" },
+                role: "alert",
+            });
+            (__VLS_ctx.quickActionError);
+        }
+    }
+    /** @type {[typeof VisitorKioskReceptionSection, ]} */ ;
+    // @ts-ignore
+    const __VLS_0 = __VLS_asFunctionalComponent(VisitorKioskReceptionSection, new VisitorKioskReceptionSection({
+        ...{ 'onMovementSaved': {} },
+        selectedVisitorRecordId: (__VLS_ctx.selectedQuickAppointment
+            ? null
+            : __VLS_ctx.selectedManualVisitorRecordId ?? __VLS_ctx.selectedEntry?.visitorRecordId ?? null),
+    }));
+    const __VLS_1 = __VLS_0({
+        ...{ 'onMovementSaved': {} },
+        selectedVisitorRecordId: (__VLS_ctx.selectedQuickAppointment
+            ? null
+            : __VLS_ctx.selectedManualVisitorRecordId ?? __VLS_ctx.selectedEntry?.visitorRecordId ?? null),
+    }, ...__VLS_functionalComponentArgsRest(__VLS_0));
+    let __VLS_3;
+    let __VLS_4;
+    let __VLS_5;
+    const __VLS_6 = {
+        onMovementSaved: (__VLS_ctx.loadEntries)
+    };
+    var __VLS_2;
 }
 if (__VLS_ctx.dialogOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -2234,11 +2358,28 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-delete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-pagination']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-pagination-page']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-panel']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-panel-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-link']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-entry']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-marker']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-topline']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-time']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-manual']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-manual-tag']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-empty']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-recent-empty-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-drawer-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-side-column']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-detail-drawer']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-card']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-heading']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
+/** @type {__VLS_StyleScopedClasses['daily-log-drawer-close']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-meta']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-state']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-employee-roster']} */ ;
@@ -2266,20 +2407,6 @@ if (__VLS_ctx.dialogOpen) {
 /** @type {__VLS_StyleScopedClasses['daily-log-selection-complete']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-notice']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-quick-error']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-panel']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-panel-heading']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-link']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-entry']} */ ;
-/** @type {__VLS_StyleScopedClasses['is-selected']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-marker']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-copy']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-topline']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-time']} */ ;
-/** @type {__VLS_StyleScopedClasses['is-manual']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-manual-tag']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-empty']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-recent-empty-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-dialog']} */ ;
@@ -2333,6 +2460,10 @@ const __VLS_self = (await import('vue')).defineComponent({
             selectedQuickAppointmentId: selectedQuickAppointmentId,
             selectedQuickExternalStaffId: selectedQuickExternalStaffId,
             selectedEntryId: selectedEntryId,
+            selectedManualVisitorRecordId: selectedManualVisitorRecordId,
+            detailDrawerOpen: detailDrawerOpen,
+            detailDrawerCloseButton: detailDrawerCloseButton,
+            detailDrawerElement: detailDrawerElement,
             quickObservation: quickObservation,
             appointmentEmployees: appointmentEmployees,
             employeeRosterOpen: employeeRosterOpen,
@@ -2389,6 +2520,7 @@ const __VLS_self = (await import('vue')).defineComponent({
             removeEntry: removeEntry,
             resetFilters: resetFilters,
             showRecentHistory: showRecentHistory,
+            closeDetailDrawer: closeDetailDrawer,
         };
     },
     __typeEmits: {},

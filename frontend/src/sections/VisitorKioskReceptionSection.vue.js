@@ -10,10 +10,10 @@ const registrationDetails = ref(null);
 const inspectionRegistration = ref(null);
 const inspectionPhase = ref(null);
 const inspectionDraft = ref([]);
-const extraItemDescription = ref("");
-const extraItems = ref([]);
+const entryPolicyConfirmed = ref(false);
 let registrationRequestInProgress = false;
 const selectedRegistration = computed(() => registrations.value.find((registration) => registration.visitorRecordId === props.selectedVisitorRecordId) ?? null);
+const checkedInspectionItems = computed(() => inspectionDraft.value.filter((item) => item.checked).length);
 async function parseResponse(response) {
     if (!response.headers.get("content-type")?.includes("application/json")) {
         throw new Error("No se pudo conectar con el módulo de autorregistro.");
@@ -109,37 +109,20 @@ async function processRegistration(registration, action) {
 function openChecklist(registration, phase) {
     inspectionRegistration.value = registration;
     inspectionPhase.value = phase;
-    extraItemDescription.value = "";
-    extraItems.value = [];
+    entryPolicyConfirmed.value = false;
     inspectionDraft.value = registration.items.map((item) => ({
         itemId: item.id,
         result: "",
         notes: "",
+        checked: false,
+        incident: false,
     }));
-}
-function addExtraItem() {
-    const description = extraItemDescription.value.trim();
-    if (!description) {
-        notifyUser("Describe el artículo extra antes de agregarlo.");
-        return;
-    }
-    if (inspectionDraft.value.length + extraItems.value.length >= 100) {
-        notifyUser("El checklist permite revisar hasta 100 artículos entre declarados y adicionales.");
-        return;
-    }
-    if (description.length > 1000) {
-        notifyUser("La descripción del artículo extra no debe superar 1000 caracteres.");
-        return;
-    }
-    extraItems.value.push(description);
-    extraItemDescription.value = "";
 }
 function closeChecklist() {
     inspectionPhase.value = null;
     inspectionRegistration.value = null;
     inspectionDraft.value = [];
-    extraItems.value = [];
-    extraItemDescription.value = "";
+    entryPolicyConfirmed.value = false;
 }
 function checklistItem(itemId) {
     return inspectionRegistration.value?.items.find((item) => item.id === itemId);
@@ -148,13 +131,18 @@ async function completeChecklist(registration) {
     const phase = inspectionPhase.value;
     if (!phase || savingRegistrationId.value !== null)
         return;
-    const uncheckedItem = inspectionDraft.value.find((item) => !item.result);
+    const uncheckedItem = inspectionDraft.value.find((item) => !item.checked);
     if (uncheckedItem) {
-        notifyUser("Revisa todos los artículos antes de completar el checklist.");
+        notifyUser("Marca la verificación física de todos los artículos antes de completar el checklist.");
         return;
     }
-    if (extraItemDescription.value.trim()) {
-        notifyUser("Agrega o elimina el artículo extra escrito antes de completar el checklist.");
+    const incompleteIncident = inspectionDraft.value.find((item) => item.incident && (!item.result || !item.notes.trim()));
+    if (incompleteIncident) {
+        notifyUser("Selecciona el tipo de incidencia y agrega observaciones antes de completar el checklist.");
+        return;
+    }
+    if (phase === "Entrada" && !entryPolicyConfirmed.value) {
+        notifyUser("Confirma que no ingresará equipo ni herramientas que no estén registrados.");
         return;
     }
     savingRegistrationId.value = registration.id;
@@ -164,18 +152,11 @@ async function completeChecklist(registration) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 action: phase === "Entrada" ? "complete-entry-checklist" : "complete-exit-checklist",
-                items: [
-                    ...inspectionDraft.value.map((item) => ({
-                        itemId: item.itemId,
-                        result: item.result,
-                        notes: item.notes,
-                    })),
-                    ...extraItems.value.map((description) => ({
-                        itemId: null,
-                        result: "Extra",
-                        notes: description,
-                    })),
-                ],
+                items: inspectionDraft.value.map((item) => ({
+                    itemId: item.itemId,
+                    result: item.incident ? item.result : "Coincide",
+                    notes: item.notes,
+                })),
             }),
         });
         const result = await parseResponse(response);
@@ -206,12 +187,20 @@ if (__VLS_ctx.selectedRegistration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "daily-log-panel-heading" },
     });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-inbox-title-copy" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-inbox-meta" },
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "daily-log-panel-kicker" },
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-inbox-folio" },
+    });
     (__VLS_ctx.selectedRegistration.folio);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
         id: "visitor-kiosk-inbox-title",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
@@ -220,7 +209,7 @@ if (__VLS_ctx.selectedRegistration) {
                     return;
                 __VLS_ctx.loadRegistrations();
             } },
-        ...{ class: "daily-log-secondary-button" },
+        ...{ class: "daily-log-secondary-button visitor-kiosk-inbox-refresh" },
         type: "button",
         disabled: (__VLS_ctx.loading),
     });
@@ -309,54 +298,69 @@ if (__VLS_ctx.selectedRegistration) {
                 ? "Recepción no confirmó el resguardo; la visita sigue pendiente de autorización."
                 : `Recibida por ${__VLS_ctx.selectedRegistration.receptionReceivedIdBy}${__VLS_ctx.selectedRegistration.idReturnedAt ? ` · Devuelta por ${__VLS_ctx.selectedRegistration.idReturnedBy}` : ""}`
         : "Presentada solo para verificación.");
-    if (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (...[$event]) => {
-                    if (!(__VLS_ctx.selectedRegistration))
-                        return;
-                    if (!(__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente'))
-                        return;
-                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'receive-identification');
-                } },
-            ...{ class: "visitor-kiosk-reception-button is-identification" },
-            type: "button",
-            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+    if ((__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') ||
+        (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt)) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+            ...{ class: "visitor-kiosk-reception-identification-actions" },
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-            viewBox: "0 0 24 24",
-            'aria-hidden': "true",
-        });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-            d: "M5 12.5 9.5 17 19 7",
-        });
-    }
-    if (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (...[$event]) => {
-                    if (!(__VLS_ctx.selectedRegistration))
-                        return;
-                    if (!(__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente'))
-                        return;
-                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'deny-identification');
-                } },
-            ...{ class: "visitor-kiosk-reception-button is-reject" },
-            type: "button",
-            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
-        });
-    }
-    if (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-            ...{ onClick: (...[$event]) => {
-                    if (!(__VLS_ctx.selectedRegistration))
-                        return;
-                    if (!(__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt))
-                        return;
-                    __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'return-identification');
-                } },
-            ...{ class: "visitor-kiosk-reception-button is-identification" },
-            type: "button",
-            disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
-        });
+        if (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!(__VLS_ctx.selectedRegistration))
+                            return;
+                        if (!((__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') ||
+                            (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt)))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente'))
+                            return;
+                        __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'receive-identification');
+                    } },
+                ...{ class: "visitor-kiosk-reception-button is-identification" },
+                type: "button",
+                disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                viewBox: "0 0 24 24",
+                'aria-hidden': "true",
+            });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                d: "M5 12.5 9.5 17 19 7",
+            });
+        }
+        if (__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!(__VLS_ctx.selectedRegistration))
+                            return;
+                        if (!((__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') ||
+                            (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt)))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente'))
+                            return;
+                        __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'deny-identification');
+                    } },
+                ...{ class: "visitor-kiosk-reception-button is-reject" },
+                type: "button",
+                disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+            });
+        }
+        if (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                ...{ onClick: (...[$event]) => {
+                        if (!(__VLS_ctx.selectedRegistration))
+                            return;
+                        if (!((__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained && __VLS_ctx.selectedRegistration.receptionIdClaimStatus === 'Pendiente') ||
+                            (__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt)))
+                            return;
+                        if (!(__VLS_ctx.selectedRegistration.receptionReceivedIdAt && !__VLS_ctx.selectedRegistration.idReturnedAt))
+                            return;
+                        __VLS_ctx.processRegistration(__VLS_ctx.selectedRegistration, 'return-identification');
+                    } },
+                ...{ class: "visitor-kiosk-reception-button is-identification" },
+                type: "button",
+                disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
+            });
+        }
     }
     if (__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente' &&
         (!__VLS_ctx.selectedRegistration.visitorDeclaredIdRetained || __VLS_ctx.selectedRegistration.receptionIdClaimStatus !== 'Pendiente')) {
@@ -439,14 +443,14 @@ if (__VLS_ctx.selectedRegistration) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
             ...{ class: "daily-log-selection-action-group" },
         });
-        if (__VLS_ctx.selectedRegistration.authorizationStatus !== 'Rechazada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete) {
+        if (__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
                 ...{ onClick: (...[$event]) => {
                         if (!(__VLS_ctx.selectedRegistration))
                             return;
                         if (!(__VLS_ctx.selectedRegistration.items.length > 0))
                             return;
-                        if (!(__VLS_ctx.selectedRegistration.authorizationStatus !== 'Rechazada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete))
+                        if (!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete))
                             return;
                         __VLS_ctx.openChecklist(__VLS_ctx.selectedRegistration, 'Entrada');
                     } },
@@ -455,6 +459,9 @@ if (__VLS_ctx.selectedRegistration) {
                 disabled: (__VLS_ctx.savingRegistrationId === __VLS_ctx.selectedRegistration.id),
             });
         }
+        else if (__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente') {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        }
         else if (__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.exitChecklistComplete) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
                 ...{ onClick: (...[$event]) => {
@@ -462,7 +469,9 @@ if (__VLS_ctx.selectedRegistration) {
                             return;
                         if (!(__VLS_ctx.selectedRegistration.items.length > 0))
                             return;
-                        if (!!(__VLS_ctx.selectedRegistration.authorizationStatus !== 'Rechazada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete))
+                        if (!!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.entryChecklistComplete))
+                            return;
+                        if (!!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Pendiente'))
                             return;
                         if (!(__VLS_ctx.selectedRegistration.authorizationStatus === 'Autorizada' && !__VLS_ctx.selectedRegistration.exitChecklistComplete))
                             return;
@@ -645,10 +654,10 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
                     return;
                 __VLS_ctx.savingRegistrationId === null && __VLS_ctx.closeChecklist();
             } },
-        ...{ class: "modal-backdrop" },
+        ...{ class: "modal-backdrop visitor-kiosk-checklist-backdrop" },
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
-        ...{ class: "dialog workspace-dialog visitor-kiosk-detail" },
+        ...{ class: "dialog workspace-dialog visitor-kiosk-detail visitor-kiosk-checklist-dialog" },
         role: "dialog",
         'aria-modal': "true",
         'aria-labelledby': "visitor-kiosk-checklist-title",
@@ -666,6 +675,9 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
         href: "#i-close",
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElements.header)({
+        ...{ class: "visitor-kiosk-checklist-header" },
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "dialog-icon" },
     });
@@ -675,36 +687,123 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
         href: "#i-tool",
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-checklist-title-copy" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-checklist-eyebrow" },
+    });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({
         id: "visitor-kiosk-checklist-title",
     });
     (__VLS_ctx.inspectionPhase.toLowerCase());
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
-        ...{ class: "dialog-description" },
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "visitor-kiosk-checklist-visitor" },
     });
-    (__VLS_ctx.inspectionPhase === "Entrada" ? "el ingreso" : "la salida");
-    if (__VLS_ctx.inspectionDraft.length === 0) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-            ...{ class: "daily-log-empty" },
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+    (__VLS_ctx.inspectionRegistration.visitorName);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+    (__VLS_ctx.inspectionRegistration.folio);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
+        ...{ onSubmit: (...[$event]) => {
+                if (!(__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration))
+                    return;
+                __VLS_ctx.completeChecklist(__VLS_ctx.inspectionRegistration);
+            } },
+        ...{ class: "equipment-inspection-form visitor-kiosk-inspection-form" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "equipment-checklist-heading" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "visitor-kiosk-checklist-section-icon" },
+        'aria-hidden': "true",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+        viewBox: "0 0 24 24",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+        d: "m5 12 4 4L19 6",
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.h3, __VLS_intrinsicElements.h3)({});
+    (__VLS_ctx.inspectionPhase.toLowerCase());
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "equipment-checklist-progress" },
+    });
+    (__VLS_ctx.checkedInspectionItems);
+    (__VLS_ctx.inspectionDraft.length);
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+        ...{ class: "visitor-kiosk-checklist-notice" },
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+        ...{ class: "equipment-checklist-progress-track" },
+        role: "progressbar",
+        'aria-valuenow': (__VLS_ctx.checkedInspectionItems),
+        'aria-valuemin': (0),
+        'aria-valuemax': (__VLS_ctx.inspectionDraft.length),
+        'aria-label': (`${__VLS_ctx.checkedInspectionItems} de ${__VLS_ctx.inspectionDraft.length} artículos verificados`),
+    });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ style: ({ width: `${__VLS_ctx.inspectionDraft.length ? __VLS_ctx.checkedInspectionItems / __VLS_ctx.inspectionDraft.length * 100 : 0}%` }) },
+    });
+    for (const [item] of __VLS_getVForSourceType((__VLS_ctx.inspectionDraft))) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.article, __VLS_intrinsicElements.article)({
+            key: (item.itemId),
+            ...{ class: "equipment-check-item" },
+            ...{ class: ({ 'is-checked': item.checked }) },
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
-    }
-    else {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.h4, __VLS_intrinsicElements.h4)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.type);
+        (__VLS_ctx.checklistItem(item.itemId)?.description);
         __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-            ...{ class: "visitor-kiosk-checklist-list" },
+            ...{ class: "equipment-check-readonly-grid" },
         });
-        for (const [item] of __VLS_getVForSourceType((__VLS_ctx.inspectionDraft))) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.article, __VLS_intrinsicElements.article)({
-                key: (item.itemId),
-                ...{ class: "visitor-kiosk-checklist-item" },
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.type);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.quantity);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.description);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.brand || "—");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.model || "—");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.serialNumber || "—");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
+        (__VLS_ctx.checklistItem(item.itemId)?.color || "—");
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+            ...{ class: "equipment-incident-toggle" },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            ...{ onChange: (...[$event]) => {
+                    if (!(__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration))
+                        return;
+                    !item.incident && (item.result = '');
+                } },
+            type: "checkbox",
+        });
+        (item.incident);
+        if (item.incident) {
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+                ...{ class: "visitor-kiosk-incident-result" },
             });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
-            (__VLS_ctx.checklistItem(item.itemId)?.description);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-            (__VLS_ctx.checklistItem(item.itemId)?.type);
-            (__VLS_ctx.checklistItem(item.itemId)?.quantity);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
             __VLS_asFunctionalElement(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({
                 value: (item.result),
                 required: true,
@@ -714,60 +813,44 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
                 disabled: true,
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
-                value: "Coincide",
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
                 value: "Faltante",
             });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({
                 value: "Dañado",
             });
+        }
+        if (item.incident) {
             __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
-                ...{ class: "directory-form-full" },
+                ...{ class: "equipment-notes-label" },
             });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea, __VLS_intrinsicElements.textarea)({
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.textarea)({
                 value: (item.notes),
                 maxlength: "1000",
                 rows: "2",
+                required: true,
             });
         }
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+            ...{ class: "equipment-checked-toggle" },
+            ...{ class: ({ 'is-checked': item.checked }) },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            type: "checkbox",
+        });
+        (item.checked);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
+        (item.checked ? "Artículo revisado físicamente" : "Marcar como revisado");
     }
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-        ...{ class: "visitor-kiosk-extra-items" },
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
-        ...{ onKeydown: (__VLS_ctx.addExtraItem) },
-        value: (__VLS_ctx.extraItemDescription),
-        type: "text",
-        maxlength: "1000",
-        placeholder: "Describe el equipo o herramienta extra",
-    });
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (__VLS_ctx.addExtraItem) },
-        ...{ class: "button-secondary" },
-        type: "button",
-    });
-    if (__VLS_ctx.extraItems.length) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.ul, __VLS_intrinsicElements.ul)({});
-        for (const [item, index] of __VLS_getVForSourceType((__VLS_ctx.extraItems))) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.li, __VLS_intrinsicElements.li)({
-                key: (`${index}-${item}`),
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-            (item);
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-                ...{ onClick: (...[$event]) => {
-                        if (!(__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration))
-                            return;
-                        if (!(__VLS_ctx.extraItems.length))
-                            return;
-                        __VLS_ctx.extraItems.splice(index, 1);
-                    } },
-                type: "button",
-                'aria-label': (`Quitar artículo extra ${item}`),
-            });
-        }
+    if (__VLS_ctx.inspectionPhase === 'Entrada') {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({
+            ...{ class: "equipment-checked-toggle" },
+            ...{ class: ({ 'is-checked': __VLS_ctx.entryPolicyConfirmed }) },
+        });
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
+            type: "checkbox",
+        });
+        (__VLS_ctx.entryPolicyConfirmed);
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
     }
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "equipment-inspection-actions" },
@@ -779,22 +862,21 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
         disabled: (__VLS_ctx.savingRegistrationId !== null),
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
-        ...{ onClick: (...[$event]) => {
-                if (!(__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration))
-                    return;
-                __VLS_ctx.inspectionRegistration && __VLS_ctx.completeChecklist(__VLS_ctx.inspectionRegistration);
-            } },
         ...{ class: "button-primary" },
-        type: "button",
-        disabled: (__VLS_ctx.savingRegistrationId !== null),
+        type: "submit",
+        disabled: (__VLS_ctx.savingRegistrationId !== null || __VLS_ctx.checkedInspectionItems !== __VLS_ctx.inspectionDraft.length || (__VLS_ctx.inspectionPhase === 'Entrada' && !__VLS_ctx.entryPolicyConfirmed)),
     });
-    (__VLS_ctx.savingRegistrationId !== null ? "Guardando checklist…" : "Completar checklist");
+    (__VLS_ctx.savingRegistrationId !== null ? "Guardando checklist…" : `Completar checklist (${__VLS_ctx.checkedInspectionItems}/${__VLS_ctx.inspectionDraft.length})`);
 }
 /** @type {__VLS_StyleScopedClasses['daily-log-panel']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-inbox']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-inbox-title-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-inbox-meta']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-panel-kicker']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-inbox-folio']} */ ;
 /** @type {__VLS_StyleScopedClasses['daily-log-secondary-button']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-inbox-refresh']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-alert']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-summary']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-overview']} */ ;
@@ -806,6 +888,7 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-identification-copy']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-identification-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['is-identification']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-reception-button']} */ ;
@@ -844,20 +927,36 @@ if (__VLS_ctx.inspectionPhase && __VLS_ctx.inspectionRegistration) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-inspection-results']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-audit-list']} */ ;
 /** @type {__VLS_StyleScopedClasses['modal-backdrop']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-detail']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog-close']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-header']} */ ;
 /** @type {__VLS_StyleScopedClasses['dialog-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['icon']} */ ;
-/** @type {__VLS_StyleScopedClasses['dialog-description']} */ ;
-/** @type {__VLS_StyleScopedClasses['daily-log-empty']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-list']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-item']} */ ;
-/** @type {__VLS_StyleScopedClasses['directory-form-full']} */ ;
-/** @type {__VLS_StyleScopedClasses['visitor-kiosk-extra-items']} */ ;
-/** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-title-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-eyebrow']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-visitor']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-inspection-form']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-inspection-form']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-checklist-heading']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-section-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-checklist-progress']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-checklist-notice']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-checklist-progress-track']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-check-item']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-checked']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-check-readonly-grid']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-incident-toggle']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-incident-result']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-notes-label']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-checked-toggle']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-checked']} */ ;
+/** @type {__VLS_StyleScopedClasses['equipment-checked-toggle']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-checked']} */ ;
 /** @type {__VLS_StyleScopedClasses['equipment-inspection-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-secondary']} */ ;
 /** @type {__VLS_StyleScopedClasses['button-primary']} */ ;
@@ -872,13 +971,12 @@ const __VLS_self = (await import('vue')).defineComponent({
             inspectionRegistration: inspectionRegistration,
             inspectionPhase: inspectionPhase,
             inspectionDraft: inspectionDraft,
-            extraItemDescription: extraItemDescription,
-            extraItems: extraItems,
+            entryPolicyConfirmed: entryPolicyConfirmed,
             selectedRegistration: selectedRegistration,
+            checkedInspectionItems: checkedInspectionItems,
             loadRegistrations: loadRegistrations,
             processRegistration: processRegistration,
             openChecklist: openChecklist,
-            addExtraItem: addExtraItem,
             closeChecklist: closeChecklist,
             checklistItem: checklistItem,
             completeChecklist: completeChecklist,

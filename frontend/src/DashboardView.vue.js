@@ -1,20 +1,19 @@
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
-import QRCode from "qrcode";
 import { confirmUser, notifyUser } from "./notifications";
-import DepartmentSection from "./sections/DepartmentSection.vue";
-import DailyLogSection from "./sections/DailyLogSection.vue";
-import EquipmentSection from "./sections/EquipmentSection.vue";
-import HostsSection from "./sections/HostsSection.vue";
-import ExternalStaffSection from "./sections/ExternalStaffSection.vue";
-import AppointmentsSection from "./sections/AppointmentsSection.vue";
-import HomeSection from "./sections/HomeSection.vue";
-import BusinessDirectorySection from "./sections/BusinessDirectorySection.vue";
-import AccessSection from "./sections/AccessSection.vue";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 import { dashboardSectionForPath, dashboardSectionPaths } from "./dashboardRoutes";
+const DepartmentSection = defineAsyncComponent(() => import("./sections/DepartmentSection.vue"));
+const DailyLogSection = defineAsyncComponent(() => import("./sections/DailyLogSection.vue"));
+const EquipmentSection = defineAsyncComponent(() => import("./sections/EquipmentSection.vue"));
+const HostsSection = defineAsyncComponent(() => import("./sections/HostsSection.vue"));
+const ExternalStaffSection = defineAsyncComponent(() => import("./sections/ExternalStaffSection.vue"));
+const AppointmentsSection = defineAsyncComponent(() => import("./sections/AppointmentsSection.vue"));
+const HomeSection = defineAsyncComponent(() => import("./sections/HomeSection.vue"));
+const BusinessDirectorySection = defineAsyncComponent(() => import("./sections/BusinessDirectorySection.vue"));
+const AccessSection = defineAsyncComponent(() => import("./sections/AccessSection.vue"));
 const otherAppointmentVisitor = "__otro__";
 const emit = defineEmits();
 const route = useRoute();
@@ -807,6 +806,7 @@ async function logout() {
     }
 }
 async function createAppointmentQr(appointment, staff) {
+    const { default: QRCode } = await import("qrcode");
     return QRCode.toDataURL(JSON.stringify({
         type: "visitas-appointment",
         id: appointment.id,
@@ -1889,8 +1889,11 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.a, __VLS_intrinsicElements.a)(
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
     ...{ class: "brand-mark" },
-    src: "/images/cymez-mark.png",
+    src: "/images/cymez-mark.webp",
     alt: "",
+    width: "130",
+    height: "156",
+    decoding: "async",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
     ...{ class: "brand-recep" },
@@ -2256,9 +2259,10 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
     (new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "long", year: "numeric" }).format(new Date()));
 }
 if (__VLS_ctx.activeSection === 'Agenda de citas') {
-    /** @type {[typeof AppointmentsSection, ]} */ ;
+    const __VLS_0 = {}.AppointmentsSection;
+    /** @type {[typeof __VLS_components.AppointmentsSection, ]} */ ;
     // @ts-ignore
-    const __VLS_0 = __VLS_asFunctionalComponent(AppointmentsSection, new AppointmentsSection({
+    const __VLS_1 = __VLS_asFunctionalComponent(__VLS_0, new __VLS_0({
         ...{ 'onUpdate:page': {} },
         ...{ 'onCreate': {} },
         ...{ 'onCancel': {} },
@@ -2284,7 +2288,7 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         canCreateAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
         canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
     }));
-    const __VLS_1 = __VLS_0({
+    const __VLS_2 = __VLS_1({
         ...{ 'onUpdate:page': {} },
         ...{ 'onCreate': {} },
         ...{ 'onCancel': {} },
@@ -2309,47 +2313,48 @@ if (__VLS_ctx.activeSection === 'Agenda de citas') {
         loading: (__VLS_ctx.appointmentLoading),
         canCreateAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
         canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_0));
-    let __VLS_3;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_1));
     let __VLS_4;
     let __VLS_5;
-    const __VLS_6 = {
+    let __VLS_6;
+    const __VLS_7 = {
         'onUpdate:page': (...[$event]) => {
             if (!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
             __VLS_ctx.appointmentsPage = $event;
         }
     };
-    const __VLS_7 = {
+    const __VLS_8 = {
         onCreate: (__VLS_ctx.openAppointmentDialog)
     };
-    const __VLS_8 = {
+    const __VLS_9 = {
         onCancel: (__VLS_ctx.cancelAppointment)
     };
-    const __VLS_9 = {
+    const __VLS_10 = {
         onOpenQr: (__VLS_ctx.openQrDialog)
     };
-    const __VLS_10 = {
+    const __VLS_11 = {
         onSendCompanyQrs: (__VLS_ctx.openCompanyQrDispatch)
     };
-    const __VLS_11 = {
+    const __VLS_12 = {
         onDelete: (__VLS_ctx.deleteAppointment)
     };
-    const __VLS_12 = {
+    const __VLS_13 = {
         onEdit: (__VLS_ctx.openAppointmentDialog)
     };
-    const __VLS_13 = {
+    const __VLS_14 = {
         onChangeMonth: (__VLS_ctx.changeCalendarMonth)
     };
-    const __VLS_14 = {
+    const __VLS_15 = {
         onSelectDay: (__VLS_ctx.selectCalendarDay)
     };
-    var __VLS_2;
+    var __VLS_3;
 }
 else if (__VLS_ctx.activeSection === 'Anfitriones') {
-    /** @type {[typeof HostsSection, ]} */ ;
+    const __VLS_16 = {}.HostsSection;
+    /** @type {[typeof __VLS_components.HostsSection, ]} */ ;
     // @ts-ignore
-    const __VLS_15 = __VLS_asFunctionalComponent(HostsSection, new HostsSection({
+    const __VLS_17 = __VLS_asFunctionalComponent(__VLS_16, new __VLS_16({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2359,7 +2364,7 @@ else if (__VLS_ctx.activeSection === 'Anfitriones') {
         departments: (__VLS_ctx.departments),
         eligibleDepartmentCount: (__VLS_ctx.hostEligibleDepartments.length),
     }));
-    const __VLS_16 = __VLS_15({
+    const __VLS_18 = __VLS_17({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2368,11 +2373,11 @@ else if (__VLS_ctx.activeSection === 'Anfitriones') {
         filteredHosts: (__VLS_ctx.filteredHosts),
         departments: (__VLS_ctx.departments),
         eligibleDepartmentCount: (__VLS_ctx.hostEligibleDepartments.length),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_15));
-    let __VLS_18;
-    let __VLS_19;
+    }, ...__VLS_functionalComponentArgsRest(__VLS_17));
     let __VLS_20;
-    const __VLS_21 = {
+    let __VLS_21;
+    let __VLS_22;
+    const __VLS_23 = {
         onCreate: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2381,41 +2386,43 @@ else if (__VLS_ctx.activeSection === 'Anfitriones') {
             __VLS_ctx.openHostDialog();
         }
     };
-    const __VLS_22 = {
+    const __VLS_24 = {
         onEdit: (__VLS_ctx.openHostDialog)
     };
-    const __VLS_23 = {
+    const __VLS_25 = {
         onRemove: (__VLS_ctx.removeHost)
     };
-    var __VLS_17;
+    var __VLS_19;
 }
 else if (__VLS_ctx.activeSection === 'Accesos') {
-    /** @type {[typeof AccessSection, ]} */ ;
+    const __VLS_26 = {}.AccessSection;
+    /** @type {[typeof __VLS_components.AccessSection, ]} */ ;
     // @ts-ignore
-    const __VLS_24 = __VLS_asFunctionalComponent(AccessSection, new AccessSection({
+    const __VLS_27 = __VLS_asFunctionalComponent(__VLS_26, new __VLS_26({
         ...{ 'onEditAccount': {} },
         search: (__VLS_ctx.accessSearch),
         accounts: (__VLS_ctx.accessAccounts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
     }));
-    const __VLS_25 = __VLS_24({
+    const __VLS_28 = __VLS_27({
         ...{ 'onEditAccount': {} },
         search: (__VLS_ctx.accessSearch),
         accounts: (__VLS_ctx.accessAccounts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_24));
-    let __VLS_27;
-    let __VLS_28;
-    let __VLS_29;
-    const __VLS_30 = {
+    }, ...__VLS_functionalComponentArgsRest(__VLS_27));
+    let __VLS_30;
+    let __VLS_31;
+    let __VLS_32;
+    const __VLS_33 = {
         onEditAccount: (__VLS_ctx.openAccessAccountEditor)
     };
-    var __VLS_26;
+    var __VLS_29;
 }
 else if (__VLS_ctx.activeSection === 'Departamento') {
-    /** @type {[typeof DepartmentSection, ]} */ ;
+    const __VLS_34 = {}.DepartmentSection;
+    /** @type {[typeof __VLS_components.DepartmentSection, ]} */ ;
     // @ts-ignore
-    const __VLS_31 = __VLS_asFunctionalComponent(DepartmentSection, new DepartmentSection({
+    const __VLS_35 = __VLS_asFunctionalComponent(__VLS_34, new __VLS_34({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2423,18 +2430,18 @@ else if (__VLS_ctx.activeSection === 'Departamento') {
         hosts: (__VLS_ctx.hosts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
     }));
-    const __VLS_32 = __VLS_31({
+    const __VLS_36 = __VLS_35({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
         departments: (__VLS_ctx.departments),
         hosts: (__VLS_ctx.hosts),
         isAdmin: (__VLS_ctx.currentUser.isAdmin),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_31));
-    let __VLS_34;
-    let __VLS_35;
-    let __VLS_36;
-    const __VLS_37 = {
+    }, ...__VLS_functionalComponentArgsRest(__VLS_35));
+    let __VLS_38;
+    let __VLS_39;
+    let __VLS_40;
+    const __VLS_41 = {
         onCreate: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2447,18 +2454,19 @@ else if (__VLS_ctx.activeSection === 'Departamento') {
             __VLS_ctx.openDepartmentDialog();
         }
     };
-    const __VLS_38 = {
+    const __VLS_42 = {
         onEdit: (__VLS_ctx.openDepartmentDialog)
     };
-    const __VLS_39 = {
+    const __VLS_43 = {
         onRemove: (__VLS_ctx.removeDepartment)
     };
-    var __VLS_33;
+    var __VLS_37;
 }
 else if (__VLS_ctx.activeSection === 'Personal de externos') {
-    /** @type {[typeof ExternalStaffSection, ]} */ ;
+    const __VLS_44 = {}.ExternalStaffSection;
+    /** @type {[typeof __VLS_components.ExternalStaffSection, ]} */ ;
     // @ts-ignore
-    const __VLS_40 = __VLS_asFunctionalComponent(ExternalStaffSection, new ExternalStaffSection({
+    const __VLS_45 = __VLS_asFunctionalComponent(__VLS_44, new __VLS_44({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2472,7 +2480,7 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
         dispatchAppointment: (__VLS_ctx.qrDispatchAppointment),
         sendingStaffId: (__VLS_ctx.sendingExternalQrStaffId),
     }));
-    const __VLS_41 = __VLS_40({
+    const __VLS_46 = __VLS_45({
         ...{ 'onCreate': {} },
         ...{ 'onEdit': {} },
         ...{ 'onRemove': {} },
@@ -2485,11 +2493,11 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
         loading: (__VLS_ctx.businessDirectoryLoading),
         dispatchAppointment: (__VLS_ctx.qrDispatchAppointment),
         sendingStaffId: (__VLS_ctx.sendingExternalQrStaffId),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_40));
-    let __VLS_43;
-    let __VLS_44;
-    let __VLS_45;
-    const __VLS_46 = {
+    }, ...__VLS_functionalComponentArgsRest(__VLS_45));
+    let __VLS_48;
+    let __VLS_49;
+    let __VLS_50;
+    const __VLS_51 = {
         onCreate: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2504,27 +2512,28 @@ else if (__VLS_ctx.activeSection === 'Personal de externos') {
             __VLS_ctx.openExternalStaffDialog(undefined, $event);
         }
     };
-    const __VLS_47 = {
+    const __VLS_52 = {
         onEdit: (__VLS_ctx.openExternalStaffDialog)
     };
-    const __VLS_48 = {
+    const __VLS_53 = {
         onRemove: (__VLS_ctx.removeExternalStaff)
     };
-    const __VLS_49 = {
+    const __VLS_54 = {
         onSendQr: (__VLS_ctx.sendExternalStaffQr)
     };
-    const __VLS_50 = {
+    const __VLS_55 = {
         onOpenQr: (__VLS_ctx.openExternalStaffQr)
     };
-    const __VLS_51 = {
+    const __VLS_56 = {
         onClearDispatch: (__VLS_ctx.clearQrDispatch)
     };
-    var __VLS_42;
+    var __VLS_47;
 }
 else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
-    /** @type {[typeof BusinessDirectorySection, ]} */ ;
+    const __VLS_57 = {}.BusinessDirectorySection;
+    /** @type {[typeof __VLS_components.BusinessDirectorySection, ]} */ ;
     // @ts-ignore
-    const __VLS_52 = __VLS_asFunctionalComponent(BusinessDirectorySection, new BusinessDirectorySection({
+    const __VLS_58 = __VLS_asFunctionalComponent(__VLS_57, new __VLS_57({
         ...{ 'onCreatePartner': {} },
         ...{ 'onEditPartner': {} },
         ...{ 'onRemovePartner': {} },
@@ -2542,7 +2551,7 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
         loading: (__VLS_ctx.businessDirectoryLoading),
         businessPartnerSaving: (__VLS_ctx.businessPartnerSaving),
     }));
-    const __VLS_53 = __VLS_52({
+    const __VLS_59 = __VLS_58({
         ...{ 'onCreatePartner': {} },
         ...{ 'onEditPartner': {} },
         ...{ 'onRemovePartner': {} },
@@ -2559,11 +2568,11 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
         partnerRowsPerPage: (__VLS_ctx.partnerRowsPerPage),
         loading: (__VLS_ctx.businessDirectoryLoading),
         businessPartnerSaving: (__VLS_ctx.businessPartnerSaving),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_52));
-    let __VLS_55;
-    let __VLS_56;
-    let __VLS_57;
-    const __VLS_58 = {
+    }, ...__VLS_functionalComponentArgsRest(__VLS_58));
+    let __VLS_61;
+    let __VLS_62;
+    let __VLS_63;
+    const __VLS_64 = {
         onCreatePartner: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2580,28 +2589,30 @@ else if (__VLS_ctx.activeSection === 'Contratistas, proveedores y visitantes') {
             __VLS_ctx.openBusinessPartnerDialog();
         }
     };
-    const __VLS_59 = {
+    const __VLS_65 = {
         onEditPartner: (__VLS_ctx.openBusinessPartnerDialog)
     };
-    const __VLS_60 = {
+    const __VLS_66 = {
         onRemovePartner: (__VLS_ctx.removeBusinessPartner)
     };
-    var __VLS_54;
+    var __VLS_60;
 }
 else if (__VLS_ctx.activeSection === 'Equipo y herramientas') {
-    /** @type {[typeof EquipmentSection, ]} */ ;
+    const __VLS_67 = {}.EquipmentSection;
+    /** @type {[typeof __VLS_components.EquipmentSection, ]} */ ;
     // @ts-ignore
-    const __VLS_61 = __VLS_asFunctionalComponent(EquipmentSection, new EquipmentSection({
+    const __VLS_68 = __VLS_asFunctionalComponent(__VLS_67, new __VLS_67({
         theme: (__VLS_ctx.dashboardTheme),
     }));
-    const __VLS_62 = __VLS_61({
+    const __VLS_69 = __VLS_68({
         theme: (__VLS_ctx.dashboardTheme),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_61));
+    }, ...__VLS_functionalComponentArgsRest(__VLS_68));
 }
 else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
-    /** @type {[typeof DailyLogSection, ]} */ ;
+    const __VLS_71 = {}.DailyLogSection;
+    /** @type {[typeof __VLS_components.DailyLogSection, ]} */ ;
     // @ts-ignore
-    const __VLS_64 = __VLS_asFunctionalComponent(DailyLogSection, new DailyLogSection({
+    const __VLS_72 = __VLS_asFunctionalComponent(__VLS_71, new __VLS_71({
         ...{ 'onMovementSaved': {} },
         ...{ 'onOpenQr': {} },
         initialRange: (__VLS_ctx.dailyLogInitialRange),
@@ -2612,86 +2623,87 @@ else if (__VLS_ctx.activeSection === 'Bitácora diaria') {
         generalVisitors: (__VLS_ctx.generalVisitors),
         hosts: (__VLS_ctx.hosts),
         departments: (__VLS_ctx.departments),
-    }));
-    const __VLS_65 = __VLS_64({
-        ...{ 'onMovementSaved': {} },
-        ...{ 'onOpenQr': {} },
-        initialRange: (__VLS_ctx.dailyLogInitialRange),
-        isAdmin: (__VLS_ctx.currentUser.isAdmin),
-        appointments: (__VLS_ctx.appointments),
-        appointmentsLoading: (__VLS_ctx.appointmentLoading),
-        externalStaff: (__VLS_ctx.externalStaff),
-        generalVisitors: (__VLS_ctx.generalVisitors),
-        hosts: (__VLS_ctx.hosts),
-        departments: (__VLS_ctx.departments),
-    }, ...__VLS_functionalComponentArgsRest(__VLS_64));
-    let __VLS_67;
-    let __VLS_68;
-    let __VLS_69;
-    const __VLS_70 = {
-        onMovementSaved: (__VLS_ctx.loadAppointments)
-    };
-    const __VLS_71 = {
-        onOpenQr: (__VLS_ctx.openQrDialog)
-    };
-    var __VLS_66;
-}
-else if (__VLS_ctx.activeSection === 'Inicio') {
-    /** @type {[typeof HomeSection, ]} */ ;
-    // @ts-ignore
-    const __VLS_72 = __VLS_asFunctionalComponent(HomeSection, new HomeSection({
-        ...{ 'onCreateAppointment': {} },
-        ...{ 'onEditAppointment': {} },
-        ...{ 'onCancelAppointment': {} },
-        ...{ 'onDeleteAppointment': {} },
-        ...{ 'onOpenQr': {} },
-        ...{ 'onSendCompanyQrs': {} },
-        ...{ 'onOpenLog': {} },
-        ...{ 'onOpenAppointments': {} },
-        ...{ 'onOpenEquipment': {} },
-        appointments: (__VLS_ctx.appointments),
-        summaryItems: (__VLS_ctx.summaryItems),
-        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
     }));
     const __VLS_73 = __VLS_72({
-        ...{ 'onCreateAppointment': {} },
-        ...{ 'onEditAppointment': {} },
-        ...{ 'onCancelAppointment': {} },
-        ...{ 'onDeleteAppointment': {} },
+        ...{ 'onMovementSaved': {} },
         ...{ 'onOpenQr': {} },
-        ...{ 'onSendCompanyQrs': {} },
-        ...{ 'onOpenLog': {} },
-        ...{ 'onOpenAppointments': {} },
-        ...{ 'onOpenEquipment': {} },
+        initialRange: (__VLS_ctx.dailyLogInitialRange),
+        isAdmin: (__VLS_ctx.currentUser.isAdmin),
         appointments: (__VLS_ctx.appointments),
-        summaryItems: (__VLS_ctx.summaryItems),
-        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
+        appointmentsLoading: (__VLS_ctx.appointmentLoading),
+        externalStaff: (__VLS_ctx.externalStaff),
+        generalVisitors: (__VLS_ctx.generalVisitors),
+        hosts: (__VLS_ctx.hosts),
+        departments: (__VLS_ctx.departments),
     }, ...__VLS_functionalComponentArgsRest(__VLS_72));
     let __VLS_75;
     let __VLS_76;
     let __VLS_77;
     const __VLS_78 = {
-        onCreateAppointment: (__VLS_ctx.openHomeAppointmentDialog)
+        onMovementSaved: (__VLS_ctx.loadAppointments)
     };
     const __VLS_79 = {
-        onEditAppointment: (__VLS_ctx.openAppointmentDialog)
-    };
-    const __VLS_80 = {
-        onCancelAppointment: (__VLS_ctx.cancelAppointment)
-    };
-    const __VLS_81 = {
-        onDeleteAppointment: (__VLS_ctx.deleteAppointment)
-    };
-    const __VLS_82 = {
         onOpenQr: (__VLS_ctx.openQrDialog)
     };
-    const __VLS_83 = {
+    var __VLS_74;
+}
+else if (__VLS_ctx.activeSection === 'Inicio') {
+    const __VLS_80 = {}.HomeSection;
+    /** @type {[typeof __VLS_components.HomeSection, ]} */ ;
+    // @ts-ignore
+    const __VLS_81 = __VLS_asFunctionalComponent(__VLS_80, new __VLS_80({
+        ...{ 'onCreateAppointment': {} },
+        ...{ 'onEditAppointment': {} },
+        ...{ 'onCancelAppointment': {} },
+        ...{ 'onDeleteAppointment': {} },
+        ...{ 'onOpenQr': {} },
+        ...{ 'onSendCompanyQrs': {} },
+        ...{ 'onOpenLog': {} },
+        ...{ 'onOpenAppointments': {} },
+        ...{ 'onOpenEquipment': {} },
+        appointments: (__VLS_ctx.appointments),
+        summaryItems: (__VLS_ctx.summaryItems),
+        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
+    }));
+    const __VLS_82 = __VLS_81({
+        ...{ 'onCreateAppointment': {} },
+        ...{ 'onEditAppointment': {} },
+        ...{ 'onCancelAppointment': {} },
+        ...{ 'onDeleteAppointment': {} },
+        ...{ 'onOpenQr': {} },
+        ...{ 'onSendCompanyQrs': {} },
+        ...{ 'onOpenLog': {} },
+        ...{ 'onOpenAppointments': {} },
+        ...{ 'onOpenEquipment': {} },
+        appointments: (__VLS_ctx.appointments),
+        summaryItems: (__VLS_ctx.summaryItems),
+        canManageAppointments: (__VLS_ctx.currentUser.isAdmin || __VLS_ctx.isHost),
+    }, ...__VLS_functionalComponentArgsRest(__VLS_81));
+    let __VLS_84;
+    let __VLS_85;
+    let __VLS_86;
+    const __VLS_87 = {
+        onCreateAppointment: (__VLS_ctx.openHomeAppointmentDialog)
+    };
+    const __VLS_88 = {
+        onEditAppointment: (__VLS_ctx.openAppointmentDialog)
+    };
+    const __VLS_89 = {
+        onCancelAppointment: (__VLS_ctx.cancelAppointment)
+    };
+    const __VLS_90 = {
+        onDeleteAppointment: (__VLS_ctx.deleteAppointment)
+    };
+    const __VLS_91 = {
+        onOpenQr: (__VLS_ctx.openQrDialog)
+    };
+    const __VLS_92 = {
         onSendCompanyQrs: (__VLS_ctx.openCompanyQrDispatch)
     };
-    const __VLS_84 = {
+    const __VLS_93 = {
         onOpenLog: (__VLS_ctx.openDailyLogRange)
     };
-    const __VLS_85 = {
+    const __VLS_94 = {
         onOpenAppointments: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2714,7 +2726,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
             __VLS_ctx.selectSection('Agenda de citas');
         }
     };
-    const __VLS_86 = {
+    const __VLS_95 = {
         onOpenEquipment: (...[$event]) => {
             if (!!(__VLS_ctx.activeSection === 'Agenda de citas'))
                 return;
@@ -2737,7 +2749,7 @@ else if (__VLS_ctx.activeSection === 'Inicio') {
             __VLS_ctx.selectSection('Equipo y herramientas');
         }
     };
-    var __VLS_74;
+    var __VLS_83;
 }
 else {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({

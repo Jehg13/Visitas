@@ -1,4 +1,5 @@
 import { computed, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 const props = defineProps();
@@ -165,6 +166,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
     src: "/images/cymez-recep-logo-v2.webp",
     alt: "CyMEZ Recep Visitantes",
     fetchpriority: "high",
+    decoding: "async",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.section, __VLS_intrinsicElements.section)({
     ...{ class: "login-panel" },
@@ -242,6 +244,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     type: "text",
     autocomplete: "username",
     placeholder: "Escribe tu usuario o correo",
+    maxlength: "255",
     required: true,
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
@@ -280,6 +283,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     type: (__VLS_ctx.showPassword ? 'text' : 'password'),
     autocomplete: "current-password",
     placeholder: "Escribe tu contraseña",
+    maxlength: "1024",
     required: true,
 });
 (__VLS_ctx.password);
@@ -352,10 +356,18 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.d
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.aside, __VLS_intrinsicElements.aside)({
-    ...{ class: "access-notice" },
-    'aria-label': "Acceso exclusivo",
-});
+const __VLS_0 = {}.RouterLink;
+/** @type {[typeof __VLS_components.RouterLink, typeof __VLS_components.RouterLink, ]} */ ;
+// @ts-ignore
+const __VLS_1 = __VLS_asFunctionalComponent(__VLS_0, new __VLS_0({
+    ...{ class: "access-notice access-notice-button" },
+    to: "/registro",
+}));
+const __VLS_2 = __VLS_1({
+    ...{ class: "access-notice access-notice-button" },
+    to: "/registro",
+}, ...__VLS_functionalComponentArgsRest(__VLS_1));
+__VLS_3.slots.default;
 __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
     ...{ class: "access-notice-icon" },
     viewBox: "0 0 32 36",
@@ -363,21 +375,26 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.s
     'aria-hidden': "true",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "M16 1 2 6v10c0 9.1 5.7 15.4 14 19 8.3-3.6 14-9.9 14-19V6L16 1Z",
-    fill: "currentColor",
+    d: "M16 3 4 8v9c0 7.7 4.7 13.1 12 16 7.3-2.9 12-8.3 12-16V8L16 3Z",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-    d: "m10 17 4 4 8-8",
-    stroke: "#151922",
-    'stroke-linecap': "round",
-    'stroke-linejoin': "round",
-    'stroke-width': "2.5",
+    d: "M16 11v12m-6-6h12",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "access-notice-copy" },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.h2, __VLS_intrinsicElements.h2)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+    ...{ class: "access-notice-arrow" },
+    viewBox: "0 0 20 20",
+    fill: "none",
+    'aria-hidden': "true",
+});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+    d: "M4 10h12m-5-5 5 5-5 5",
+});
+var __VLS_3;
 if (__VLS_ctx.recoveryOpen) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ onClick: (__VLS_ctx.closeRecovery) },
@@ -673,8 +690,10 @@ if (__VLS_ctx.recoveryOpen) {
 /** @type {__VLS_StyleScopedClasses['corporate-access']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-divider']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-notice']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-notice-button']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-notice-icon']} */ ;
 /** @type {__VLS_StyleScopedClasses['access-notice-copy']} */ ;
+/** @type {__VLS_StyleScopedClasses['access-notice-arrow']} */ ;
 /** @type {__VLS_StyleScopedClasses['password-recovery-backdrop']} */ ;
 /** @type {__VLS_StyleScopedClasses['password-recovery-dialog']} */ ;
 /** @type {__VLS_StyleScopedClasses['password-recovery-close']} */ ;
@@ -703,6 +722,7 @@ var __VLS_dollars;
 const __VLS_self = (await import('vue')).defineComponent({
     setup() {
         return {
+            RouterLink: RouterLink,
             identifier: identifier,
             password: password,
             showPassword: showPassword,

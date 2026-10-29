@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { notifyUser } from "../notifications";
 const identificationTypes = [
     "INE",
@@ -7,10 +7,10 @@ const identificationTypes = [
     "Licencia de conducir",
     "Otra identificación",
 ];
-const existingCompanies = ref([]);
 const step = ref(0);
 const sending = ref(false);
 const errorMessage = ref("");
+const showRestoreNotice = ref(false);
 const fieldErrors = ref({});
 const visitorName = ref("");
 const companyName = ref("");
@@ -18,12 +18,14 @@ const visitReason = ref("");
 const carriesItems = ref(null);
 const items = ref([]);
 const itemDraft = ref(newItem());
+const editingItemIndex = ref(null);
 const identificationTypesSelected = ref([]);
 const declaresIdRetained = ref(null);
 const informationConfirmed = ref(false);
 const completed = ref(null);
 const completedStatus = ref("reference");
 const completedStatusError = ref("");
+const pendingRegistration = ref(null);
 const needsReceptionIdCheck = computed(() => declaresIdRetained.value === true);
 const waitingMessage = computed(() => {
     if (completedStatus.value === "awaiting-id-check") {
@@ -38,8 +40,11 @@ const waitingMessage = computed(() => {
     return "";
 });
 const requestIdempotencyKey = ref(crypto.randomUUID());
+const draftStorageKey = "visitas:visitor-kiosk:draft:v1";
+const pendingStorageKey = "visitas:visitor-kiosk:pending:v1";
 let resetTimer;
 let statusEventSource = null;
+let statusPollingTimer;
 let statusRequestInProgress = false;
 const progress = computed(() => Math.min(step.value, 4));
 const hasValidDraft = computed(() => itemDraft.value.description.trim().length > 0 &&
@@ -57,6 +62,171 @@ function newItem() {
         quantity: 1,
     };
 }
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isKioskItem(value) {
+    if (!isRecord(value))
+        return false;
+    return ((value.type === "Equipo" || value.type === "Herramienta") &&
+        typeof value.description === "string" &&
+        value.description.length <= 180 &&
+        typeof value.brand === "string" &&
+        value.brand.length <= 120 &&
+        typeof value.model === "string" &&
+        value.model.length <= 120 &&
+        typeof value.serialNumber === "string" &&
+        value.serialNumber.length <= 180 &&
+        typeof value.color === "string" &&
+        value.color.length <= 80 &&
+        Number.isSafeInteger(value.quantity) &&
+        Number(value.quantity) >= 1 &&
+        Number(value.quantity) <= 999);
+}
+function isIdempotencyKey(value) {
+    return typeof value === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+function isIdentificationType(value) {
+    return typeof value === "string" && identificationTypes.some((type) => type === value);
+}
+function isKioskSessionDraft(value) {
+    if (!isRecord(value))
+        return false;
+    return (value.version === 1 &&
+        Number.isInteger(value.step) &&
+        Number(value.step) >= 1 &&
+        Number(value.step) <= 4 &&
+        isIdempotencyKey(value.requestIdempotencyKey) &&
+        typeof value.visitorName === "string" &&
+        value.visitorName.length <= 180 &&
+        typeof value.companyName === "string" &&
+        value.companyName.length <= 180 &&
+        typeof value.visitReason === "string" &&
+        value.visitReason.length <= 500 &&
+        (typeof value.carriesItems === "boolean" || value.carriesItems === null) &&
+        Array.isArray(value.items) &&
+        value.items.length <= 50 &&
+        value.items.every(isKioskItem) &&
+        isKioskItem(value.itemDraft) &&
+        (value.editingItemIndex === null ||
+            (Number.isInteger(value.editingItemIndex) &&
+                Number(value.editingItemIndex) >= 0 &&
+                Number(value.editingItemIndex) < value.items.length)) &&
+        Array.isArray(value.identificationTypesSelected) &&
+        value.identificationTypesSelected.every(isIdentificationType) &&
+        (typeof value.declaresIdRetained === "boolean" || value.declaresIdRetained === null) &&
+        typeof value.informationConfirmed === "boolean");
+}
+function isPendingKioskRegistration(value) {
+    if (!isRecord(value) || !isRecord(value.completed))
+        return false;
+    return (value.version === 1 &&
+        typeof value.completed.folio === "string" &&
+        /^\d{8}$/.test(value.completed.folio) &&
+        typeof value.completed.visitorName === "string" &&
+        value.completed.visitorName.length <= 180 &&
+        isIdempotencyKey(value.requestIdempotencyKey) &&
+        (typeof value.carriesItems === "boolean" || value.carriesItems === null) &&
+        typeof value.declaresIdRetained === "boolean" &&
+        Number.isSafeInteger(value.expiresAt));
+}
+function persistDraft() {
+    if (step.value < 1 || step.value > 4 || completed.value) {
+        sessionStorage.removeItem(draftStorageKey);
+        return;
+    }
+    const draft = {
+        version: 1,
+        step: step.value,
+        requestIdempotencyKey: requestIdempotencyKey.value,
+        visitorName: visitorName.value,
+        companyName: companyName.value,
+        visitReason: visitReason.value,
+        carriesItems: carriesItems.value,
+        items: items.value,
+        itemDraft: itemDraft.value,
+        editingItemIndex: editingItemIndex.value,
+        identificationTypesSelected: identificationTypesSelected.value,
+        declaresIdRetained: declaresIdRetained.value,
+        informationConfirmed: informationConfirmed.value,
+    };
+    sessionStorage.setItem(draftStorageKey, JSON.stringify(draft));
+}
+function scheduleKioskReset(delay) {
+    if (resetTimer !== undefined)
+        window.clearTimeout(resetTimer);
+    if (pendingRegistration.value) {
+        pendingRegistration.value.expiresAt = Date.now() + delay;
+        try {
+            sessionStorage.setItem(pendingStorageKey, JSON.stringify(pendingRegistration.value));
+        }
+        catch (error) {
+            console.error("No se pudo actualizar la vigencia del folio en esta pestaña:", error);
+            completedStatusError.value = "No se pudo conservar este folio al recargar la página.";
+        }
+    }
+    resetTimer = window.setTimeout(resetKiosk, delay);
+}
+function resumePendingStatus() {
+    if (!completed.value)
+        return;
+    closeStatusEventSource();
+    statusEventSource = new EventSource(`/api/visitor-kiosk/events?key=${encodeURIComponent(requestIdempotencyKey.value)}`);
+    statusEventSource.onopen = () => void refreshCompletedStatus();
+    statusEventSource.onmessage = () => void refreshCompletedStatus();
+    statusEventSource.onerror = () => {
+        completedStatusError.value = "Actualización instantánea interrumpida; verificando automáticamente…";
+    };
+    statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 5000);
+    void refreshCompletedStatus();
+}
+function restoreKioskSession() {
+    try {
+        const savedPending = sessionStorage.getItem(pendingStorageKey);
+        if (savedPending) {
+            const parsed = JSON.parse(savedPending);
+            if (isPendingKioskRegistration(parsed) && parsed.expiresAt > Date.now()) {
+                pendingRegistration.value = parsed;
+                completed.value = parsed.completed;
+                carriesItems.value = parsed.carriesItems;
+                declaresIdRetained.value = parsed.declaresIdRetained;
+                requestIdempotencyKey.value = parsed.requestIdempotencyKey;
+                step.value = 5;
+                resetTimer = window.setTimeout(resetKiosk, Math.max(parsed.expiresAt - Date.now(), 0));
+                resumePendingStatus();
+                return;
+            }
+            sessionStorage.removeItem(pendingStorageKey);
+        }
+        const savedDraft = sessionStorage.getItem(draftStorageKey);
+        if (!savedDraft)
+            return;
+        const parsed = JSON.parse(savedDraft);
+        if (!isKioskSessionDraft(parsed)) {
+            sessionStorage.removeItem(draftStorageKey);
+            errorMessage.value = "El borrador guardado no es válido. Inicia un registro nuevo.";
+            return;
+        }
+        step.value = parsed.step;
+        requestIdempotencyKey.value = parsed.requestIdempotencyKey;
+        visitorName.value = parsed.visitorName;
+        companyName.value = parsed.companyName;
+        visitReason.value = parsed.visitReason;
+        carriesItems.value = parsed.carriesItems;
+        items.value = parsed.items;
+        itemDraft.value = parsed.itemDraft;
+        editingItemIndex.value = parsed.editingItemIndex;
+        identificationTypesSelected.value = parsed.identificationTypesSelected;
+        declaresIdRetained.value = parsed.declaresIdRetained;
+        informationConfirmed.value = parsed.informationConfirmed;
+        showRestoreNotice.value = true;
+    }
+    catch (error) {
+        console.error("No se pudo restaurar el avance del registro de visitante:", error);
+        errorMessage.value = "No se pudo recuperar el registro guardado en esta pestaña.";
+    }
+}
 async function parseResponse(response) {
     if (!response.headers.get("content-type")?.includes("application/json")) {
         throw new Error("No se pudo conectar con el servicio de registro.");
@@ -68,23 +238,31 @@ async function parseResponse(response) {
         throw new Error("El servidor devolvió una respuesta inválida.");
     }
 }
-onMounted(async () => {
+watch([
+    step,
+    visitorName,
+    companyName,
+    visitReason,
+    carriesItems,
+    items,
+    itemDraft,
+    editingItemIndex,
+    identificationTypesSelected,
+    declaresIdRetained,
+    informationConfirmed,
+    requestIdempotencyKey,
+    completed,
+], () => {
     try {
-        const response = await fetch("/api/visitor-kiosk/options");
-        const result = await parseResponse(response);
-        if (!response.ok)
-            throw new Error(result.error ?? "No se pudieron cargar las empresas.");
-        if (!Array.isArray(result.companies) || !result.companies.every((company) => typeof company === "string")) {
-            throw new Error("La lista de empresas recibida no es válida.");
-        }
-        existingCompanies.value = result.companies;
+        persistDraft();
     }
     catch (error) {
-        console.error("No se pudieron cargar las opciones públicas del kiosco:", error);
-        errorMessage.value = error instanceof Error
-            ? error.message
-            : "No se pudieron cargar las empresas. Puedes continuar como público general.";
+        console.error("No se pudo guardar el borrador del registro de visitante:", error);
+        errorMessage.value = "No se pudo guardar el avance en esta pestaña.";
     }
+}, { deep: true });
+onMounted(() => {
+    restoreKioskSession();
 });
 onBeforeUnmount(() => {
     if (resetTimer !== undefined)
@@ -94,6 +272,10 @@ onBeforeUnmount(() => {
 function closeStatusEventSource() {
     statusEventSource?.close();
     statusEventSource = null;
+    if (statusPollingTimer !== undefined) {
+        window.clearInterval(statusPollingTimer);
+        statusPollingTimer = undefined;
+    }
 }
 function clearErrors() {
     fieldErrors.value = {};
@@ -121,6 +303,10 @@ function continueStep() {
     if (step.value === 1 && !validateVisitor())
         return;
     if (step.value === 2) {
+        if (editingItemIndex.value !== null) {
+            fieldErrors.value = { item: "Guarda o cancela los cambios del artículo antes de continuar." };
+            return;
+        }
         if (carriesItems.value === null) {
             fieldErrors.value = { carriesItems: "Selecciona una de las opciones para continuar." };
             return;
@@ -165,19 +351,42 @@ function addItem() {
         };
         return;
     }
-    items.value.push({
+    const item = {
         ...itemDraft.value,
         description: itemDraft.value.description.trim(),
         brand: itemDraft.value.brand.trim(),
         model: itemDraft.value.model.trim(),
         serialNumber: itemDraft.value.serialNumber.trim(),
         color: itemDraft.value.color.trim(),
-    });
+    };
+    if (editingItemIndex.value === null)
+        items.value.push(item);
+    else
+        items.value.splice(editingItemIndex.value, 1, item);
     itemDraft.value = newItem();
+    editingItemIndex.value = null;
+    fieldErrors.value = {};
+}
+function editItem(index) {
+    const item = items.value[index];
+    if (!item)
+        return;
+    itemDraft.value = { ...item };
+    editingItemIndex.value = index;
+    fieldErrors.value = {};
+    document.querySelector(".visitor-kiosk-item-editor")?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function cancelItemEdit() {
+    itemDraft.value = newItem();
+    editingItemIndex.value = null;
     fieldErrors.value = {};
 }
 function removeItem(index) {
     items.value.splice(index, 1);
+    if (editingItemIndex.value === index)
+        cancelItemEdit();
+    else if (editingItemIndex.value !== null && index < editingItemIndex.value)
+        editingItemIndex.value -= 1;
 }
 function resetKiosk() {
     if (sending.value)
@@ -187,15 +396,26 @@ function resetKiosk() {
         resetTimer = undefined;
     }
     closeStatusEventSource();
+    try {
+        sessionStorage.removeItem(draftStorageKey);
+        sessionStorage.removeItem(pendingStorageKey);
+    }
+    catch (error) {
+        console.error("No se pudo limpiar el estado guardado del registro:", error);
+        notifyUser("No se pudo limpiar el avance guardado en esta pestaña.");
+    }
+    pendingRegistration.value = null;
     visitorName.value = "";
     companyName.value = "";
     visitReason.value = "";
     carriesItems.value = null;
     items.value = [];
     itemDraft.value = newItem();
+    editingItemIndex.value = null;
     identificationTypesSelected.value = [];
     declaresIdRetained.value = null;
     informationConfirmed.value = false;
+    showRestoreNotice.value = false;
     completed.value = null;
     completedStatus.value = "reference";
     completedStatusError.value = "";
@@ -234,14 +454,15 @@ async function refreshCompletedStatus() {
         else if (result.receptionIdClaimStatus === "Confirmada" || result.receptionIdClaimStatus === "No confirmada") {
             completedStatus.value = "awaiting-entry-authorization";
         }
+        else if (result.receptionIdClaimStatus === "No aplica") {
+            completedStatus.value = "awaiting-entry-authorization";
+        }
         else {
             completedStatus.value = "awaiting-id-check";
         }
         if (completedStatus.value === "entered" || completedStatus.value === "rejected") {
             closeStatusEventSource();
-            if (resetTimer !== undefined)
-                window.clearTimeout(resetTimer);
-            resetTimer = window.setTimeout(resetKiosk, 30000);
+            scheduleKioskReset(30000);
         }
     }
     catch (error) {
@@ -274,6 +495,12 @@ async function submitRegistration() {
     sending.value = true;
     clearErrors();
     try {
+        try {
+            persistDraft();
+        }
+        catch (storageError) {
+            console.error("No se pudo conservar el borrador antes del envío:", storageError);
+        }
         const response = await fetch("/api/visitor-kiosk/registrations", {
             method: "POST",
             headers: {
@@ -296,18 +523,27 @@ async function submitRegistration() {
         if (typeof result.folio !== "string" || typeof result.visitorName !== "string") {
             throw new Error("El servidor no confirmó el registro.");
         }
+        pendingRegistration.value = {
+            version: 1,
+            completed: result,
+            requestIdempotencyKey: requestIdempotencyKey.value,
+            carriesItems: carriesItems.value,
+            declaresIdRetained: declaresIdRetained.value,
+            expiresAt: Date.now() + 120000,
+        };
+        try {
+            sessionStorage.setItem(pendingStorageKey, JSON.stringify(pendingRegistration.value));
+            sessionStorage.removeItem(draftStorageKey);
+        }
+        catch (storageError) {
+            console.error("No se pudo conservar el folio del registro en esta pestaña:", storageError);
+            notifyUser("El registro se guardó, pero no se pudo conservar el folio en esta pestaña.");
+        }
         completed.value = result;
         completedStatus.value = declaresIdRetained.value ? "awaiting-id-check" : "reference";
         step.value = 5;
-        if (declaresIdRetained.value) {
-            statusEventSource = new EventSource(`/api/visitor-kiosk/events?key=${encodeURIComponent(requestIdempotencyKey.value)}`);
-            statusEventSource.onopen = () => void refreshCompletedStatus();
-            statusEventSource.onmessage = () => void refreshCompletedStatus();
-            statusEventSource.onerror = () => {
-                completedStatusError.value = "Conexión en tiempo real interrumpida; intentando reconectar…";
-            };
-        }
-        resetTimer = window.setTimeout(resetKiosk, 120000);
+        resumePendingStatus();
+        scheduleKioskReset(120000);
     }
     catch (error) {
         console.error("No se pudo enviar el autorregistro:", error);
@@ -333,11 +569,13 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.header, __VLS_intrinsicElement
 __VLS_asFunctionalElement(__VLS_intrinsicElements.a, __VLS_intrinsicElements.a)({
     ...{ class: "visitor-kiosk-brand" },
     href: "/registro",
-    'aria-label': "CyMEZ Recep, registro de visitantes",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
-    src: "/images/cymez-visitor-logo.png",
+    src: "/images/cymez-visitor-logo.webp",
     alt: "CyMEZ",
+    width: "160",
+    height: "179",
+    decoding: "async",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.strong, __VLS_intrinsicElements.strong)({});
@@ -360,8 +598,11 @@ if (__VLS_ctx.step === 0) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
         ...{ class: "visitor-kiosk-neon-frame" },
-        src: "/images/visitor-kiosk-neon-frame.png",
+        src: "/images/visitor-kiosk-neon-frame.webp",
         alt: "",
+        width: "1527",
+        height: "738",
+        decoding: "async",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "visitor-kiosk-welcome-main" },
@@ -377,8 +618,11 @@ if (__VLS_ctx.step === 0) {
         'aria-hidden': "true",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
-        src: "/images/visitor-kiosk-access-icon.png",
+        src: "/images/visitor-kiosk-access-icon.webp",
         alt: "",
+        width: "128",
+        height: "110",
+        decoding: "async",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.h1, __VLS_intrinsicElements.h1)({});
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
@@ -419,8 +663,14 @@ if (__VLS_ctx.step === 0) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
         ...{ class: "visitor-kiosk-tablet" },
-        src: "/images/visitor-kiosk-tablet.png",
+        src: "/images/visitor-kiosk-tablet.webp",
+        srcset: "/images/visitor-kiosk-tablet-600.webp 600w, /images/visitor-kiosk-tablet-850.webp 850w, /images/visitor-kiosk-tablet.webp 1102w",
+        sizes: "(max-width: 720px) 92vw, 500px",
         alt: "",
+        width: "1102",
+        height: "768",
+        fetchpriority: "high",
+        decoding: "async",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "visitor-kiosk-features" },
@@ -513,10 +763,19 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         (__VLS_ctx.step === 2 ? "Equipo y herramientas" : __VLS_ctx.step === 3 ? "Identificación" : "Revisa tu registro");
     }
     if (__VLS_ctx.step === 2) {
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "visitor-kiosk-equipment-rule" },
+            role: "note",
+        });
     }
     else if (__VLS_ctx.step === 3) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({});
+    }
+    if (__VLS_ctx.showRestoreNotice) {
+        __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
+            ...{ class: "visitor-kiosk-save-notice" },
+            role: "status",
+        });
     }
     if (__VLS_ctx.step === 1) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.form, __VLS_intrinsicElements.form)({
@@ -605,21 +864,11 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
             value: (__VLS_ctx.companyName),
             type: "text",
-            list: "visitor-kiosk-company-list",
             maxlength: "180",
             placeholder: "Escribe el nombre de tu empresa",
             required: true,
             'aria-invalid': (!!__VLS_ctx.fieldErrors.companyName),
         });
-        __VLS_asFunctionalElement(__VLS_intrinsicElements.datalist, __VLS_intrinsicElements.datalist)({
-            id: "visitor-kiosk-company-list",
-        });
-        for (const [company] of __VLS_getVForSourceType((__VLS_ctx.existingCompanies))) {
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.option)({
-                key: (company),
-                value: (company),
-            });
-        }
         __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
             ...{ class: "visitor-kiosk-field-hint" },
         });
@@ -797,6 +1046,8 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
                         return;
                     __VLS_ctx.carriesItems = false;
                     __VLS_ctx.items = [];
+                    __VLS_ctx.itemDraft = __VLS_ctx.newItem();
+                    __VLS_ctx.editingItemIndex = null;
                     __VLS_ctx.fieldErrors = {};
                 } },
             type: "button",
@@ -890,18 +1141,31 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
                 type: "text",
                 maxlength: "80",
             });
+            __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
+                ...{ class: "visitor-kiosk-item-form-actions" },
+            });
             __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
                 ...{ onClick: (__VLS_ctx.addItem) },
                 ...{ class: "visitor-kiosk-add-item" },
                 type: "button",
             });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
-                viewBox: "0 0 24 24",
-                'aria-hidden': "true",
-            });
-            __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
-                d: "M12 5v14m-7-7h14",
-            });
+            if (__VLS_ctx.editingItemIndex === null) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.svg, __VLS_intrinsicElements.svg)({
+                    viewBox: "0 0 24 24",
+                    'aria-hidden': "true",
+                });
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
+                    d: "M12 5v14m-7-7h14",
+                });
+            }
+            (__VLS_ctx.editingItemIndex === null ? "Agregar artículo" : "Guardar cambios");
+            if (__VLS_ctx.editingItemIndex !== null) {
+                __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                    ...{ onClick: (__VLS_ctx.cancelItemEdit) },
+                    ...{ class: "visitor-kiosk-cancel-item-edit" },
+                    type: "button",
+                });
+            }
             if (__VLS_ctx.fieldErrors.item) {
                 __VLS_asFunctionalElement(__VLS_intrinsicElements.small, __VLS_intrinsicElements.small)({
                     ...{ class: "visitor-kiosk-field-error" },
@@ -928,6 +1192,29 @@ else if (__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4) {
                     if (item.model) {
                         (item.model);
                     }
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+                        ...{ class: "visitor-kiosk-item-actions" },
+                    });
+                    __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
+                        ...{ onClick: (...[$event]) => {
+                                if (!!(__VLS_ctx.step === 0))
+                                    return;
+                                if (!(__VLS_ctx.step >= 1 && __VLS_ctx.step <= 4))
+                                    return;
+                                if (!!(__VLS_ctx.step === 1))
+                                    return;
+                                if (!(__VLS_ctx.step === 2))
+                                    return;
+                                if (!(__VLS_ctx.carriesItems))
+                                    return;
+                                if (!(__VLS_ctx.items.length))
+                                    return;
+                                __VLS_ctx.editItem(index);
+                            } },
+                        ...{ class: "is-edit" },
+                        type: "button",
+                        'aria-label': (`Editar ${item.description}`),
+                    });
                     __VLS_asFunctionalElement(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({
                         ...{ onClick: (...[$event]) => {
                                 if (!!(__VLS_ctx.step === 0))
@@ -1256,8 +1543,11 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.img)({
         ...{ class: "visitor-kiosk-neon-frame" },
-        src: "/images/visitor-kiosk-neon-frame.png",
+        src: "/images/visitor-kiosk-neon-frame.webp",
         alt: "",
+        width: "1527",
+        height: "738",
+        decoding: "async",
     });
     __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
         ...{ class: "visitor-kiosk-success-content" },
@@ -1392,10 +1682,10 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({});
         (__VLS_ctx.waitingMessage);
     }
-    if (__VLS_ctx.needsReceptionIdCheck && __VLS_ctx.completedStatusError) {
+    if (__VLS_ctx.completedStatusError) {
         __VLS_asFunctionalElement(__VLS_intrinsicElements.p, __VLS_intrinsicElements.p)({
             ...{ class: "visitor-kiosk-status-error" },
-            role: "alert",
+            role: "status",
         });
         (__VLS_ctx.completedStatusError);
     }
@@ -1442,6 +1732,8 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-eyebrow']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-step-title']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-step-icon']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-equipment-rule']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-save-notice']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-form']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-label-title']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-control']} */ ;
@@ -1475,9 +1767,13 @@ else if (__VLS_ctx.step === 5 && __VLS_ctx.completed) {
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-editor']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-description']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-label-title']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-form-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-add-item']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-cancel-item-edit']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-field-error']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-list']} */ ;
+/** @type {__VLS_StyleScopedClasses['visitor-kiosk-item-actions']} */ ;
+/** @type {__VLS_StyleScopedClasses['is-edit']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-empty-choice']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['visitor-kiosk-secondary']} */ ;
@@ -1525,10 +1821,10 @@ const __VLS_self = (await import('vue')).defineComponent({
     setup() {
         return {
             identificationTypes: identificationTypes,
-            existingCompanies: existingCompanies,
             step: step,
             sending: sending,
             errorMessage: errorMessage,
+            showRestoreNotice: showRestoreNotice,
             fieldErrors: fieldErrors,
             visitorName: visitorName,
             companyName: companyName,
@@ -1536,20 +1832,23 @@ const __VLS_self = (await import('vue')).defineComponent({
             carriesItems: carriesItems,
             items: items,
             itemDraft: itemDraft,
+            editingItemIndex: editingItemIndex,
             identificationTypesSelected: identificationTypesSelected,
             declaresIdRetained: declaresIdRetained,
             informationConfirmed: informationConfirmed,
             completed: completed,
             completedStatus: completedStatus,
             completedStatusError: completedStatusError,
-            needsReceptionIdCheck: needsReceptionIdCheck,
             waitingMessage: waitingMessage,
             progress: progress,
+            newItem: newItem,
             clearErrors: clearErrors,
             continueStep: continueStep,
             toggleIdentificationType: toggleIdentificationType,
             previousStep: previousStep,
             addItem: addItem,
+            editItem: editItem,
+            cancelItemEdit: cancelItemEdit,
             removeItem: removeItem,
             resetKiosk: resetKiosk,
             submitRegistration: submitRegistration,

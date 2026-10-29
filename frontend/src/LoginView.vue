@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 import type { AccessAccount, AuthenticatedUser } from "./stores/types";
@@ -182,6 +183,7 @@ async function resetPassword() {
         src="/images/cymez-recep-logo-v2.webp"
         alt="CyMEZ Recep Visitantes"
         fetchpriority="high"
+        decoding="async"
       />
     </section>
 
@@ -220,6 +222,7 @@ async function resetPassword() {
                 type="text"
                 autocomplete="username"
                 placeholder="Escribe tu usuario o correo"
+                maxlength="255"
                 required
               />
             </div>
@@ -242,6 +245,7 @@ async function resetPassword() {
                 :type="showPassword ? 'text' : 'password'"
                 autocomplete="current-password"
                 placeholder="Escribe tu contraseña"
+                maxlength="1024"
                 required
               />
               <button
@@ -275,19 +279,22 @@ async function resetPassword() {
         <div class="corporate-access">
           <div class="access-divider" aria-hidden="true">
             <span></span>
-            <p>Acceso corporativo</p>
+            <p>Registro de visitantes</p>
             <span></span>
           </div>
-          <aside class="access-notice" aria-label="Acceso exclusivo">
+          <RouterLink class="access-notice access-notice-button" to="/registro">
             <svg class="access-notice-icon" viewBox="0 0 32 36" fill="none" aria-hidden="true">
-              <path d="M16 1 2 6v10c0 9.1 5.7 15.4 14 19 8.3-3.6 14-9.9 14-19V6L16 1Z" fill="currentColor" />
-              <path d="m10 17 4 4 8-8" stroke="#151922" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" />
+              <path d="M16 3 4 8v9c0 7.7 4.7 13.1 12 16 7.3-2.9 12-8.3 12-16V8L16 3Z" />
+              <path d="M16 11v12m-6-6h12" />
             </svg>
             <div class="access-notice-copy">
-              <h2>Acceso exclusivo</h2>
-              <p>Esta plataforma es de uso exclusivo para personal autorizado en la empresa.</p>
+              <h2>Visitas sin cita</h2>
+              <p>Registra tu visita sin iniciar sesión.</p>
             </div>
-          </aside>
+            <svg class="access-notice-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M4 10h12m-5-5 5 5-5 5" />
+            </svg>
+          </RouterLink>
         </div>
       </div>
     </section>

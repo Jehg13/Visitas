@@ -781,7 +781,7 @@
   box-shadow: 0 5px 14px rgb(190 20 48 / 11%);
 }
 
-.dashboard-app[data-theme="light"] :is(.panel-title h2, .workspace-heading .panel-title h2, .metric-copy strong, .equipment-history-table td strong, .equipment-check-item h4, .daily-log-heading-copy h2, .daily-log-quick-heading h3, .daily-log-panel-heading h3) {
+.dashboard-app[data-theme="light"] :is(.panel-title h2, .workspace-heading .panel-title h2, .metric-copy strong, .equipment-history-table td strong, .equipment-check-item h4, .daily-log-heading-copy h2, .daily-log-quick-heading h2, .daily-log-panel-heading h2) {
   color: var(--ds-text);
 }
 
@@ -798,6 +798,35 @@
 
 .dashboard-app[data-theme="light"] :is(input, textarea)::placeholder {
   color: #657b8f;
+}
+
+.dashboard-app select {
+  color-scheme: dark;
+}
+
+.dashboard-app select option {
+  padding: 9px 12px;
+  background-color: #061831;
+  color: #f0f6ff;
+}
+
+.dashboard-app select option:checked {
+  background-color: #145da0;
+  color: #fff;
+}
+
+.dashboard-app[data-theme="light"] select {
+  color-scheme: light;
+}
+
+.dashboard-app[data-theme="light"] select option {
+  background-color: #fff;
+  color: #12355f;
+}
+
+.dashboard-app[data-theme="light"] select option:checked {
+  background-color: #dcecff;
+  color: #12355f;
 }
 
 .dashboard-app[data-theme="light"] :is(.table-scroll, .workspace-table-scroll, .daily-log-table-scroll) {
@@ -1809,9 +1838,13 @@
   border: 1px solid color-mix(in srgb, var(--ds-blue) 30%, var(--ds-border));
   border-radius: 999px;
   background: color-mix(in srgb, var(--ds-blue) 10%, var(--ds-surface));
-  color: var(--ds-blue);
+  color: #329aff;
   font-size: 0.63rem;
   font-weight: 650;
+}
+
+.dashboard-app[data-theme="light"] .account-menu-identity small {
+  color: #0566df;
 }
 
 .dashboard-app .account-dropdown {

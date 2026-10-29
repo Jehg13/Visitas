@@ -4,9 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#061326" />
+    <meta
+      name="description"
+      content="Acceso al sistema interno de control de visitantes de CyME."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="CyMEZ Recep | Control de visitantes" />
+    <meta
+      property="og:description"
+      content="Plataforma interna de gestión de visitas y control de acceso de CyME."
+    />
     <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="preload" as="image" href="/images/cymez-visitor-logo.png" fetchpriority="high" />
-    <title>CyMEZ Recep | Control de visitantes</title>
+    <title>Control de visitantes | CyMEZ Recep</title>
+    <script>
+      if (window.location.pathname === "/registro") {
+        const kioskImage = document.createElement("link");
+        kioskImage.rel = "preload";
+        kioskImage.as = "image";
+        kioskImage.setAttribute(
+          "imagesrcset",
+          "/images/visitor-kiosk-tablet-600.webp 600w, /images/visitor-kiosk-tablet-850.webp 850w, /images/visitor-kiosk-tablet.webp 1102w",
+        );
+        kioskImage.setAttribute("imagesizes", "(max-width: 720px) 92vw, 500px");
+        kioskImage.fetchPriority = "high";
+        document.head.append(kioskImage);
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>

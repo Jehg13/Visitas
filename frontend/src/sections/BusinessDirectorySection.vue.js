@@ -139,7 +139,7 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.option, __VLS_intrinsicElement
     value: "No aplica",
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
-    ...{ class: "workspace-table-scroll" },
+    ...{ class: "workspace-table-scroll business-directory-table-scroll" },
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.table, __VLS_intrinsicElements.table)({
     ...{ class: "workspace-table business-partner-table" },
@@ -272,6 +272,7 @@ if (__VLS_ctx.filteredBusinessPartners.length > __VLS_ctx.partnerRowsPerPage) {
 /** @type {__VLS_StyleScopedClasses['directory-filter']} */ ;
 /** @type {__VLS_StyleScopedClasses['directory-filter']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table-scroll']} */ ;
+/** @type {__VLS_StyleScopedClasses['business-directory-table-scroll']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['business-partner-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['business-partner-description']} */ ;

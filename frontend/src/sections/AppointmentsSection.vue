@@ -217,8 +217,8 @@ const emit = defineEmits<{
             </button>
           </div>
         </header>
-        <div class="calendar-grid" role="grid" aria-labelledby="appointment-calendar-title">
-          <span v-for="weekday in ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']" :key="weekday" class="calendar-weekday" role="columnheader">
+        <div class="calendar-grid">
+          <span v-for="weekday in ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']" :key="weekday" class="calendar-weekday">
             {{ weekday }}
           </span>
           <button
@@ -231,11 +231,10 @@ const emit = defineEmits<{
               'calendar-day-today': day.date === today,
             }"
             type="button"
-            role="gridcell"
-            :aria-label="`${day.date}, ${day.appointments.length} citas`"
             :aria-pressed="selectedAppointmentDate === day.date"
             @click="emit('selectDay', day.date)"
           >
+            <span class="sr-only">{{ day.date }}, {{ day.appointments.length }} citas</span>
             <span class="calendar-day-number">{{ day.day }}</span>
             <span
               v-for="appointment in day.appointments.slice(0, 2)"

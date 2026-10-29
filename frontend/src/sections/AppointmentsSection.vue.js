@@ -307,14 +307,11 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.use)({
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({
     ...{ class: "calendar-grid" },
-    role: "grid",
-    'aria-labelledby': "appointment-calendar-title",
 });
 for (const [weekday] of __VLS_getVForSourceType((['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']))) {
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         key: (weekday),
         ...{ class: "calendar-weekday" },
-        role: "columnheader",
     });
     (weekday);
 }
@@ -331,10 +328,13 @@ for (const [day] of __VLS_getVForSourceType((__VLS_ctx.calendarDays))) {
                 'calendar-day-today': day.date === __VLS_ctx.today,
             }) },
         type: "button",
-        role: "gridcell",
-        'aria-label': (`${day.date}, ${day.appointments.length} citas`),
         'aria-pressed': (__VLS_ctx.selectedAppointmentDate === day.date),
     });
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
+        ...{ class: "sr-only" },
+    });
+    (day.date);
+    (day.appointments.length);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({
         ...{ class: "calendar-day-number" },
     });
@@ -414,6 +414,7 @@ for (const [day] of __VLS_getVForSourceType((__VLS_ctx.calendarDays))) {
 /** @type {__VLS_StyleScopedClasses['calendar-day-outside']} */ ;
 /** @type {__VLS_StyleScopedClasses['calendar-day-selected']} */ ;
 /** @type {__VLS_StyleScopedClasses['calendar-day-today']} */ ;
+/** @type {__VLS_StyleScopedClasses['sr-only']} */ ;
 /** @type {__VLS_StyleScopedClasses['calendar-day-number']} */ ;
 /** @type {__VLS_StyleScopedClasses['calendar-appointment']} */ ;
 /** @type {__VLS_StyleScopedClasses['calendar-more']} */ ;

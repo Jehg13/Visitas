@@ -134,6 +134,11 @@ let scannerControls: { stop: () => void } | null = null;
 const selectedQuickAppointmentId = ref<number | null>(null);
 const selectedQuickExternalStaffId = ref<number | null>(null);
 const selectedEntryId = ref<number | null>(null);
+const selectedManualVisitorRecordId = ref<number | null>(null);
+const detailDrawerOpen = ref(false);
+const detailDrawerCloseButton = ref<HTMLButtonElement | null>(null);
+const detailDrawerElement = ref<HTMLElement | null>(null);
+let detailDrawerTrigger: HTMLElement | null = null;
 const quickObservation = ref("");
 const quickStatusOverrides = ref<Record<number, Appointment["status"]>>({});
 const appointmentEmployees = ref<AppointmentEmployee[]>([]);
@@ -544,6 +549,7 @@ async function submitEntry() {
     dialogOpen.value = false;
     selectedQuickAppointmentId.value = null;
     selectedEntryId.value = null;
+    selectedManualVisitorRecordId.value = null;
     quickSearch.value = "";
     quickObservation.value = "";
     const successMessage = result.duplicate
@@ -560,7 +566,7 @@ async function submitEntry() {
       entry.date === payload.date &&
       entry.person.trim().toLocaleLowerCase("es") === savedPersonName,
     );
-    if (savedEntry) selectedEntryId.value = savedEntry.id;
+    if (savedEntry) selectEntry(savedEntry);
     emit("movementSaved");
     logSubjectId.value = "";
     manualPerson.value = "";
@@ -579,6 +585,8 @@ function selectQuickAppointment(appointment: Appointment) {
   selectedQuickAppointmentId.value = appointment.id;
   selectedQuickExternalStaffId.value = null;
   selectedEntryId.value = null;
+  selectedManualVisitorRecordId.value = null;
+  openDetailDrawer();
   clearAppointmentEmployees();
   quickActionError.value = "";
   quickActionNotice.value = "";
@@ -598,13 +606,14 @@ function clearAppointmentEmployees() {
 async function openReferenceCodeEntry() {
   referenceCodeOpen.value = true;
   referenceCodeInputValue.value = "";
+  selectedManualVisitorRecordId.value = null;
   quickActionError.value = "";
   quickActionNotice.value = "";
   await nextTick();
   referenceCodeInput.value?.focus();
 }
 
-function submitReferenceCode() {
+async function submitReferenceCode() {
   const referenceCode = referenceCodeInputValue.value.trim();
   if (!/^\d{8}$/.test(referenceCode)) {
     notifyUser("El código de referencia debe contener 8 dígitos.");
@@ -613,13 +622,46 @@ function submitReferenceCode() {
   const appointment = todayAppointments.value.find(
     (candidate) => candidate.referenceCode === referenceCode,
   );
-  if (!appointment) {
-    notifyUser("No encontramos una cita de hoy con ese código de referencia.");
+  if (appointment) {
+    selectQuickAppointment(appointment);
+    referenceCodeOpen.value = false;
+    referenceCodeInputValue.value = "";
     return;
   }
-  selectQuickAppointment(appointment);
-  referenceCodeOpen.value = false;
-  referenceCodeInputValue.value = "";
+
+  try {
+    const response = await fetch("/api/visitor-kiosk/registrations");
+    const result = await response.json() as {
+      registrations?: Array<{ folio: string; visitorRecordId: number }>;
+      error?: string;
+    };
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudieron consultar los registros manuales.");
+    }
+    if (!Array.isArray(result.registrations)) {
+      throw new Error("El servidor devolvió una lista de registros manuales inválida.");
+    }
+    const registration = result.registrations.find((candidate) =>
+      candidate.folio === referenceCode &&
+      Number.isSafeInteger(candidate.visitorRecordId) &&
+      candidate.visitorRecordId > 0,
+    );
+    if (!registration) {
+      notifyUser("No encontramos una cita de hoy ni un registro manual con ese código.");
+      return;
+    }
+    selectedQuickAppointmentId.value = null;
+    selectedEntryId.value = null;
+    selectedManualVisitorRecordId.value = registration.visitorRecordId;
+    openDetailDrawer();
+    quickActionError.value = "";
+    quickActionNotice.value = "";
+    referenceCodeOpen.value = false;
+    referenceCodeInputValue.value = "";
+  } catch (error) {
+    console.error("No se pudo buscar el folio del registro manual:", error);
+    notifyUser(error instanceof Error ? error.message : "No se pudo buscar el registro manual.");
+  }
 }
 
 async function openQrScanner() {
@@ -748,6 +790,8 @@ async function saveQuickMovement(
 function selectEntry(entry: LogEntry) {
   selectedEntryId.value = entry.id;
   selectedQuickAppointmentId.value = null;
+  selectedManualVisitorRecordId.value = null;
+  openDetailDrawer();
   clearAppointmentEmployees();
   quickActionError.value = "";
   quickActionNotice.value = "";
@@ -928,6 +972,7 @@ async function handleQuickSearchEnter() {
   quickActionNotice.value = "";
   selectedQuickAppointmentId.value = null;
   selectedEntryId.value = null;
+  selectedManualVisitorRecordId.value = null;
   refreshLocalDate();
   const value = quickSearch.value.trim();
   if (!value) return;
@@ -1083,14 +1128,59 @@ onMounted(() => {
   void loadEntries();
   quickSearchInput.value?.focus();
   window.addEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
+  window.addEventListener("keydown", handleDetailDrawerKeydown);
 });
 
 onBeforeUnmount(() => {
   requestVersion += 1;
   if (searchTimer) clearTimeout(searchTimer);
   window.removeEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
+  window.removeEventListener("keydown", handleDetailDrawerKeydown);
   closeQrScanner();
 });
+
+watch(detailDrawerOpen, async (isOpen) => {
+  if (isOpen) {
+    await nextTick();
+    detailDrawerCloseButton.value?.focus();
+    return;
+  }
+  await nextTick();
+  if (detailDrawerTrigger?.isConnected) detailDrawerTrigger.focus();
+  detailDrawerTrigger = null;
+});
+
+function openDetailDrawer() {
+  if (!detailDrawerOpen.value && document.activeElement instanceof HTMLElement) {
+    detailDrawerTrigger = document.activeElement;
+  }
+  detailDrawerOpen.value = true;
+}
+
+function closeDetailDrawer() {
+  detailDrawerOpen.value = false;
+}
+
+function handleDetailDrawerKeydown(event: KeyboardEvent) {
+  if (!detailDrawerOpen.value) return;
+  if (event.key === "Escape") {
+    closeDetailDrawer();
+    return;
+  }
+  if (event.key !== "Tab" || !detailDrawerElement.value) return;
+  const focusableElements = detailDrawerElement.value.querySelectorAll<HTMLElement>(
+    'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+  );
+  const first = focusableElements.item(0);
+  const last = focusableElements.item(focusableElements.length - 1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last?.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first?.focus();
+  }
+}
 </script>
 
 <template>
@@ -1175,7 +1265,7 @@ onBeforeUnmount(() => {
           <div class="daily-log-quick-heading">
             <div>
               <span class="daily-log-panel-kicker">ACCESO RÁPIDO</span>
-              <h3 id="daily-log-quick-title">Registro rápido</h3>
+              <h2 id="daily-log-quick-title">Registro rápido</h2>
             </div>
             <div class="daily-log-quick-heading-actions">
               <button class="daily-log-secondary-button" type="button" @click="openReferenceCodeEntry">
@@ -1200,7 +1290,7 @@ onBeforeUnmount(() => {
             class="daily-log-reference-code-form"
             @submit.prevent="submitReferenceCode"
           >
-            <label for="daily-log-reference-code">Código de referencia de la cita</label>
+            <label for="daily-log-reference-code">Código de referencia o folio</label>
             <div>
               <input
                 id="daily-log-reference-code"
@@ -1217,7 +1307,7 @@ onBeforeUnmount(() => {
               />
               <button class="daily-log-secondary-button" type="submit">Buscar código</button>
             </div>
-            <small id="daily-log-reference-code-help">Introduce los 8 dígitos que aparecen en el pase de visita.</small>
+            <small id="daily-log-reference-code-help">Introduce los 8 dígitos del pase de visita o del registro manual.</small>
           </form>
           <div v-if="scannerOpen" class="daily-log-qr-scanner">
             <video ref="scannerVideo" autoplay muted playsinline aria-label="Vista de la cámara para escanear el QR"></video>
@@ -1234,7 +1324,7 @@ onBeforeUnmount(() => {
               placeholder="Buscar cita por nombre…"
               aria-label="Buscar cita por nombre"
               :disabled="appointmentsLoading"
-              @input="selectedQuickAppointmentId = null; selectedEntryId = null; quickActionError = ''; quickActionNotice = ''"
+              @input="selectedQuickAppointmentId = null; selectedEntryId = null; selectedManualVisitorRecordId = null; quickActionError = ''; quickActionNotice = ''"
               @keydown.enter.prevent="handleQuickSearchEnter"
             />
             <span>Enter</span>
@@ -1278,7 +1368,7 @@ onBeforeUnmount(() => {
           <div class="daily-log-panel-heading">
             <div>
               <span class="daily-log-panel-kicker">REGISTRO OPERATIVO</span>
-              <h3 id="daily-log-activity-title">Movimientos del periodo</h3>
+              <h2 id="daily-log-activity-title">Movimientos del periodo</h2>
             </div>
             <span class="daily-log-result-count">{{ total }} {{ total === 1 ? "registro" : "registros" }}</span>
           </div>
@@ -1318,7 +1408,7 @@ onBeforeUnmount(() => {
             <span class="daily-log-empty-icon">
               <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5 8 11v12c0 9 6.8 15.7 16 20 9.2-4.3 16-11 16-20V11L24 5Z" /><path d="M17 24h14m-7-7v14" /></svg>
             </span>
-            <h4>{{ total === 0 && !search && !eventFilter && !categoryFilter && !hostFilter ? "Sin movimientos registrados" : "No encontramos resultados" }}</h4>
+            <h3>{{ total === 0 && !search && !eventFilter && !categoryFilter && !hostFilter ? "Sin movimientos registrados" : "No encontramos resultados" }}</h3>
             <p>{{ total === 0 && !search && !eventFilter && !categoryFilter && !hostFilter ? "Todavía no hay actividad registrada para este periodo." : "Prueba con otra búsqueda o limpia los filtros para consultar más movimientos." }}</p>
           </div>
           <div v-else class="daily-log-table-scroll">
@@ -1411,9 +1501,66 @@ onBeforeUnmount(() => {
             </div>
           </footer>
         </section>
+        <section class="daily-log-recent-panel" aria-labelledby="daily-log-recent-title">
+          <div class="daily-log-panel-heading">
+            <div>
+              <span class="daily-log-panel-kicker">EN TIEMPO REAL</span>
+              <h2 id="daily-log-recent-title">Actividad reciente</h2>
+            </div>
+            <button class="daily-log-recent-link" type="button" @click="showRecentHistory">Historial</button>
+          </div>
+          <button
+            v-for="entry in recentEntries"
+            :key="`recent-${entry.id}`"
+            class="daily-log-recent-entry"
+            :class="[`is-${entry.event.toLocaleLowerCase('es')}`, { 'is-selected': selectedEntryId === entry.id }]"
+            type="button"
+            @click="selectEntry(entry)"
+          >
+            <span class="daily-log-recent-marker" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path :d="eventIcon(entry.event)" /></svg>
+            </span>
+            <span class="daily-log-recent-copy">
+              <span class="daily-log-recent-topline">
+                <strong>{{ entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event }}</strong>
+                <span class="daily-log-recent-time">{{ entry.time }}</span>
+              </span>
+              <span>{{ entry.person }}<template v-if="entry.company"> · {{ entry.company }}</template></span>
+              <small :class="{ 'is-manual': entry.details.startsWith('Registro manual · Folio ') }">
+                <template v-if="entry.details.startsWith('Registro manual · Folio ')">
+                  <span class="daily-log-recent-manual-tag">Registro manual</span>
+                  {{ entry.details.slice("Registro manual · ".length) }}
+                </template>
+                <template v-else>{{ entry.details || eventVerb(entry.event) }}</template>
+              </small>
+            </span>
+          </button>
+          <div v-if="recentEntries.length === 0" class="daily-log-recent-empty" role="status">
+            <span class="daily-log-recent-empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 8v4l2.5 1.5" /><circle cx="12" cy="12" r="9" /></svg>
+            </span>
+            <strong>Aún no hay movimientos</strong>
+            <p>Los movimientos recientes aparecerán aquí cuando registres una llegada, entrada o salida.</p>
+          </div>
+        </section>
       </div>
 
-      <aside class="daily-log-side-column" aria-label="Detalle y actividad reciente">
+      <button
+        v-if="detailDrawerOpen"
+        class="daily-log-drawer-backdrop"
+        type="button"
+        aria-label="Cerrar detalle de visita"
+        @click="closeDetailDrawer"
+      ></button>
+      <aside
+        v-if="detailDrawerOpen"
+        ref="detailDrawerElement"
+        class="daily-log-side-column daily-log-detail-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="daily-log-selection-title"
+        aria-label="Detalle de la visita seleccionada"
+      >
         <section class="daily-log-selection-card" aria-labelledby="daily-log-selection-title">
           <div class="daily-log-selection-heading">
             <span class="daily-log-selection-icon">
@@ -1421,8 +1568,17 @@ onBeforeUnmount(() => {
             </span>
             <div>
               <span class="daily-log-panel-kicker">{{ selectedAppointment ? "REGISTRO CON CITA" : "VISITA SELECCIONADA" }}</span>
-              <h3 id="daily-log-selection-title">{{ selectedPersonName || "Selecciona un registro" }}</h3>
+              <h2 id="daily-log-selection-title">{{ selectedPersonName || "Selecciona un registro" }}</h2>
             </div>
+            <button
+              ref="detailDrawerCloseButton"
+              class="daily-log-drawer-close"
+              type="button"
+              aria-label="Cerrar detalle"
+              @click="closeDetailDrawer"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+            </button>
           </div>
           <template v-if="selectedPerson">
             <div class="daily-log-selection-meta">
@@ -1547,52 +1703,11 @@ onBeforeUnmount(() => {
         </section>
 
         <VisitorKioskReceptionSection
-          :selected-visitor-record-id="selectedQuickAppointment ? null : selectedEntry?.visitorRecordId ?? null"
+          :selected-visitor-record-id="selectedQuickAppointment
+            ? null
+            : selectedManualVisitorRecordId ?? selectedEntry?.visitorRecordId ?? null"
           @movement-saved="loadEntries"
         />
-
-        <section class="daily-log-recent-panel" aria-labelledby="daily-log-recent-title">
-          <div class="daily-log-panel-heading">
-            <div>
-              <span class="daily-log-panel-kicker">EN TIEMPO REAL</span>
-              <h3 id="daily-log-recent-title">Actividad reciente</h3>
-            </div>
-            <button class="daily-log-recent-link" type="button" @click="showRecentHistory">Historial</button>
-          </div>
-          <button
-            v-for="entry in recentEntries"
-            :key="`recent-${entry.id}`"
-            class="daily-log-recent-entry"
-            :class="[`is-${entry.event.toLocaleLowerCase('es')}`, { 'is-selected': selectedEntryId === entry.id }]"
-            type="button"
-            @click="selectEntry(entry)"
-          >
-            <span class="daily-log-recent-marker" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path :d="eventIcon(entry.event)" /></svg>
-            </span>
-            <span class="daily-log-recent-copy">
-              <span class="daily-log-recent-topline">
-                <strong>{{ entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event }}</strong>
-                <span class="daily-log-recent-time">{{ entry.time }}</span>
-              </span>
-              <span>{{ entry.person }}<template v-if="entry.company"> · {{ entry.company }}</template></span>
-              <small :class="{ 'is-manual': entry.details.startsWith('Registro manual · Folio ') }">
-                <template v-if="entry.details.startsWith('Registro manual · Folio ')">
-                  <span class="daily-log-recent-manual-tag">Registro manual</span>
-                  {{ entry.details.slice("Registro manual · ".length) }}
-                </template>
-                <template v-else>{{ entry.details || eventVerb(entry.event) }}</template>
-              </small>
-            </span>
-          </button>
-          <div v-if="recentEntries.length === 0" class="daily-log-recent-empty" role="status">
-            <span class="daily-log-recent-empty-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 8v4l2.5 1.5" /><circle cx="12" cy="12" r="9" /></svg>
-            </span>
-            <strong>Aún no hay movimientos</strong>
-            <p>Los movimientos recientes aparecerán aquí cuando registres una llegada, entrada o salida.</p>
-          </div>
-        </section>
       </aside>
     </div>
 

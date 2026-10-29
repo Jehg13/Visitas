@@ -1,18 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
-import QRCode from "qrcode";
 import { confirmUser, notifyUser, type AppAlertType } from "./notifications";
-import DepartmentSection from "./sections/DepartmentSection.vue";
-import DailyLogSection from "./sections/DailyLogSection.vue";
-import EquipmentSection from "./sections/EquipmentSection.vue";
-import HostsSection from "./sections/HostsSection.vue";
-import ExternalStaffSection from "./sections/ExternalStaffSection.vue";
-import AppointmentsSection from "./sections/AppointmentsSection.vue";
-import HomeSection from "./sections/HomeSection.vue";
-import BusinessDirectorySection from "./sections/BusinessDirectorySection.vue";
-import AccessSection from "./sections/AccessSection.vue";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 import { dashboardSectionForPath, dashboardSectionPaths } from "./dashboardRoutes";
@@ -32,6 +22,16 @@ import type {
   SectionAccess,
   SystemAccessRole,
 } from "./stores/types";
+
+const DepartmentSection = defineAsyncComponent(() => import("./sections/DepartmentSection.vue"));
+const DailyLogSection = defineAsyncComponent(() => import("./sections/DailyLogSection.vue"));
+const EquipmentSection = defineAsyncComponent(() => import("./sections/EquipmentSection.vue"));
+const HostsSection = defineAsyncComponent(() => import("./sections/HostsSection.vue"));
+const ExternalStaffSection = defineAsyncComponent(() => import("./sections/ExternalStaffSection.vue"));
+const AppointmentsSection = defineAsyncComponent(() => import("./sections/AppointmentsSection.vue"));
+const HomeSection = defineAsyncComponent(() => import("./sections/HomeSection.vue"));
+const BusinessDirectorySection = defineAsyncComponent(() => import("./sections/BusinessDirectorySection.vue"));
+const AccessSection = defineAsyncComponent(() => import("./sections/AccessSection.vue"));
 
 type AccessRoleDraft = "administrador" | "recepcion" | "";
 const otherAppointmentVisitor = "__otro__";
@@ -918,6 +918,7 @@ async function logout() {
 }
 
 async function createAppointmentQr(appointment: Appointment, staff?: ExternalStaff) {
+  const { default: QRCode } = await import("qrcode");
   return QRCode.toDataURL(JSON.stringify({
     type: "visitas-appointment",
     id: appointment.id,
@@ -1932,7 +1933,7 @@ async function removeBusinessPartner(id: number) {
           aria-label="CyMEZ Recep, inicio"
           @click.prevent="selectSection(allowedDashboardSections[0] ?? '')"
         >
-          <img class="brand-mark" src="/images/cymez-mark.png" alt="" />
+          <img class="brand-mark" src="/images/cymez-mark.webp" alt="" width="130" height="156" decoding="async" />
           <span class="brand-recep">RECEP</span>
         </a>
         <span class="brand-divider" aria-hidden="true"></span>

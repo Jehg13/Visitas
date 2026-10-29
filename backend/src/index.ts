@@ -547,6 +547,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function hasUnsafeControlCharacters(value: string, allowLineBreaks = false) {
+  return allowLineBreaks
+    ? /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value)
+    : /[\u0000-\u001F\u007F]/.test(value);
+}
+
 function escapeEmailHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
     const entities: Record<string, string> = {
@@ -566,7 +572,9 @@ function parseBusinessPartner(value: unknown): BusinessPartnerInput | null {
   if (
     type === "Visitante" &&
     typeof name === "string" && name.trim() && name.trim().length <= 180 &&
-    typeof subject === "string" && subject.trim() && subject.trim().length <= 500
+    !hasUnsafeControlCharacters(name) &&
+    typeof subject === "string" && subject.trim() && subject.trim().length <= 500 &&
+    !hasUnsafeControlCharacters(subject)
   ) {
     return {
       name: name.trim(),
@@ -581,9 +589,13 @@ function parseBusinessPartner(value: unknown): BusinessPartnerInput | null {
   }
   if (
     typeof name !== "string" || !name.trim() || name.trim().length > 180 ||
+    hasUnsafeControlCharacters(name) ||
     typeof description !== "string" || !description.trim() || description.trim().length > 65535 ||
+    hasUnsafeControlCharacters(description, true) ||
     typeof rfc !== "string" || !rfc.trim() || rfc.trim().length > 13 ||
+    hasUnsafeControlCharacters(rfc) ||
     typeof category !== "string" || !category.trim() || category.trim().length > 120 ||
+    hasUnsafeControlCharacters(category) ||
     typeof employeeCount !== "number" || !Number.isSafeInteger(employeeCount) ||
     employeeCount < 1 || employeeCount > 4294967295 ||
     (type !== "Contratista" && type !== "Proveedor") ||
@@ -608,8 +620,10 @@ function parseGeneralVisitor(value: unknown): GeneralVisitorInput | null {
   const { fullName, curp, phone, email } = value;
   if (
     typeof fullName !== "string" || !fullName.trim() || fullName.trim().length > 180 ||
+    hasUnsafeControlCharacters(fullName) ||
     typeof curp !== "string" || !/^[A-Za-z0-9]{18}$/.test(curp.trim()) ||
     typeof phone !== "string" || !phone.trim() || phone.trim().length > 30 ||
+    hasUnsafeControlCharacters(phone) ||
     typeof email !== "string" || !email.trim() || email.trim().length > 254 ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
   ) {
@@ -633,7 +647,9 @@ function parseExternalStaff(value: unknown): ExternalStaffInput | null {
     !Number.isSafeInteger(businessPartnerId) ||
     businessPartnerId < 1 ||
     typeof fullName !== "string" || !fullName.trim() || fullName.trim().length > 180 ||
+    hasUnsafeControlCharacters(fullName) ||
     typeof phone !== "string" || phone.length > 30 ||
+    hasUnsafeControlCharacters(phone) ||
     typeof email !== "string" || email.length > 254 ||
     (email.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
   ) {
@@ -676,8 +692,8 @@ type VisitorKioskRegistrationInput = {
 };
 
 type VisitorKioskInspectionInput = {
-  itemId: number | null;
-  result: "Coincide" | "Faltante" | "Dañado" | "Extra";
+  itemId: number;
+  result: "Coincide" | "Faltante" | "Dañado";
   notes: string;
 };
 
@@ -696,8 +712,11 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
   } = value;
   if (
     typeof visitorName !== "string" || !visitorName.trim() || visitorName.trim().length > 180 ||
+    hasUnsafeControlCharacters(visitorName) ||
     typeof companyName !== "string" || !companyName.trim() || companyName.trim().length > 180 ||
+    hasUnsafeControlCharacters(companyName) ||
     typeof visitReason !== "string" || !visitReason.trim() || visitReason.trim().length > 500 ||
+    hasUnsafeControlCharacters(visitReason) ||
     typeof carriesItems !== "boolean" ||
     !Array.isArray(items) || items.length > 50 ||
     (!carriesItems && items.length !== 0) ||
@@ -723,10 +742,15 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
       typeof item.description !== "string" ||
       !item.description.trim() ||
       item.description.trim().length > 180 ||
+      hasUnsafeControlCharacters(item.description) ||
       typeof item.brand !== "string" || item.brand.length > 120 ||
+      hasUnsafeControlCharacters(item.brand) ||
       typeof item.model !== "string" || item.model.length > 120 ||
+      hasUnsafeControlCharacters(item.model) ||
       typeof item.serialNumber !== "string" || item.serialNumber.length > 180 ||
+      hasUnsafeControlCharacters(item.serialNumber) ||
       typeof item.color !== "string" || item.color.length > 80 ||
+      hasUnsafeControlCharacters(item.color) ||
       typeof item.quantity !== "number" ||
       !Number.isSafeInteger(item.quantity) ||
       item.quantity < 1 ||
@@ -755,6 +779,10 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
   };
 }
 
+function normalizeVisitorName(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("es-MX");
+}
+
 function parseVisitorKioskInspection(value: unknown): VisitorKioskInspectionInput[] | null {
   if (!Array.isArray(value) || value.length > 100) return null;
   const ids = new Set<number>();
@@ -763,20 +791,19 @@ function parseVisitorKioskInspection(value: unknown): VisitorKioskInspectionInpu
     const itemId = isRecord(item) && typeof item.itemId === "number" ? item.itemId : null;
     if (
       !isRecord(item) ||
-      (item.itemId !== null && itemId === null) ||
-      (itemId !== null && (!Number.isSafeInteger(itemId) || itemId < 1 || ids.has(itemId))) ||
+      itemId === null ||
+      !Number.isSafeInteger(itemId) ||
+      itemId < 1 ||
+      ids.has(itemId) ||
       (item.result !== "Coincide" &&
         item.result !== "Faltante" &&
-        item.result !== "Dañado" &&
-        item.result !== "Extra") ||
-      (item.result === "Extra" ? itemId !== null : itemId === null) ||
+        item.result !== "Dañado") ||
       typeof item.notes !== "string" ||
-      item.notes.length > 1000 ||
-      (item.result === "Extra" && !item.notes.trim())
+      item.notes.length > 1000
     ) {
       return null;
     }
-    if (itemId !== null) ids.add(itemId);
+    ids.add(itemId);
     items.push({
       itemId,
       result: item.result,
@@ -876,22 +903,6 @@ async function handleVisitorKioskRequest(
     }
   }
 
-  if (request.method === "GET" && url.pathname === "/api/visitor-kiosk/options") {
-    try {
-      const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT DISTINCT name
-         FROM business_partners
-         WHERE is_active = TRUE AND partner_type IN ('Contratista', 'Proveedor')
-         ORDER BY name
-         LIMIT 500`,
-      );
-      return Response.json({ companies: rows.map((row) => String(row.name)) });
-    } catch (error) {
-      console.error("Failed to load public visitor kiosk options:", error);
-      return Response.json({ error: "No se pudieron cargar las empresas." }, { status: 500 });
-    }
-  }
-
   if (request.method === "POST" && url.pathname === "/api/visitor-kiosk/registrations") {
     const requestKey = request.headers.get("Idempotency-Key") ?? "";
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestKey)) {
@@ -948,19 +959,50 @@ async function handleVisitorKioskRequest(
       }
 
       transactionStep = "crear ficha de visitante";
-      const [visitorResult] = await connection.execute<ResultSetHeader>(
-        `INSERT INTO general_visitors (full_name, curp, phone, email)
-         VALUES (?, NULL, '', '')`,
+      const [visitorMatches] = await connection.execute<(RowDataPacket & {
+        id: number;
+        full_name: string;
+      })[]>(
+        `SELECT id, full_name
+         FROM general_visitors
+         WHERE full_name = ?
+         ORDER BY id
+         FOR UPDATE`,
         [input.visitorName],
       );
-      transactionStep = "vincular visitante al directorio";
-      await connection.execute(
-        `INSERT INTO business_partners
-           (name, description, rfc, category, subject, visitor_record_id,
-            employee_count, partner_type, is_active)
-         VALUES (?, 'Público General', NULL, 'Visitante', ?, ?, 1, 'Visitante', TRUE)`,
-        [input.visitorName, input.visitReason, visitorResult.insertId],
+      const matchingVisitor = visitorMatches.find(
+        (visitor) => normalizeVisitorName(visitor.full_name) === normalizeVisitorName(input.visitorName),
       );
+      let visitorRecordId: number;
+      if (matchingVisitor) {
+        visitorRecordId = Number(matchingVisitor.id);
+      } else {
+        const [visitorResult] = await connection.execute<ResultSetHeader>(
+          `INSERT INTO general_visitors (full_name, curp, phone, email)
+           VALUES (?, NULL, '', '')`,
+          [input.visitorName],
+        );
+        visitorRecordId = visitorResult.insertId;
+      }
+
+      transactionStep = "vincular visitante al directorio";
+      const [existingVisitorPartners] = await connection.execute<RowDataPacket[]>(
+        `SELECT id
+         FROM business_partners
+         WHERE visitor_record_id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [visitorRecordId],
+      );
+      if (!existingVisitorPartners[0]) {
+        await connection.execute(
+          `INSERT INTO business_partners
+             (name, description, rfc, category, subject, visitor_record_id,
+              employee_count, partner_type, is_active)
+           VALUES (?, 'Público General', NULL, 'Visitante', ?, ?, 1, 'Visitante', TRUE)`,
+          [input.visitorName, input.visitReason, visitorRecordId],
+        );
+      }
 
       let folio = "";
       for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -983,7 +1025,7 @@ async function handleVisitorKioskRequest(
             visitor_declared_id_retained, reception_id_claim_status, idempotency_key)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          visitorResult.insertId,
+          visitorRecordId,
           folio,
           input.companyName,
           input.visitReason,
@@ -1021,7 +1063,7 @@ async function handleVisitorKioskRequest(
         [
           input.visitorName,
           `Registro manual · Folio ${folio} · Pendiente de autorización · Motivo: ${input.visitReason}`,
-          visitorResult.insertId,
+          visitorRecordId,
         ],
       );
       transactionStep = "guardar auditoría del registro";
@@ -1407,6 +1449,10 @@ async function handleVisitorKioskRequest(
             await connection.rollback();
             return Response.json({ error: "No se puede revisar un registro rechazado." }, { status: 409 });
           }
+          if (phase === "Entrada" && registration.authorization_status !== "Autorizada") {
+            await connection.rollback();
+            return Response.json({ error: "Autoriza la visita antes de completar el checklist de entrada." }, { status: 409 });
+          }
           if (phase === "Salida" && registration.authorization_status !== "Autorizada") {
             await connection.rollback();
             return Response.json({ error: "Autoriza la visita y completa su entrada antes de revisar la salida." }, { status: 409 });
@@ -1427,9 +1473,9 @@ async function handleVisitorKioskRequest(
             [registrationId],
           );
           const reviewedIds = new Set(
-            inspectionItems!.flatMap((item) => item.itemId === null ? [] : [item.itemId]),
+            inspectionItems!.map((item) => item.itemId),
           );
-          const declaredItemCount = inspectionItems!.filter((item) => item.itemId !== null).length;
+          const declaredItemCount = inspectionItems!.length;
           if (
             declaredItems.length !== declaredItemCount ||
             declaredItems.some((item) => !reviewedIds.has(Number(item.id)))
@@ -1454,10 +1500,9 @@ async function handleVisitorKioskRequest(
           auditAction = `Checklist de ${phase.toLowerCase()} completado`;
           const missing = inspectionItems!.filter((item) => item.result === "Faltante").length;
           const damaged = inspectionItems!.filter((item) => item.result === "Dañado").length;
-          const extras = inspectionItems!.filter((item) => item.result === "Extra").length;
           auditDetails =
             `${declaredItemCount} artículo(s) declarado(s) revisado(s); ` +
-            `${missing} faltante(s), ${damaged} dañado(s), ${extras} adicional(es).`;
+            `${missing} faltante(s), ${damaged} dañado(s).`;
           if (phase === "Entrada" && registration.authorization_status === "Autorizada") {
             await writeVisitorKioskMovement(
               connection,
@@ -1520,11 +1565,13 @@ function parseAppointment(value: unknown): AppointmentInput | null {
   const { visitorName, visitorEmail, businessPartnerId, hostName, date, time } = value;
   if (
     typeof visitorName !== "string" || !visitorName.trim() || visitorName.trim().length > 180 ||
+    hasUnsafeControlCharacters(visitorName) ||
     typeof visitorEmail !== "string" || visitorEmail.trim().length > 254 ||
     (visitorEmail.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(visitorEmail.trim())) ||
     typeof businessPartnerId !== "number" ||
     !Number.isSafeInteger(businessPartnerId) || businessPartnerId < 1 ||
     typeof hostName !== "string" || !hostName.trim() || hostName.trim().length > 180 ||
+    hasUnsafeControlCharacters(hostName) ||
     typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
     typeof time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)
   ) {
@@ -1567,8 +1614,10 @@ function parseDailyLogInput(value: unknown): DailyLogInput | null {
     typeof date !== "string" || !isValidDateString(date) ||
     typeof time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time) ||
     typeof personName !== "string" || personName.trim().length > 180 ||
+    hasUnsafeControlCharacters(personName) ||
     (personName.trim().length === 0 && linkedIds.length === 0) ||
     typeof details !== "string" || details.trim().length > 4000 ||
+    hasUnsafeControlCharacters(details, true) ||
     !validOptionalId(appointmentId) ||
     !validOptionalId(externalStaffId) ||
     !validOptionalId(visitorRecordId) ||
@@ -1966,7 +2015,41 @@ function getSessionToken(request: Request) {
   return cookie?.slice(sessionCookieName.length + 1);
 }
 
-async function getRequestUser(request: Request) {
+const requestUserCache = new WeakMap<Request, Promise<AuthenticatedUser | null>>();
+
+function isPublicApiRequest(request: Request, url: URL) {
+  const { method } = request;
+  const { pathname } = url;
+  if (
+    (method === "GET" && [
+      "/api/auth/session",
+      "/api/health",
+      "/api/visitor-kiosk/events",
+      "/api/visitor-kiosk/status",
+    ].includes(pathname)) ||
+    (method === "POST" && [
+      "/api/auth/login",
+      "/api/auth/logout",
+      "/api/auth/password-recovery",
+      "/api/auth/password-reset",
+      "/api/visitor-kiosk/registrations",
+    ].includes(pathname))
+  ) {
+    return true;
+  }
+  return ["GET", "PUT"].includes(method) &&
+    /^\/api\/equipment\/public\/[A-Za-z0-9_-]{40,60}$/.test(pathname);
+}
+
+function getRequestUser(request: Request) {
+  const cachedUser = requestUserCache.get(request);
+  if (cachedUser) return cachedUser;
+  const user = resolveRequestUser(request);
+  requestUserCache.set(request, user);
+  return user;
+}
+
+async function resolveRequestUser(request: Request): Promise<AuthenticatedUser | null> {
   const token = getSessionToken(request);
   if (!token) return null;
   const [payload, signature, extra] = token.split(".");
@@ -2619,6 +2702,14 @@ const server = Bun.serve({
   async fetch(request, server) {
     const url = new URL(request.url);
 
+    if (
+      url.pathname.startsWith("/api/") &&
+      !isPublicApiRequest(request, url) &&
+      !(await getRequestUser(request))
+    ) {
+      return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+    }
+
     if (request.method === "GET" && url.pathname === "/api/events") {
       if (!(await getRequestUser(request))) {
         return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
@@ -3054,6 +3145,7 @@ const server = Bun.serve({
           {
             headers: {
               "Set-Cookie": `${sessionCookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${sessionLifetimeMs / 1000}${secureCookieAttribute}`,
+              "Cache-Control": "no-store",
             },
           },
         );
@@ -3070,12 +3162,20 @@ const server = Bun.serve({
       try {
         const user = await getRequestUser(request);
         if (!user) {
-          return Response.json({ error: "La sesión expiró." }, { status: 401 });
+          return Response.json({ user: null, accounts: [] }, {
+            headers: {
+              "Cache-Control": "no-store",
+            },
+          });
         }
         const sectionAccess = await listUserSectionAccess(user.login, user.isAdmin);
         return Response.json({
           user: publicUser(user, sectionAccess),
           accounts: user.isAdmin ? await listAccessAccounts() : [],
+        }, {
+          headers: {
+            "Cache-Control": "no-store",
+          },
         });
       } catch (error) {
         console.error("Failed to restore session:", error);
