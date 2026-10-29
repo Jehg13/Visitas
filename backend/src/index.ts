@@ -5640,9 +5640,28 @@ const server = Bun.serve({
         await pool.query("SELECT 1");
         return Response.json({ status: "ok", database: "connected" });
       } catch (error) {
-        console.error("Database health check failed:", error);
+        const databaseError = error as {
+          code?: string;
+          errno?: number;
+          sqlState?: string;
+          message?: string;
+        };
+        const diagnostic = {
+          code: databaseError.code ?? "UNKNOWN_DATABASE_ERROR",
+          errno: databaseError.errno,
+          sqlState: databaseError.sqlState,
+          host: Bun.env.DB_HOST ?? "127.0.0.1",
+          port: Number(Bun.env.DB_PORT ?? 3306),
+          database: Bun.env.DB_NAME ?? "visitas_recep",
+          message: databaseError.message,
+        };
+        console.error("Database health check failed:", diagnostic);
         return Response.json(
-          { status: "error", database: "disconnected" },
+          {
+            status: "error",
+            database: "disconnected",
+            code: diagnostic.code,
+          },
           { status: 503 },
         );
       }
@@ -5687,4 +5706,28 @@ const server = Bun.serve({
   },
 });
 
-console.log(`API disponible en http://localhost:${server.port}`);
+console.log(
+  `API disponible en http://localhost:${server.port}`,
+  {
+    databaseHost: Bun.env.DB_HOST ?? "127.0.0.1",
+    databasePort: Number(Bun.env.DB_PORT ?? 3306),
+    databaseName: Bun.env.DB_NAME ?? "visitas_recep",
+  },
+);
+
+void pool.query("SELECT 1")
+  .then(() => {
+    console.log("Database startup check succeeded.");
+  })
+  .catch((error: unknown) => {
+    const databaseError = error as { code?: string; errno?: number; sqlState?: string; message?: string };
+    console.error("Database startup check failed:", {
+      code: databaseError.code ?? "UNKNOWN_DATABASE_ERROR",
+      errno: databaseError.errno,
+      sqlState: databaseError.sqlState,
+      host: Bun.env.DB_HOST ?? "127.0.0.1",
+      port: Number(Bun.env.DB_PORT ?? 3306),
+      database: Bun.env.DB_NAME ?? "visitas_recep",
+      message: databaseError.message,
+    });
+  });
