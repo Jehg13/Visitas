@@ -548,6 +548,190 @@
   white-space: nowrap;
 }
 
+.dashboard-app .dashboard-main .access-section-heading {
+  min-height: 0;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 2px 16px;
+  border-bottom: 0;
+}
+
+.dashboard-app .access-section-title {
+  gap: 13px;
+}
+
+.dashboard-app .access-section-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--ds-blue) 52%, var(--ds-border));
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 30% 20%, rgb(77 174 255 / 24%), transparent 58%),
+    color-mix(in srgb, var(--ds-blue) 13%, var(--ds-surface));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%), 0 5px 16px rgb(0 95 210 / 15%);
+}
+
+.dashboard-app .access-section-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.dashboard-app .access-section-title-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.dashboard-app .access-section-eyebrow {
+  color: var(--ds-info);
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.dashboard-app .access-section-title-copy h2 {
+  margin: 0;
+}
+
+.dashboard-app .workspace-heading-actions .access-account-count {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--ds-blue) 35%, var(--ds-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ds-blue) 8%, var(--ds-surface));
+  color: var(--ds-text-muted);
+  white-space: nowrap;
+}
+
+.dashboard-app .access-account-count strong {
+  color: var(--ds-text);
+  font-size: 0.85rem;
+}
+
+.dashboard-app .dashboard-main .access-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 13px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--ds-blue) 26%, var(--ds-border));
+  border-left: 3px solid var(--ds-blue);
+  border-radius: 10px;
+  background:
+    linear-gradient(105deg, color-mix(in srgb, var(--ds-blue) 9%, var(--ds-surface)), var(--ds-surface) 72%);
+  color: var(--ds-text-muted);
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+.dashboard-app .access-intro-label {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--ds-blue) 35%, var(--ds-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ds-blue) 12%, var(--ds-surface));
+  color: var(--ds-info);
+  font-size: 0.61rem;
+  font-weight: 750;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.dashboard-app .access-intro p {
+  margin: 0;
+}
+
+.dashboard-app .access-intro p span {
+  display: block;
+  margin-top: 2px;
+  color: var(--ds-text-subtle);
+  font-size: 0.69rem;
+}
+
+.dashboard-app[data-theme="light"] .access-section-icon {
+  border-color: #b7d5f3;
+  background:
+    radial-gradient(circle at 30% 20%, rgb(78 153 226 / 12%), transparent 58%),
+    #eaf4ff;
+  box-shadow: inset 0 1px 0 #fff, 0 5px 14px rgb(8 80 150 / 8%);
+}
+
+.dashboard-app[data-theme="light"] .access-section-eyebrow {
+  color: #286c9c;
+}
+
+.dashboard-app[data-theme="light"] .workspace-heading-actions .access-account-count {
+  border-color: #c6dbef;
+  background: #f2f8ff;
+  color: #49627a;
+}
+
+.dashboard-app[data-theme="light"] .access-account-count strong {
+  color: #23435f;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .access-intro {
+  border-color: #c6dbef;
+  border-left-color: #0878f9;
+  background: linear-gradient(105deg, #f0f7ff, #f8fbff 72%);
+  color: #365b86;
+}
+
+.dashboard-app[data-theme="light"] .access-intro-label {
+  border-color: #c6dbef;
+  background: #e8f3ff;
+  color: #286c9c;
+}
+
+.dashboard-app[data-theme="light"] .access-intro p span {
+  color: #607d9a;
+}
+
+@media (max-width: 600px) {
+  .dashboard-app .dashboard-main .access-section-heading {
+    align-items: flex-start;
+    gap: 12px;
+    padding-top: 15px;
+    padding-bottom: 13px;
+  }
+
+  .dashboard-app .access-section-title {
+    gap: 10px;
+  }
+
+  .dashboard-app .access-section-icon {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+  }
+
+  .dashboard-app .access-section-eyebrow {
+    font-size: 0.56rem;
+  }
+
+  .dashboard-app .workspace-heading-actions .access-account-count {
+    min-height: 30px;
+    padding: 5px 9px;
+    font-size: 0.64rem;
+  }
+
+  .dashboard-app .dashboard-main .access-intro {
+    flex-wrap: wrap;
+    gap: 7px;
+    padding: 10px 11px;
+    font-size: 0.72rem;
+  }
+}
+
 .dashboard-app .business-partner-table {
   min-width: 1140px;
   table-layout: fixed;

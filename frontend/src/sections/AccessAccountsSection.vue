@@ -47,20 +47,30 @@ const filteredAccounts = computed(() => {
 </script>
 
 <template>
-  <header class="panel-heading workspace-heading">
-    <div class="panel-title">
-      <svg class="icon"><use href="#i-shield" /></svg>
-      <h2 id="access-title">Accesos al sistema</h2>
+  <header class="panel-heading workspace-heading access-section-heading">
+    <div class="panel-title access-section-title">
+      <span class="access-section-icon">
+        <svg class="icon"><use href="#i-shield" /></svg>
+      </span>
+      <div class="access-section-title-copy">
+        <span class="access-section-eyebrow">Administración de cuentas</span>
+        <h2 id="access-title">Accesos al sistema</h2>
+      </div>
     </div>
     <div class="workspace-heading-actions">
-      <span class="workspace-count">
-        {{ accounts.length }} cuentas en accesos
+      <span class="workspace-count access-account-count">
+        <strong>{{ accounts.length }}</strong>
+        {{ accounts.length === 1 ? "cuenta registrada" : "cuentas registradas" }}
       </span>
     </div>
   </header>
-  <p class="access-intro">
-    Asigna a cada cuenta Administrador, Recepción o ningún acceso. El permiso de anfitrión se administra desde su propia sección. No se muestran contraseñas ni datos de activación.
-  </p>
+  <div class="access-intro">
+    <span class="access-intro-label">Control de permisos</span>
+    <p>
+      Asigna a cada cuenta acceso de Administrador, Recepción o ninguno. El permiso de anfitrión se gestiona en su propia sección.
+      <span>No se muestran contraseñas ni datos de activación.</span>
+    </p>
+  </div>
   <div class="external-staff-toolbar">
     <label class="agenda-search">
       <svg class="icon"><use href="#i-search" /></svg>

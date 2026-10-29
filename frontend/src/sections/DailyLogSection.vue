@@ -178,6 +178,12 @@ const selectedQuickAppointment = computed(() =>
 const selectedEntry = computed(() =>
   entries.value.find((entry) => entry.id === selectedEntryId.value) ?? null,
 );
+const selectedEntryIsHistorical = computed(() =>
+  Boolean(selectedEntry.value && !selectedQuickAppointment.value && selectedEntry.value.date !== today.value),
+);
+const selectedEntryIsReadOnly = computed(() =>
+  selectedEntryIsHistorical.value && !props.isAdmin,
+);
 const selectedEntryAppointment = computed(() => {
   if (!selectedEntry.value?.appointmentId) return null;
   return props.appointments.find((appointment) => appointment.id === selectedEntry.value?.appointmentId) ?? null;
@@ -216,7 +222,7 @@ const selectedPersonDateTime = computed(() =>
       : "",
 );
 const selectedAvailableMovements = computed<("Llegada" | "Ingreso" | "Retiro")[]>(() => {
-  if (selectedEntry.value && selectedEntry.value.date !== getLocalDate()) return [];
+  if (selectedEntryIsReadOnly.value) return [];
   if (selectedPersonStatus.value === "Pendiente") return ["Llegada"];
   if (selectedPersonStatus.value === "En proceso") return ["Ingreso", "Retiro"];
   if (selectedPersonStatus.value === "Dentro") return ["Retiro"];
@@ -861,6 +867,7 @@ async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro"
 }
 
 function employeeMovements(employee: AppointmentEmployee): ("Llegada" | "Ingreso" | "Retiro")[] {
+  if (selectedEntryIsReadOnly.value) return [];
   if (employee.status === "Pendiente") return ["Llegada"];
   if (employee.status === "En proceso") return ["Ingreso", "Retiro"];
   if (employee.status === "Dentro") return ["Retiro"];
@@ -1650,6 +1657,9 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                       {{ employeeMovementId === employee.id ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida" }}
                     </button>
                   </div>
+                  <p v-else-if="selectedEntryIsReadOnly" class="daily-log-selection-complete">
+                    Registro histórico: no se pueden modificar movimientos.
+                  </p>
                   <p v-else class="daily-log-selection-complete">La visita de este empleado ya está finalizada.</p>
                 </article>
               </div>
@@ -1681,7 +1691,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               </p>
             </div>
             <div
-              v-else-if="selectedEntry && selectedEntry.date !== today"
+              v-else-if="selectedEntryIsReadOnly"
               class="daily-log-readonly-notice"
               role="status"
             >

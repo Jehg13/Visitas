@@ -1597,6 +1597,20 @@ function isValidDateString(value: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+function getMexicoCityDate() {
+  const dateParts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Mexico_City",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date())
+      .map(({ type, value }) => [type, value]),
+  );
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+}
+
 function parseDailyLogInput(value: unknown): DailyLogInput | null {
   if (!isRecord(value)) return null;
   const { event, date, time, personName, details, appointmentId, externalStaffId, visitorRecordId } = value;
@@ -3735,6 +3749,15 @@ const server = Bun.serve({
             { status: 400 },
           );
         }
+        const isMovementEvent =
+          input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro";
+        const currentBusinessDate = getMexicoCityDate();
+        if (!user.isAdmin && isMovementEvent && input.date !== currentBusinessDate) {
+          return Response.json(
+            { error: "Recepción solo puede registrar movimientos del día actual. Solicita apoyo a Administración." },
+            { status: 403 },
+          );
+        }
 
         let personName = input.personName;
         let businessPartnerId: number | null = null;
@@ -3742,7 +3765,9 @@ const server = Bun.serve({
         let visitorId = input.visitorRecordId;
         if (input.appointmentId !== null) {
           const [matches] = await pool.execute<AppointmentRow[]>(
-            `SELECT id, business_partner_id, visit_date, visit_time,
+            `SELECT id, business_partner_id,
+                    DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                    visit_time,
                     visitor_name, visitor_email, registered_by, company_name, host_name, status
              FROM appointments
              WHERE id = ?
@@ -3752,6 +3777,12 @@ const server = Bun.serve({
           const appointment = matches[0];
           if (!appointment) {
             return Response.json({ error: "La cita vinculada ya no existe." }, { status: 404 });
+          }
+          if (!user.isAdmin && isMovementEvent && appointment.visit_date !== currentBusinessDate) {
+            return Response.json(
+              { error: "Recepción solo puede registrar movimientos de citas del día actual. Solicita apoyo a Administración." },
+              { status: 403 },
+            );
           }
           if (appointment.status === "Cancelada" || appointment.status === "Retirado") {
             return Response.json({ error: "No se puede registrar movimiento para una cita cancelada o finalizada." }, { status: 409 });
@@ -3934,6 +3965,17 @@ const server = Bun.serve({
           [input.appointmentId, subjectKey],
         );
         const latestMovementRow = latestMovementRows[0];
+        if (
+          !user.isAdmin &&
+          isMovementEvent &&
+          latestMovementRow &&
+          latestMovementRow.movement_date !== currentBusinessDate
+        ) {
+          return Response.json(
+            { error: "Recepción solo puede actualizar movimientos del día actual. Solicita apoyo a Administración." },
+            { status: 403 },
+          );
+        }
         const latestMovement = latestMovementRow?.event_type;
         if (input.event === "Ingreso" && latestMovement === "Ingreso") {
           return Response.json({ error: "Esta persona ya tiene un ingreso sin retiro registrado." }, { status: 409 });
