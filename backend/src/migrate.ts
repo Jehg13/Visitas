@@ -19,7 +19,24 @@ async function migrate() {
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
-  const connection = await pool.getConnection();
+  const maxRetries = 15;
+  const retryIntervalMs = 2000;
+  let connection: any = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      console.log(`[db:migrate] Conectando a la base de datos (${Bun.env.DB_HOST ?? "127.0.0.1"}:${Bun.env.DB_PORT ?? 3306}/${Bun.env.DB_NAME ?? "visitas_recep"})... (intento ${attempt}/${maxRetries})`);
+      connection = await pool.getConnection();
+      console.log("[db:migrate] Conexión establecida con éxito.");
+      break;
+    } catch (err: any) {
+      console.warn(`[db:migrate] Intento ${attempt}/${maxRetries} falló: ${err?.message ?? err}`);
+      if (attempt === maxRetries) {
+        throw new Error(`[db:migrate] No se pudo conectar a la base de datos después de ${maxRetries} intentos: ${err?.message ?? err}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryIntervalMs));
+    }
+  }
 
   try {
     for (const statement of statements) {
@@ -112,7 +129,7 @@ async function migrate() {
          migration_key VARCHAR(120) NOT NULL,
          completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
          PRIMARY KEY (migration_key)
-       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
+       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     );
     const [legacyAdminAccessMigration] = await connection.execute<RowDataPacket[]>(
       "SELECT migration_key FROM app_migrations WHERE migration_key = 'legacy-admin-section-access-v1' LIMIT 1",
@@ -384,11 +401,19 @@ async function migrate() {
       }
     }
     console.log(`Migración completada: ${statements.length} instrucciones ejecutadas.`);
-  } catch (error) {
-    console.error("No se pudo completar la migración de la base de datos:", error);
+  } catch (error: any) {
+    console.error("[db:migrate] No se pudo completar la migración de la base de datos:", error?.message ?? error);
+    if (error?.sqlMessage) {
+      console.error("[db:migrate] Detalle SQL:", error.sqlMessage);
+    }
+    if (error?.code) {
+      console.error("[db:migrate] Código de error:", error.code);
+    }
     throw error;
   } finally {
-    connection.release();
+    if (connection) {
+      connection.release();
+    }
     await pool.end();
   }
 }

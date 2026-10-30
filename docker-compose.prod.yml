@@ -7,22 +7,23 @@ services:
     command: ["bun", "run", "--filter", "visitas-backend", "db:migrate"]
     environment: &backend-environment
       NODE_ENV: production
-      DB_HOST: ${DB_HOST:?Set DB_HOST in .env.production}
+      DB_HOST: ${DB_HOST:-mariadb}
       DB_PORT: ${DB_PORT:-3306}
-      DB_NAME: ${DB_NAME:?Set DB_NAME in .env.production}
-      DB_USER: ${DB_USER:?Set DB_USER in .env.production}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.production}
+      DB_NAME: ${DB_NAME:-visitas_recep}
+      DB_USER: ${DB_USER:-visitas_app}
+      DB_PASSWORD: ${DB_PASSWORD}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?Set the public HTTPS URL in .env.production}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - private
+      - coolify
 
   api:
     build:
@@ -51,6 +52,7 @@ services:
       start_period: 15s
     networks:
       - private
+      - coolify
 
   web:
     build:
@@ -70,7 +72,10 @@ services:
       start_period: 5s
     networks:
       - private
+      - coolify
 
 networks:
   private:
     driver: bridge
+  coolify:
+    external: true
