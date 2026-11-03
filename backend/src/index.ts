@@ -4762,6 +4762,12 @@ const server = Bun.serve({
           isRecord(error) && typeof error.response === "string" ? error.response : "";
         const command =
           isRecord(error) && typeof error.command === "string" ? error.command : "UNKNOWN";
+        const errorMessage =
+          isRecord(error) && typeof error.message === "string" ? error.message : "";
+        const diagnosticResponse = (smtpResponse || errorMessage)
+          .replace(/[\u0000-\u001F\u007F]+/g, " ")
+          .trim()
+          .slice(0, 500);
         const authenticationRejected =
           errorCode === "EAUTH" ||
           responseCode === 535 ||
@@ -4786,9 +4792,19 @@ const server = Bun.serve({
           code: errorCode,
           responseCode,
           command,
+          response: diagnosticResponse,
         });
         return Response.json(
-          { code: failureCode, error: message },
+          {
+            code: failureCode,
+            error: message,
+            diagnostic: {
+              code: errorCode,
+              responseCode,
+              command,
+              response: diagnosticResponse,
+            },
+          },
           { status: 502 },
         );
       } finally {

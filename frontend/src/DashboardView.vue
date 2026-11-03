@@ -1038,9 +1038,32 @@ async function sendExternalStaffQr(staff: ExternalStaff) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ employeeId: staff.id }),
     });
-    const result = await response.json() as { message?: string; error?: string };
+    const result = await response.json() as {
+      message?: string;
+      error?: string;
+      diagnostic?: {
+        code?: string;
+        responseCode?: number | null;
+        command?: string;
+        response?: string;
+      };
+    };
     if (!response.ok) {
-      showToast(result.error ?? "No se pudo enviar el QR al empleado.");
+      const diagnostic = result.diagnostic;
+      const diagnosticDetails = diagnostic
+        ? [
+            diagnostic.code ? `Código SMTP: ${diagnostic.code}` : "",
+            diagnostic.responseCode ? `Respuesta: ${diagnostic.responseCode}` : "",
+            diagnostic.command && diagnostic.command !== "UNKNOWN"
+              ? `Comando: ${diagnostic.command}`
+              : "",
+            diagnostic.response ? `Detalle: ${diagnostic.response}` : "",
+          ].filter(Boolean).join("\n")
+        : "";
+      showToast([
+        result.error ?? "No se pudo enviar el QR al empleado.",
+        diagnosticDetails,
+      ].filter(Boolean).join("\n\n"));
       return;
     }
     if (!result.message) {
