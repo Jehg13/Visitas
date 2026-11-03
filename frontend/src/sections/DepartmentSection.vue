@@ -4,6 +4,7 @@ import { computed } from "vue";
 type Department = {
   id: number;
   name: string;
+  hostCount?: number;
 };
 
 type Host = {
@@ -19,7 +20,8 @@ const props = defineProps<{
 const departmentsWithHostCounts = computed(() =>
   props.departments.map((department) => ({
     ...department,
-    hostCount: props.hosts.filter((host) => host.departmentId === department.id).length,
+    hostCount: department.hostCount ??
+      props.hosts.filter((host) => host.departmentId === department.id).length,
   })),
 );
 

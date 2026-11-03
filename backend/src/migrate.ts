@@ -10,6 +10,10 @@ const visitorIdentificationMigrationUrl = new URL(
   "../../database/init/006_expand_visitor_identification_type.sql",
   import.meta.url,
 );
+const departmentHostsMigrationUrl = new URL(
+  "../../database/init/007_create_department_hosts.sql",
+  import.meta.url,
+);
 
 async function migrate() {
   const migrationFiles = [
@@ -17,6 +21,7 @@ async function migrate() {
     equipmentMigrationUrl,
     appointmentHistoryMigrationUrl,
     visitorIdentificationMigrationUrl,
+    departmentHostsMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));

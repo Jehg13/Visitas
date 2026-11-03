@@ -35,6 +35,7 @@ export type ExternalStaff = {
 export type Department = {
   id: number;
   name: string;
+  hostCount?: number;
 };
 
 export type Host = {

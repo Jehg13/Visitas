@@ -137,6 +137,27 @@ type AccessLoginRow = RowDataPacket & {
 type DepartmentRow = RowDataPacket & {
   id: number;
   name: string;
+  host_count?: number;
+};
+
+type DepartmentHostRow = RowDataPacket & {
+  id: number;
+  login: string;
+  name: string;
+  department_id: number;
+  role: string;
+  email: string;
+  phone: string;
+  section_access: string | null;
+};
+
+type DepartmentHostInput = {
+  login: string;
+  name: string;
+  departmentId: number;
+  role: string;
+  email: string;
+  phone: string;
 };
 
 type HostAccountRow = RowDataPacket & {
@@ -2067,12 +2088,77 @@ async function getDailyLogDailyCounts(fromDate: string, toDate: string) {
 
 async function listDepartments() {
   const [departments] = await pool.query<DepartmentRow[]>(
-    "SELECT id, name FROM departments ORDER BY name, id",
+    `SELECT d.id, d.name, COUNT(h.id) AS host_count
+     FROM departments d
+     LEFT JOIN department_hosts h ON h.department_id = d.id
+     GROUP BY d.id, d.name
+     ORDER BY d.name, d.id`,
   );
   return departments.map((department) => ({
     id: Number(department.id),
     name: department.name,
+    hostCount: Number(department.host_count ?? 0),
   }));
+}
+
+async function listDepartmentHosts() {
+  const [hosts] = await pool.query<DepartmentHostRow[]>(
+    `SELECT h.id, h.login, h.name, h.department_id, h.role, h.email, h.phone,
+            GROUP_CONCAT(s.seccion ORDER BY s.seccion SEPARATOR ',') AS section_access
+     FROM department_hosts h
+     LEFT JOIN accesos_secciones s ON s.login = h.login
+     GROUP BY h.id, h.login, h.name, h.department_id, h.role, h.email, h.phone
+     ORDER BY h.name, h.login`,
+  );
+  return hosts.map((host) => {
+    const sections = new Set((host.section_access ?? "").split(","));
+    return {
+      id: Number(host.id),
+      login: host.login,
+      name: host.name,
+      departmentId: Number(host.department_id),
+      role: host.role,
+      email: host.email,
+      phone: host.phone,
+      accessRoles: [
+        ...(sections.has("administrador") ? ["Administrador"] : []),
+        ...(sections.has("recepcion") ? ["Recepción"] : []),
+        ...(sections.has("anfitriones") ? ["Anfitriones"] : []),
+      ],
+    };
+  });
+}
+
+function parseDepartmentHost(value: unknown): DepartmentHostInput | null {
+  if (typeof value !== "object" || value === null) return null;
+  const host = value as Record<string, unknown>;
+  if (
+    typeof host.login !== "string" ||
+    !host.login.trim() ||
+    host.login.trim().length > 255 ||
+    typeof host.name !== "string" ||
+    !host.name.trim() ||
+    host.name.trim().length > 180 ||
+    typeof host.departmentId !== "number" ||
+    !Number.isSafeInteger(host.departmentId) ||
+    host.departmentId <= 0 ||
+    (host.role !== undefined &&
+      (typeof host.role !== "string" || host.role.trim().length > 120)) ||
+    (host.email !== undefined &&
+      (typeof host.email !== "string" || host.email.trim().length > 254)) ||
+    (host.phone !== undefined &&
+      (typeof host.phone !== "string" || host.phone.trim().length > 30))
+  ) {
+    return null;
+  }
+  return {
+    login: host.login.trim(),
+    name: host.name.trim(),
+    departmentId: host.departmentId,
+    role: typeof host.role === "string" ? host.role.trim() : "",
+    email: typeof host.email === "string" ? host.email.trim().toLocaleLowerCase() : "",
+    phone: typeof host.phone === "string" ? host.phone.trim() : "",
+  };
 }
 
 async function listHostAccounts() {
@@ -5495,6 +5581,220 @@ const server = Bun.serve({
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/api/department-hosts/import") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin) {
+          return Response.json({ error: "No tienes permiso para modificar anfitriones." }, { status: 403 });
+        }
+
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          !("hosts" in body) ||
+          !Array.isArray(body.hosts) ||
+          body.hosts.length > 500
+        ) {
+          return Response.json({ error: "La lista de anfitriones no es válida." }, { status: 400 });
+        }
+        const hosts = body.hosts.map(parseDepartmentHost);
+        if (hosts.some((host) => host === null)) {
+          return Response.json({ error: "Revisa los datos de los anfitriones." }, { status: 400 });
+        }
+        const validatedHosts = hosts.filter(
+          (host): host is DepartmentHostInput => host !== null,
+        );
+        const logins = new Set<string>();
+        for (const host of validatedHosts) {
+          const normalizedLogin = host.login.toLocaleLowerCase();
+          if (logins.has(normalizedLogin)) {
+            return Response.json({ error: "La lista contiene usuarios repetidos." }, { status: 400 });
+          }
+          logins.add(normalizedLogin);
+        }
+
+        const connection = await pool.getConnection();
+        try {
+          await connection.beginTransaction();
+          const departmentIds = [...new Set(validatedHosts.map((host) => host.departmentId))];
+          if (departmentIds.length > 0) {
+            const placeholders = departmentIds.map(() => "?").join(", ");
+            const [departments] = await connection.execute<DepartmentRow[]>(
+              `SELECT id FROM departments WHERE id IN (${placeholders})`,
+              departmentIds,
+            );
+            if (departments.length !== departmentIds.length) {
+              await connection.rollback();
+              return Response.json({ error: "La lista contiene un departamento no válido." }, { status: 400 });
+            }
+          }
+          for (const host of validatedHosts) {
+            await connection.execute(
+              `INSERT IGNORE INTO department_hosts
+                 (login, name, department_id, role, email, phone)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [host.login, host.name, host.departmentId, host.role, host.email, host.phone],
+            );
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
+        }
+        return Response.json({ hosts: await listDepartmentHosts() });
+      } catch (error) {
+        console.error("Failed to import legacy department hosts:", error);
+        return Response.json(
+          { error: "No se pudieron importar los anfitriones guardados en este navegador." },
+          { status: 500 },
+        );
+      }
+    }
+
+    const departmentHostsPath = url.pathname.match(/^\/api\/department-hosts(?:\/(\d+))?$/);
+    if (departmentHostsPath && request.method === "GET" && !departmentHostsPath[1]) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        const sections = await listUserSectionAccess(user.login, user.isAdmin);
+        if (!user.isAdmin && !sections.includes("recepcion")) {
+          return Response.json({ error: "No tienes permiso para consultar anfitriones." }, { status: 403 });
+        }
+        const hosts = await listDepartmentHosts();
+        return Response.json({
+          hosts: user.isAdmin
+            ? hosts
+            : hosts.map((host) => ({
+                id: host.id,
+                login: host.login,
+                name: host.name,
+                departmentId: host.departmentId,
+                role: "",
+                email: "",
+                phone: "",
+                accessRoles: [],
+              })),
+        });
+      } catch (error) {
+        console.error("Failed to load department hosts:", error);
+        return Response.json(
+          { error: "No se pudieron cargar los anfitriones." },
+          { status: 500 },
+        );
+      }
+    }
+
+    if (
+      departmentHostsPath &&
+      ["POST", "PATCH", "DELETE"].includes(request.method)
+    ) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin) {
+          return Response.json({ error: "No tienes permiso para modificar anfitriones." }, { status: 403 });
+        }
+
+        const hostId = departmentHostsPath[1] ? Number(departmentHostsPath[1]) : null;
+        if (hostId !== null && (!Number.isSafeInteger(hostId) || hostId <= 0)) {
+          return Response.json({ error: "El anfitrión seleccionado no es válido." }, { status: 400 });
+        }
+        if (request.method === "DELETE") {
+          if (hostId === null) {
+            return Response.json({ error: "Indica el anfitrión que deseas eliminar." }, { status: 400 });
+          }
+          const [result] = await pool.execute<ResultSetHeader>(
+            "DELETE FROM department_hosts WHERE id = ?",
+            [hostId],
+          );
+          if (result.affectedRows === 0) {
+            return Response.json({ error: "No se encontró el anfitrión seleccionado." }, { status: 404 });
+          }
+          return Response.json({ hosts: await listDepartmentHosts() });
+        }
+        if (
+          (request.method === "POST" && hostId !== null) ||
+          (request.method === "PATCH" && hostId === null)
+        ) {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        const host = parseDepartmentHost(body);
+        if (!host) {
+          return Response.json({ error: "Revisa los datos del anfitrión y su departamento." }, { status: 400 });
+        }
+        const [departments] = await pool.execute<DepartmentRow[]>(
+          "SELECT id FROM departments WHERE id = ? LIMIT 1",
+          [host.departmentId],
+        );
+        if (departments.length === 0) {
+          return Response.json({ error: "No se encontró el departamento seleccionado." }, { status: 404 });
+        }
+
+        if (request.method === "PATCH" && hostId !== null) {
+          const [matches] = await pool.execute<RowDataPacket[]>(
+            "SELECT id FROM department_hosts WHERE id = ? LIMIT 1",
+            [hostId],
+          );
+          if (matches.length === 0) {
+            return Response.json({ error: "No se encontró el anfitrión seleccionado." }, { status: 404 });
+          }
+          await pool.execute(
+            `UPDATE department_hosts
+             SET login = ?, name = ?, department_id = ?, role = ?, email = ?, phone = ?
+             WHERE id = ?`,
+            [host.login, host.name, host.departmentId, host.role, host.email, host.phone, hostId],
+          );
+        } else {
+          await pool.execute(
+            `INSERT INTO department_hosts
+               (login, name, department_id, role, email, phone)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [host.login, host.name, host.departmentId, host.role, host.email, host.phone],
+          );
+        }
+        return Response.json(
+          { hosts: await listDepartmentHosts() },
+          { status: request.method === "POST" ? 201 : 200 },
+        );
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ER_DUP_ENTRY"
+        ) {
+          return Response.json({ error: "Ya existe un anfitrión con ese usuario." }, { status: 409 });
+        }
+        console.error("Failed to modify department host:", error);
+        return Response.json(
+          { error: "No se pudo guardar el anfitrión. Inténtalo de nuevo." },
+          { status: 500 },
+        );
+      }
+    }
+
     const departmentsPath = url.pathname.match(/^\/api\/departments(?:\/(\d+))?$/);
     if (departmentsPath && request.method === "GET" && !departmentsPath[1]) {
       try {
@@ -5544,6 +5844,16 @@ const server = Bun.serve({
           );
           if (matches.length === 0) {
             return Response.json({ error: "No se encontró el departamento seleccionado." }, { status: 404 });
+          }
+          const [hostCounts] = await pool.execute<RowDataPacket[]>(
+            "SELECT COUNT(*) AS host_count FROM department_hosts WHERE department_id = ?",
+            [departmentId],
+          );
+          if (Number(hostCounts[0]?.host_count ?? 0) > 0) {
+            return Response.json(
+              { error: "No se puede eliminar el departamento porque tiene anfitriones asignados." },
+              { status: 409 },
+            );
           }
           await pool.execute("DELETE FROM departments WHERE id = ?", [departmentId]);
           return Response.json({ departments: await listDepartments() });
@@ -5606,6 +5916,17 @@ const server = Bun.serve({
         ) {
           return Response.json(
             { error: "Ya existe un departamento con ese nombre." },
+            { status: 409 },
+          );
+        }
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ER_ROW_IS_REFERENCED_2"
+        ) {
+          return Response.json(
+            { error: "No se puede eliminar el departamento porque tiene anfitriones asignados." },
             { status: 409 },
           );
         }

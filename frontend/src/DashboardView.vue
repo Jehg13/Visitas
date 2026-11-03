@@ -141,7 +141,6 @@ activeSection.value =
   dashboardSectionForPath(route.path) ?? getStoredDashboardSection(currentUser.value.login);
 dashboardTheme.value = getStoredDashboardTheme(currentUser.value.login);
 selectedAppointmentDate.value = getLocalDate();
-hosts.value = getStoredHosts();
 const allowedDashboardSections = computed(() => {
   if (currentUser.value.isAdmin) return dashboardSections;
   if (currentUser.value.sectionAccess.includes("recepcion")) {
@@ -222,7 +221,6 @@ const hostRole = ref("");
 const hostDialogOpen = ref(false);
 const editingHostId = ref<number | null>(null);
 const hostSaving = ref(false);
-const nextHostId = ref(Math.max(0, ...hosts.value.map((host) => host.id)));
 const hostAccountSelection = ref("");
 const editingAccessAccount = ref<AccessAccount | null>(null);
 const accessAccountRoleDraft = ref<AccessRoleDraft>("");
@@ -308,15 +306,6 @@ watch(activeSection, (section) => {
   if (section === "Bitácora diaria") void loadAppointments();
 }, { flush: "sync" });
 
-watch(hosts, (storedHosts) => {
-  try {
-    localStorage.setItem("visitas:hosts", JSON.stringify(storedHosts));
-  } catch (error) {
-    console.error("No se pudieron guardar los anfitriones locales:", error);
-    showToast("No se pudieron guardar los anfitriones en este navegador.");
-  }
-}, { deep: true });
-
 const selectableHostAccounts = computed(() =>
   hostAccountOptions.value.filter((account) =>
     !hosts.value.some((host) =>
@@ -325,6 +314,19 @@ const selectableHostAccounts = computed(() =>
     ),
   ),
 );
+
+function setDepartmentHosts(nextHosts: Host[]) {
+  hosts.value = nextHosts;
+  const hostCounts = new Map<number, number>();
+  for (const host of nextHosts) {
+    hostCounts.set(host.departmentId, (hostCounts.get(host.departmentId) ?? 0) + 1);
+  }
+  departments.value = departments.value.map((department) => ({
+    ...department,
+    hostCount: hostCounts.get(department.id) ?? 0,
+  }));
+}
+
 const externalStaffPartnerOptions = computed(() =>
   businessPartners.value.filter(
     (partner): partner is BusinessPartner & { type: ExternalStaffType } =>
@@ -358,6 +360,14 @@ function refreshVisibleSection() {
   }
   if (activeSection.value === "Anfitriones" && currentUser.value.isAdmin) {
     void loadHostAccounts(true);
+    void loadDepartmentHosts(true);
+  }
+  if (
+    (activeSection.value === "Departamento" ||
+      activeSection.value === "Agenda de citas") &&
+    (currentUser.value.isAdmin || isReception.value)
+  ) {
+    void loadDepartmentHosts(true);
   }
   if (activeSection.value === "Accesos" && currentUser.value.isAdmin) {
     void refreshAccessAccounts();
@@ -409,6 +419,9 @@ onMounted(() => {
   }
   if (currentUser.value.isAdmin) {
     void loadHostAccounts();
+  }
+  if (currentUser.value.isAdmin || isReception.value) {
+    void loadDepartmentHosts();
   }
   realtimeEvents = new EventSource("/api/events");
   realtimeEvents.onopen = () => {
@@ -918,6 +931,52 @@ async function loadHostAccounts(silent = false) {
   }
 }
 
+async function loadDepartmentHosts(silent = false) {
+  try {
+    const response = await fetch("/api/department-hosts");
+    const result = await response.json() as { hosts?: Host[]; error?: string };
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudieron cargar los anfitriones.");
+    }
+    if (!Array.isArray(result.hosts)) {
+      throw new Error("La API devolvió una lista de anfitriones con formato inválido.");
+    }
+
+    let loadedHosts = result.hosts;
+    const legacyHosts = currentUser.value.isAdmin ? getStoredHosts() : [];
+    if (legacyHosts.length > 0) {
+      const importResponse = await fetch("/api/department-hosts/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hosts: legacyHosts }),
+      });
+      const importResult = await importResponse.json() as {
+        hosts?: Host[];
+        error?: string;
+      };
+      if (!importResponse.ok || !Array.isArray(importResult.hosts)) {
+        throw new Error(importResult.error ?? "No se pudieron importar los anfitriones locales.");
+      }
+      loadedHosts = importResult.hosts;
+      try {
+        localStorage.removeItem("visitas:hosts");
+      } catch (error) {
+        console.warn("No se pudo limpiar la copia local de anfitriones:", error);
+      }
+    }
+    setDepartmentHosts(loadedHosts);
+  } catch (error) {
+    console.error("Failed to load department hosts:", error);
+    if (!silent) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "No se pudieron cargar los anfitriones.",
+      );
+    }
+  }
+}
+
 function showToast(message: string, type: AppAlertType = "error") {
   notifyUser(message, type);
 }
@@ -1356,50 +1415,69 @@ async function submitHost() {
     }
   }
 
-  const hostData = {
-    login,
-    name,
-    departmentId,
-    role,
-    email,
-    phone,
-    accessRoles: selectedAccount
-      ? [
-        ...(hostSectionAccess.includes("recepcion") ? ["Recepción" as const] : []),
-        ...(hostSectionAccess.includes("anfitriones") ? ["Anfitriones" as const] : []),
-      ]
-      : editingHostId.value === null
-        ? []
-        : (hosts.value.find((host) => host.id === editingHostId.value)?.accessRoles ?? []),
-  };
-
-  if (editingHostId.value === null) {
-    hosts.value.unshift({ id: ++nextHostId.value, ...hostData });
-    showToast("El anfitrión se registró con los datos de Accesos.", "success");
-  } else {
-    const hostIndex = hosts.value.findIndex((host) => host.id === editingHostId.value);
-    if (hostIndex === -1) {
-      hostDialogOpen.value = false;
-      showToast("No se encontró el anfitrión que intentabas editar.");
+  hostSaving.value = true;
+  try {
+    const hostId = editingHostId.value;
+    const response = await fetch(
+      hostId === null ? "/api/department-hosts" : `/api/department-hosts/${hostId}`,
+      {
+        method: hostId === null ? "POST" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login, name, departmentId, role, email, phone }),
+      },
+    );
+    const result = await response.json() as { hosts?: Host[]; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo guardar el anfitrión.");
       return;
     }
-    hosts.value[hostIndex] = { id: editingHostId.value, ...hostData };
-    showToast("Los datos del anfitrión se actualizaron.", "success");
+    if (!Array.isArray(result.hosts)) {
+      console.error("La API devolvió una lista de anfitriones con formato inválido.");
+      showToast("El anfitrión se guardó, pero no se pudo actualizar la lista.");
+      return;
+    }
+    setDepartmentHosts(result.hosts);
+    hostDialogOpen.value = false;
+    editingHostId.value = null;
+    hostLogin.value = "";
+    hostName.value = "";
+    hostRole.value = "";
+    hostEmail.value = "";
+    hostPhone.value = "";
+    hostAccountSelection.value = "";
+    showToast(
+      hostId === null
+        ? "El anfitrión se registró con los datos de Accesos."
+        : "Los datos del anfitrión se actualizaron.",
+      "success",
+    );
+  } catch (error) {
+    console.error("Failed to save department host:", error);
+    showToast("No se pudo conectar con el servidor para guardar el anfitrión.");
+  } finally {
+    hostSaving.value = false;
   }
-
-  hostDialogOpen.value = false;
-  editingHostId.value = null;
-  hostLogin.value = "";
-  hostName.value = "";
-  hostRole.value = "";
-  hostEmail.value = "";
-  hostPhone.value = "";
-  hostAccountSelection.value = "";
 }
 
-function removeHost(id: number) {
-  hosts.value = hosts.value.filter((host) => host.id !== id);
-  showToast("El anfitrión se eliminó del registro de demostración.", "success");
+async function removeHost(id: number) {
+  try {
+    const response = await fetch(`/api/department-hosts/${id}`, { method: "DELETE" });
+    const result = await response.json() as { hosts?: Host[]; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo eliminar el anfitrión.");
+      return;
+    }
+    if (!Array.isArray(result.hosts)) {
+      console.error("La API devolvió una lista de anfitriones con formato inválido.");
+      showToast("El anfitrión se eliminó, pero no se pudo actualizar la lista.");
+      return;
+    }
+    setDepartmentHosts(result.hosts);
+    showToast("El anfitrión se eliminó.", "success");
+  } catch (error) {
+    console.error("Failed to delete department host:", error);
+    showToast("No se pudo conectar con el servidor para eliminar el anfitrión.");
+  }
 }
 
 function selectCalendarDay(date: string) {
