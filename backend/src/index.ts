@@ -1968,6 +1968,8 @@ async function listRecentDailyLogEntries(
   category: string,
   hosts: string[],
   includeRecorder: boolean,
+  page: number,
+  pageSize: number,
 ) {
   const conditions = ["d.entry_date BETWEEN ? AND ?"];
   const parameters: Array<string | number> = [fromDate, toDate];
@@ -1988,6 +1990,14 @@ async function listRecentDailyLogEntries(
     conditions.push(`COALESCE(d.host_name, '') IN (${hosts.map(() => "?").join(", ")})`);
     parameters.push(...hosts);
   }
+  const [countRows] = await pool.execute<RowDataPacket[]>(
+    `${dailyLogRecordsCte(false)}
+     SELECT COUNT(*) AS total
+     FROM daily_log_records d
+     WHERE ${conditions.join(" AND ")}`,
+    parameters,
+  );
+  const total = Number(countRows[0]?.total ?? 0);
   const [rows] = await pool.execute<DailyLogRow[]>(
     `${dailyLogRecordsCte(includeRecorder)}
      SELECT d.id, d.entry_date, d.entry_time,
@@ -1997,10 +2007,10 @@ async function listRecentDailyLogEntries(
      FROM daily_log_records d
      WHERE ${conditions.join(" AND ")}
      ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
-     LIMIT 10`,
-    parameters,
+     LIMIT ? OFFSET ?`,
+    [...parameters, pageSize, (page - 1) * pageSize],
   );
-  return rows.map(mapDailyLogRow);
+  return { entries: rows.map(mapDailyLogRow), total };
 }
 
 async function getDailyLogSummary(fromDate: string, toDate: string) {
@@ -3732,6 +3742,8 @@ const server = Bun.serve({
           const hostFilters = url.searchParams.getAll("host").map((host) => host.trim());
           const page = Number(url.searchParams.get("page") ?? 1);
           const pageSize = Number(url.searchParams.get("pageSize") ?? 50);
+          const recentPage = Number(url.searchParams.get("recentPage") ?? 1);
+          const recentPageSize = 7;
           const daySpan =
             (Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) /
             86_400_000;
@@ -3747,25 +3759,31 @@ const server = Bun.serve({
             !["", "Llegada", "Ingreso", "Retiro", "Observaciones"].includes(event) ||
             !["", "Visitante", "Contratista", "Proveedor", "Sin categoría"].includes(category) ||
             !Number.isSafeInteger(page) || page < 1 ||
-            !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100
+            !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
+            !Number.isSafeInteger(recentPage) || recentPage < 1 ||
+            !Number.isSafeInteger((recentPage - 1) * recentPageSize)
           ) {
             return Response.json(
               { error: "Revisa las fechas y los filtros de bitácora." },
               { status: 400 },
             );
           }
-          const [{ entries, total, hosts }, recentEntries, summary] = await Promise.all([
+          const [{ entries, total, hosts }, recentResult, summary] = await Promise.all([
             listDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, page, pageSize, user.isAdmin,
             ),
             listRecentDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, user.isAdmin,
+              recentPage, recentPageSize,
             ),
             getDailyLogSummary(fromDate, toDate),
           ]);
           return Response.json({
             entries,
-            recentEntries,
+            recentEntries: recentResult.entries,
+            recentTotal: recentResult.total,
+            recentPage,
+            recentPages: Math.max(1, Math.ceil(recentResult.total / recentPageSize)),
             summary,
             hosts,
             total,

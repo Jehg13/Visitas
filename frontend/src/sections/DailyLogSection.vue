@@ -70,6 +70,9 @@ type SubjectType = "appointment" | "externalStaff" | "visitor" | "manual";
 type LogResponse = {
   entries?: LogEntry[];
   recentEntries?: LogEntry[];
+  recentTotal?: number;
+  recentPage?: number;
+  recentPages?: number;
   summary?: LogSummary;
   hosts?: string[];
   total?: number;
@@ -104,6 +107,8 @@ const hostFilter = ref("");
 const departmentFilter = ref("");
 const page = ref(1);
 const pageSize = 10;
+const recentPage = ref(1);
+const recentPageSize = 7;
 const entries = ref<LogEntry[]>([]);
 const activityEntries = ref<LogEntry[]>([]);
 const summary = ref<LogSummary>({
@@ -115,6 +120,8 @@ const summary = ref<LogSummary>({
 const hosts = ref<string[]>([]);
 const total = ref(0);
 const pages = ref(1);
+const recentTotal = ref(0);
+const recentPages = ref(1);
 const loading = ref(false);
 const saving = ref(false);
 const exporting = ref(false);
@@ -378,6 +385,7 @@ function requestUrl() {
     category: categoryFilter.value,
     page: String(page.value),
     pageSize: String(pageSize),
+    recentPage: String(recentPage.value),
   });
   if (departmentFilter.value) {
     const matchingHosts = hostFilter.value && departmentHostNames.value.includes(hostFilter.value)
@@ -468,6 +476,8 @@ async function loadEntries() {
     error.value = "Selecciona un rango de fechas válido.";
     entries.value = [];
     activityEntries.value = [];
+    recentTotal.value = 0;
+    recentPages.value = 1;
     return;
   }
   const currentRequest = ++requestVersion;
@@ -481,11 +491,15 @@ async function loadEntries() {
       error.value = result.error ?? "No se pudo cargar la bitácora.";
       entries.value = [];
       activityEntries.value = [];
+      recentTotal.value = 0;
+      recentPages.value = 1;
       return;
     }
     if (
       !Array.isArray(result.entries) ||
       !Array.isArray(result.recentEntries) ||
+      !Number.isSafeInteger(result.recentTotal) ||
+      !Number.isSafeInteger(result.recentPages) ||
       !result.summary ||
       !Array.isArray(result.hosts)
     ) {
@@ -493,10 +507,14 @@ async function loadEntries() {
       error.value = "El servidor devolvió datos de bitácora incompletos.";
       entries.value = [];
       activityEntries.value = [];
+      recentTotal.value = 0;
+      recentPages.value = 1;
       return;
     }
     entries.value = result.entries;
     activityEntries.value = result.recentEntries;
+    recentTotal.value = result.recentTotal ?? 0;
+    recentPages.value = result.recentPages ?? 1;
     summary.value = result.summary;
     hosts.value = result.hosts;
     total.value = result.total ?? result.entries.length;
@@ -507,6 +525,8 @@ async function loadEntries() {
       error.value = "No se pudo conectar con el servidor para cargar la bitácora.";
       entries.value = [];
       activityEntries.value = [];
+      recentTotal.value = 0;
+      recentPages.value = 1;
     }
   } finally {
     if (currentRequest === requestVersion) loading.value = false;
@@ -1125,11 +1145,13 @@ function showRecentHistory() {
 
 watch([fromDate, toDate, eventFilter, categoryFilter, hostFilter, departmentFilter], () => {
   page.value = 1;
+  recentPage.value = 1;
   void loadEntries();
 });
-watch(page, () => void loadEntries());
+watch([page, recentPage], () => void loadEntries());
 watch(search, () => {
   page.value = 1;
+  recentPage.value = 1;
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void loadEntries(), 250);
 });
@@ -1563,6 +1585,22 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             <strong>Aún no hay movimientos</strong>
             <p>Los movimientos recientes aparecerán aquí cuando registres una llegada, entrada o salida.</p>
           </div>
+          <nav
+            v-if="recentTotal > recentPageSize"
+            class="daily-log-pagination daily-log-recent-pagination"
+            aria-label="Paginación de actividad reciente"
+          >
+            <span>
+              Mostrando {{ (recentPage - 1) * recentPageSize + 1 }}–{{
+                Math.min(recentPage * recentPageSize, recentTotal)
+              }} de {{ recentTotal }} movimientos
+            </span>
+            <div>
+              <button type="button" :disabled="recentPage <= 1 || loading" @click="recentPage--">Anterior</button>
+              <span class="daily-log-pagination-page">Página {{ recentPage }} de {{ recentPages }}</span>
+              <button type="button" :disabled="recentPage >= recentPages || loading" @click="recentPage++">Siguiente</button>
+            </div>
+          </nav>
         </section>
       </div>
 

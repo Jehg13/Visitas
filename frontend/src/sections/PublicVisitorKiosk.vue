@@ -236,9 +236,6 @@ function resumePendingStatus() {
   );
   statusEventSource.onopen = () => void refreshCompletedStatus();
   statusEventSource.onmessage = () => void refreshCompletedStatus();
-  statusEventSource.onerror = () => {
-    completedStatusError.value = "Actualización instantánea interrumpida; verificando automáticamente…";
-  };
   statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 5000);
   void refreshCompletedStatus();
 }
