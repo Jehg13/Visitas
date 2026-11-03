@@ -239,7 +239,7 @@ function resumePendingStatus() {
   statusEventSource.onerror = () => {
     void refreshCompletedStatus();
   };
-  statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 2000);
+  statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 5000);
   void refreshCompletedStatus();
 }
 

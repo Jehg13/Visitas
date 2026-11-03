@@ -20,4 +20,4 @@ CREATE TABLE IF NOT EXISTS appointment_history (
   KEY idx_appointment_history_appointment (appointment_id, created_at),
   KEY idx_appointment_history_created_by (created_by_login),
   KEY idx_appointment_history_host (host_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

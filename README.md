@@ -187,12 +187,13 @@ Nginx publica un puerto al host.
 
 1. Copia `.env.production.example` como `.env.production` y configura
    `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` y `DB_PASSWORD` con los datos que
-   te entregue la persona responsable del VPS, la zona horaria del sitio en
-   `APP_TIME_ZONE` (por defecto `America/Mexico_City`) y el dominio HTTPS en
-   `PUBLIC_APP_URL`. Los movimientos de autorregistro usan esta zona para que
-   su fecha coincida con la bitácora de recepción. Usa un usuario MySQL propio
-   para la aplicación, no `root`, y no subas `.env.production` al repositorio.
-   Si MySQL está instalado
+   te entregue la persona responsable del VPS, además del dominio HTTPS en
+   `PUBLIC_APP_URL`. `APP_TIME_ZONE` define la zona usada al guardar las horas
+   de autorregistro del kiosco; su valor predeterminado es
+   `America/Mexico_City`. Los movimientos de autorregistro usan esta zona para
+   que su fecha coincida con la bitácora de recepción. Usa un usuario MySQL
+   propio para la aplicación, no `root`, y no subas `.env.production` al
+   repositorio. Si MySQL está instalado
    directamente en el mismo VPS, `DB_HOST=host.docker.internal` usa la puerta
    de enlace del host configurada por Docker; si está en otro servidor, usa su
    nombre DNS o IP privada.
@@ -338,7 +339,7 @@ Si debes crearla manualmente, puedes ejecutar como administrador:
 
 ```sql
 CREATE DATABASE IF NOT EXISTS visitas_recep
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE USER IF NOT EXISTS 'visitas_app'@'localhost'
   IDENTIFIED BY 'REEMPLAZA_CON_UNA_CONTRASEÑA_LOCAL';

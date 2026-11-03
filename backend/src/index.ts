@@ -1104,6 +1104,7 @@ async function handleVisitorKioskRequest(
         ],
       );
       await connection.commit();
+      publishRealtimeUpdate(requestKey);
       return Response.json({ folio, visitorName: input.visitorName }, { status: 201 });
     } catch (error) {
       await connection.rollback();
@@ -1624,20 +1625,6 @@ function isValidDateString(value: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-function getMexicoCityDate() {
-  const dateParts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/Mexico_City",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    })
-      .formatToParts(new Date())
-      .map(({ type, value }) => [type, value]),
-  );
-  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
-}
-
 function parseDailyLogInput(value: unknown): DailyLogInput | null {
   if (!isRecord(value)) return null;
   const { event, date, time, personName, details, appointmentId, externalStaffId, visitorRecordId } = value;
@@ -1855,7 +1842,7 @@ function dailyLogRecordsCte(includeRecorder: boolean) {
            CASE
              WHEN d.details LIKE 'Registro manual · Folio %' THEN COALESCE(
                (
-                 SELECT r.company_name
+                 SELECT NULLIF(TRIM(r.company_name), '')
                  FROM visitor_kiosk_registrations r
                  WHERE r.visitor_record_id = d.visitor_record_id
                    AND d.details LIKE CONCAT('Registro manual · Folio ', r.folio, ' · %')
@@ -1992,8 +1979,18 @@ async function listRecentDailyLogEntries(
   category: string,
   hosts: string[],
   includeRecorder: boolean,
+  page: number,
+  pageSize: number,
 ) {
   const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts);
+  const [countRows] = await pool.execute<RowDataPacket[]>(
+    `${dailyLogRecordsCte(false)}
+     SELECT COUNT(*) AS total
+     FROM daily_log_records d
+     WHERE ${where}`,
+    parameters,
+  );
+  const total = Number(countRows[0]?.total ?? 0);
   const [rows] = await pool.execute<DailyLogRow[]>(
     `${dailyLogRecordsCte(includeRecorder)}
      SELECT d.id, d.entry_date, d.entry_time,
@@ -2003,10 +2000,10 @@ async function listRecentDailyLogEntries(
      FROM daily_log_records d
      WHERE ${where}
      ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
-     LIMIT 10`,
-    parameters,
+     LIMIT ? OFFSET ?`,
+    [...parameters, pageSize, (page - 1) * pageSize],
   );
-  return rows.map(mapDailyLogEntry);
+  return { entries: rows.map(mapDailyLogEntry), total };
 }
 
 async function getDailyLogSummary(fromDate: string, toDate: string) {
@@ -3687,7 +3684,7 @@ const server = Bun.serve({
         if (!(await hasSectionAccess(user, "recepcion"))) {
           return Response.json({ error: "No tienes permiso para consultar la bitácora." }, { status: 403 });
         }
-        const today = new Date().toISOString().slice(0, 10);
+        const today = getAppDateTime().date;
         const fromDate = url.searchParams.get("from") ?? today;
         const toDate = url.searchParams.get("to") ?? fromDate;
         const daySpan =
@@ -3729,7 +3726,7 @@ const server = Bun.serve({
           if (entryId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
-          const today = new Date().toISOString().slice(0, 10);
+          const today = getAppDateTime().date;
           const fromDate = url.searchParams.get("from") ?? today;
           const toDate = url.searchParams.get("to") ?? fromDate;
           const search = url.searchParams.get("q")?.trim() ?? "";
@@ -3738,6 +3735,8 @@ const server = Bun.serve({
           const hostFilters = url.searchParams.getAll("host").map((host) => host.trim());
           const page = Number(url.searchParams.get("page") ?? 1);
           const pageSize = Number(url.searchParams.get("pageSize") ?? 50);
+          const recentPage = Number(url.searchParams.get("recentPage") ?? 1);
+          const recentPageSize = 7;
           const daySpan =
             (Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) /
             86_400_000;
@@ -3753,25 +3752,31 @@ const server = Bun.serve({
             !["", "Llegada", "Ingreso", "Retiro", "Observaciones"].includes(event) ||
             !["", "Visitante", "Contratista", "Proveedor", "Sin categoría"].includes(category) ||
             !Number.isSafeInteger(page) || page < 1 ||
-            !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100
+            !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
+            !Number.isSafeInteger(recentPage) || recentPage < 1 ||
+            !Number.isSafeInteger((recentPage - 1) * recentPageSize)
           ) {
             return Response.json(
               { error: "Revisa las fechas y los filtros de bitácora." },
               { status: 400 },
             );
           }
-          const [{ entries, total, hosts }, recentEntries, summary] = await Promise.all([
+          const [{ entries, total, hosts }, recentResult, summary] = await Promise.all([
             listDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, page, pageSize, user.isAdmin,
             ),
             listRecentDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, user.isAdmin,
+              recentPage, recentPageSize,
             ),
             getDailyLogSummary(fromDate, toDate),
           ]);
           return Response.json({
             entries,
-            recentEntries,
+            recentEntries: recentResult.entries,
+            recentTotal: recentResult.total,
+            recentPage,
+            recentPages: Math.max(1, Math.ceil(recentResult.total / recentPageSize)),
             summary,
             hosts,
             total,
@@ -3846,7 +3851,7 @@ const server = Bun.serve({
         }
         const isMovementEvent =
           input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro";
-        const currentBusinessDate = getMexicoCityDate();
+        const currentBusinessDate = getAppDateTime().date;
         if (!user.isAdmin && isMovementEvent && input.date !== currentBusinessDate) {
           return Response.json(
             { error: "Recepción solo puede registrar movimientos del día actual. Solicita apoyo a Administración." },
@@ -4052,7 +4057,7 @@ const server = Bun.serve({
              WHERE d.event_type IN ${movementTypes}
                AND d.appointment_id <=> ?
            )
-           SELECT event_type
+           SELECT event_type, DATE_FORMAT(entry_date, '%Y-%m-%d') AS movement_date
            FROM movements
            WHERE subject_key = ?
            ORDER BY entry_date DESC, entry_time DESC, id DESC

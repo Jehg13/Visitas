@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS equipment_declarations (
   CONSTRAINT fk_equipment_declarations_appointment
     FOREIGN KEY (appointment_id) REFERENCES appointments (id)
     ON UPDATE CASCADE ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS equipment_declaration_items (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS equipment_declaration_items (
   CONSTRAINT fk_equipment_declaration_items_declaration
     FOREIGN KEY (declaration_id) REFERENCES equipment_declarations (id)
     ON UPDATE CASCADE ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS equipment_inspections (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS equipment_inspections (
   CONSTRAINT fk_equipment_inspections_declaration
     FOREIGN KEY (declaration_id) REFERENCES equipment_declarations (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS equipment_inspection_items (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -97,4 +97,4 @@ CREATE TABLE IF NOT EXISTS equipment_inspection_items (
   CONSTRAINT fk_equipment_inspection_items_declaration_item
     FOREIGN KEY (declaration_item_id) REFERENCES equipment_declaration_items (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

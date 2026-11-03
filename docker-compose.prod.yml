@@ -1,10 +1,29 @@
 services:
-  migrate:
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - private
+      - coolify
+
+  api:
     build:
       context: .
       target: api
-    restart: "no"
-    command: ["bun", "run", "--filter", "visitas-backend", "db:migrate"]
+    restart: unless-stopped
     environment: &backend-environment
       NODE_ENV: production
       DB_HOST: ${DB_HOST:?Set DB_HOST in .env.production}
@@ -20,17 +39,6 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:?Set the public HTTPS URL in .env.production}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - private
-
-  api:
-    build:
-      context: .
-      target: api
-    restart: unless-stopped
-    environment: *backend-environment
     expose:
       - "3000"
     extra_hosts:
@@ -52,26 +60,23 @@ services:
       start_period: 15s
     networks:
       - private
+      - coolify
 
-  web:
+  migrate:
     build:
       context: .
-      target: web
-    restart: unless-stopped
-    ports:
-      - "${HTTP_PORT:-8080}:80"
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      target: api
+    restart: "no"
+    command: ["bun", "run", "--filter", "visitas-backend", "db:migrate"]
+    environment: *backend-environment
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - private
+      - coolify
 
 networks:
   private:
     driver: bridge
+  coolify:
+    external: true
