@@ -4496,7 +4496,7 @@ const server = Bun.serve({
         const encodedImage = qrDataUrl.split(",")[1];
         if (!encodedImage) throw new Error("Generated QR image has no image data.");
         const logoFile = Bun.file(
-          new URL("../../frontend/public/images/cymez-mark-email.png", import.meta.url),
+          new URL("../../frontend/public/images/cymez-recep-logo.webp", import.meta.url),
         );
         if (!(await logoFile.exists())) {
           throw new Error("The CyMEZ logo required for the appointment email was not found.");
@@ -4739,9 +4739,9 @@ const server = Bun.serve({
             contentDisposition: "inline",
             cid: qrContentId,
           }, {
-            filename: "logo-cymez.png",
+            filename: "logo-cymez.webp",
             content: logoContent,
-            contentType: "image/png",
+            contentType: "image/webp",
             contentDisposition: "inline",
             cid: "cymez-logo",
           }],

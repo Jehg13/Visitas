@@ -24,6 +24,7 @@ RUN bun install --frozen-lockfile --production
 
 COPY backend backend
 COPY database database
+COPY frontend/public/images/cymez-recep-logo.webp frontend/public/images/cymez-recep-logo.webp
 
 EXPOSE 3000
 
