@@ -1468,8 +1468,8 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.path)({
 });
 __VLS_asFunctionalElement(__VLS_intrinsicElements.input)({
     type: "search",
-    placeholder: "Buscar por nombre o empresa…",
-    'aria-label': "Buscar por nombre o empresa",
+    placeholder: "Buscar por nombre, empresa o folio…",
+    'aria-label': "Buscar por nombre, empresa o folio",
 });
 (__VLS_ctx.search);
 __VLS_asFunctionalElement(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({});

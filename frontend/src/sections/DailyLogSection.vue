@@ -1388,7 +1388,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <form class="daily-log-filters" @submit.prevent="page = 1; loadEntries()">
             <label class="daily-log-search">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
-              <input v-model.trim="search" type="search" placeholder="Buscar por nombre o empresa…" aria-label="Buscar por nombre o empresa" />
+              <input v-model.trim="search" type="search" placeholder="Buscar por nombre, empresa o folio…" aria-label="Buscar por nombre, empresa o folio" />
             </label>
             <label>
               <span class="sr-only">Filtrar por movimiento</span>

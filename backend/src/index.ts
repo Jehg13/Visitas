@@ -6,6 +6,17 @@ import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 
 const port = Number(Bun.env.PORT ?? 3000);
+const appTimeZone = Bun.env.APP_TIME_ZONE?.trim() || "America/Mexico_City";
+const appDateTimeFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: appTimeZone,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
 const sessionLifetimeMs = 8 * 60 * 60 * 1000;
 const sessionCookieName = "visitas_session";
 const secureCookieAttribute = Bun.env.NODE_ENV === "production" ? "; Secure" : "";
@@ -23,6 +34,16 @@ const realtimeSubscribers = new Set<RealtimeSubscriber>();
 const realtimeEncoder = new TextEncoder();
 const maxRealtimeSubscribers = 500;
 const maxPublicRealtimeSubscribersPerKey = 5;
+
+function getAppDateTime() {
+  const parts = Object.fromEntries(
+    appDateTimeFormatter.formatToParts(new Date()).map(({ type, value }) => [type, value]),
+  );
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+  };
+}
 
 function createRealtimeResponse(publicKey: string | null = null) {
   if (
@@ -820,6 +841,7 @@ async function writeVisitorKioskMovement(
   actorLogin: string,
   actorName: string,
 ) {
+  const { date, time } = getAppDateTime();
   const details = event === "Ingreso" && !Boolean(registration.kiosk_items_present)
     ? `Registro manual · Folio ${registration.folio} · Ingreso autorizado sin equipo ni herramientas`
     : `Registro manual · Folio ${registration.folio} · Checklist de ${event === "Ingreso" ? "entrada" : "salida"} completado`;
@@ -835,8 +857,10 @@ async function writeVisitorKioskMovement(
     `INSERT INTO daily_log_entries
        (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
         details, visitor_record_id)
-     VALUES (CURDATE(), CURTIME(), ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
+      date,
+      time,
       event,
       registration.visitor_name,
       actorLogin,
@@ -1055,12 +1079,15 @@ async function handleVisitorKioskRequest(
         );
       }
       transactionStep = "registrar llegada en bitácora";
+      const { date, time } = getAppDateTime();
       await connection.execute(
         `INSERT INTO daily_log_entries
            (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
             details, visitor_record_id)
-         VALUES (CURDATE(), CURTIME(), 'Llegada', ?, 'autorregistro', 'Registro manual', ?, ?)`,
+         VALUES (?, ?, 'Llegada', ?, 'autorregistro', 'Registro manual', ?, ?)`,
         [
+          date,
+          time,
           input.visitorName,
           `Registro manual · Folio ${folio} · Pendiente de autorización · Motivo: ${input.visitReason}`,
           visitorRecordId,
@@ -1792,6 +1819,11 @@ END`;
 
 const dailyLogEntryPartition = `CASE
   WHEN d.event_type = 'Observaciones' THEN CONCAT('observation:', d.id)
+  WHEN d.details LIKE 'Registro manual · Folio %'
+    THEN CONCAT(
+      'registration:',
+      SUBSTRING_INDEX(SUBSTRING_INDEX(d.details, 'Folio ', -1), ' ·', 1)
+    )
   WHEN d.appointment_id IS NOT NULL
     THEN CONCAT('appointment:', d.appointment_id, ':', d.subject_key)
   ELSE CONCAT('date:', d.entry_date, ':', d.subject_key)
@@ -1806,7 +1838,19 @@ function dailyLogRecordsCte(includeRecorder: boolean) {
            ${includeRecorder ? "d.recorded_by_name" : "NULL"} AS recorded_by_name,
            d.details,
            d.appointment_id, d.external_staff_id, d.visitor_record_id,
-           COALESCE(bp.name, a.company_name) AS company_name,
+           CASE
+             WHEN d.details LIKE 'Registro manual · Folio %' THEN COALESCE(
+               (
+                 SELECT r.company_name
+                 FROM visitor_kiosk_registrations r
+                 WHERE r.visitor_record_id = d.visitor_record_id
+                   AND d.details LIKE CONCAT('Registro manual · Folio ', r.folio, ' · %')
+                 LIMIT 1
+               ),
+               'Público general'
+             )
+             ELSE COALESCE(bp.name, a.company_name)
+           END AS company_name,
            a.host_name,
            CASE
              WHEN bp.partner_type IS NOT NULL THEN bp.partner_type
@@ -1842,9 +1886,9 @@ function dailyLogConditions(
   const conditions = ["d.entry_date BETWEEN ? AND ?"];
   const parameters: Array<string | number> = [fromDate, toDate];
   if (search) {
-    conditions.push("(d.person_name LIKE ? OR COALESCE(d.company_name, '') LIKE ?)");
+    conditions.push("(d.person_name LIKE ? OR COALESCE(d.company_name, '') LIKE ? OR COALESCE(d.details, '') LIKE ?)");
     const searchTerm = `%${search}%`;
-    parameters.push(searchTerm, searchTerm);
+    parameters.push(searchTerm, searchTerm, searchTerm);
   }
   if (event) {
     conditions.push("d.event_type = ?");
@@ -1945,7 +1989,7 @@ async function listRecentDailyLogEntries(
      FROM daily_log_records d
      WHERE ${where}
      ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
-     LIMIT 6`,
+     LIMIT 10`,
     parameters,
   );
   return rows.map(mapDailyLogEntry);
@@ -3970,14 +4014,14 @@ const server = Bun.serve({
         const movementTypes = "('Llegada', 'Ingreso', 'Retiro')";
         const [latestMovementRows] = await pool.execute<RowDataPacket[]>(
           `WITH movements AS (
-             SELECT d.id, d.event_type, d.entry_date, d.entry_time,
+             SELECT d.event_type, d.entry_date, d.entry_time,
                     ${dailyLogSubjectKey} AS subject_key
              FROM daily_log_entries d
              ${dailyLogJoins}
              WHERE d.event_type IN ${movementTypes}
                AND d.appointment_id <=> ?
            )
-           SELECT id, event_type, DATE_FORMAT(entry_date, '%Y-%m-%d') AS movement_date
+           SELECT event_type
            FROM movements
            WHERE subject_key = ?
            ORDER BY entry_date DESC, entry_time DESC, id DESC
@@ -4023,55 +4067,24 @@ const server = Bun.serve({
           return Response.json({ error: "No se puede registrar la salida: primero registra una llegada o entrada para esta persona." }, { status: 409 });
         }
 
-        const isStateTransition =
-          (input.event === "Ingreso" && latestMovement === "Llegada") ||
-          (input.event === "Retiro" &&
-            (latestMovement === "Ingreso" || latestMovement === "Llegada"));
-        const canUpdateCurrentMovement =
-          isStateTransition &&
-          latestMovementRow &&
-          (input.appointmentId !== null || latestMovementRow.movement_date === input.date);
-        if (canUpdateCurrentMovement) {
-          await pool.execute(
-            `UPDATE daily_log_entries
-             SET entry_date = ?, entry_time = ?, event_type = ?, person_name = ?,
-                 recorded_by_login = ?, recorded_by_name = ?, details = ?,
-                 appointment_id = ?, external_staff_id = ?, visitor_record_id = ?
-             WHERE id = ?`,
-            [
-              input.date,
-              input.time,
-              input.event,
-              personName,
-              user.login,
-              user.name?.trim() || user.login,
-              input.details || null,
-              input.appointmentId,
-              externalStaffId,
-              visitorId,
-              Number(latestMovementRow.id),
-            ],
-          );
-        } else {
-          await pool.execute(
-            `INSERT INTO daily_log_entries
-               (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
-                appointment_id, external_staff_id, visitor_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              input.date,
-              input.time,
-              input.event,
-              personName,
-              user.login,
-              user.name?.trim() || user.login,
-              input.details || null,
-              input.appointmentId,
-              externalStaffId,
-              visitorId,
-            ],
-          );
-        }
+        await pool.execute(
+          `INSERT INTO daily_log_entries
+             (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
+              appointment_id, external_staff_id, visitor_record_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            input.date,
+            input.time,
+            input.event,
+            personName,
+            user.login,
+            user.name?.trim() || user.login,
+            input.details || null,
+            input.appointmentId,
+            externalStaffId,
+            visitorId,
+          ],
+        );
         if (
           input.appointmentId !== null &&
           (input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro")
