@@ -98,7 +98,7 @@ const emit = defineEmits<{
       <div class="workspace-table-scroll business-directory-table-scroll">
         <table class="workspace-table business-partner-table">
           <thead>
-            <tr><th>Nombre</th><th>Descripción</th><th>RFC</th><th>Categoría</th><th>Asunto</th><th>Empleados</th><th>Estado</th><th>Acciones</th></tr>
+            <tr><th>Nombre</th><th>Descripción</th><th>RFC</th><th>Categoría</th><th class="business-partner-subject-column">Asunto</th><th>Empleados</th><th>Estado</th><th>Acciones</th></tr>
           </thead>
           <tbody>
             <tr v-for="partner in paginatedBusinessPartners" :key="partner.id">
@@ -111,7 +111,7 @@ const emit = defineEmits<{
               </td>
               <td>{{ partner.rfc }}</td>
               <td>{{ partner.category }}</td>
-              <td>{{ partner.type === "Visitante" ? partner.subject || "—" : "—" }}</td>
+              <td class="business-partner-subject-column">{{ partner.type === "Visitante" ? partner.subject || "—" : "—" }}</td>
               <td>{{ partner.employeeCount }}</td>
               <td>
                 <span
