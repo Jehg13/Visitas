@@ -69,6 +69,7 @@ type Department = {
 type SubjectType = "appointment" | "externalStaff" | "visitor" | "manual";
 type LogResponse = {
   entries?: LogEntry[];
+  recentEntries?: LogEntry[];
   summary?: LogSummary;
   hosts?: string[];
   total?: number;
@@ -104,6 +105,7 @@ const departmentFilter = ref("");
 const page = ref(1);
 const pageSize = 10;
 const entries = ref<LogEntry[]>([]);
+const activityEntries = ref<LogEntry[]>([]);
 const summary = ref<LogSummary>({
   movementCount: 0,
   insideNow: 0,
@@ -256,7 +258,7 @@ const groupedEntries = computed(() => {
   }
   return [...groups.entries()].map(([date, groupEntries]) => ({ date, entries: groupEntries }));
 });
-const recentEntries = computed(() => entries.value.slice(0, 6));
+const recentEntries = computed(() => activityEntries.value);
 const rangeLabel = computed(() => {
   if (fromDate.value === toDate.value) return formatDate(fromDate.value);
   return `${formatDate(fromDate.value)} — ${formatDate(toDate.value)}`;
@@ -457,6 +459,7 @@ async function loadEntries() {
   if (!fromDate.value || !toDate.value || fromDate.value > toDate.value) {
     error.value = "Selecciona un rango de fechas válido.";
     entries.value = [];
+    activityEntries.value = [];
     return;
   }
   const currentRequest = ++requestVersion;
@@ -469,15 +472,23 @@ async function loadEntries() {
     if (!response.ok) {
       error.value = result.error ?? "No se pudo cargar la bitácora.";
       entries.value = [];
+      activityEntries.value = [];
       return;
     }
-    if (!Array.isArray(result.entries) || !result.summary || !Array.isArray(result.hosts)) {
+    if (
+      !Array.isArray(result.entries) ||
+      !Array.isArray(result.recentEntries) ||
+      !result.summary ||
+      !Array.isArray(result.hosts)
+    ) {
       console.error("La API devolvió una bitácora con formato inválido.");
       error.value = "El servidor devolvió datos de bitácora incompletos.";
       entries.value = [];
+      activityEntries.value = [];
       return;
     }
     entries.value = result.entries;
+    activityEntries.value = result.recentEntries;
     summary.value = result.summary;
     hosts.value = result.hosts;
     total.value = result.total ?? result.entries.length;
@@ -487,6 +498,7 @@ async function loadEntries() {
     if (currentRequest === requestVersion) {
       error.value = "No se pudo conectar con el servidor para cargar la bitácora.";
       entries.value = [];
+      activityEntries.value = [];
     }
   } finally {
     if (currentRequest === requestVersion) loading.value = false;

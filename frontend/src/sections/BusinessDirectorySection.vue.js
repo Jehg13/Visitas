@@ -150,7 +150,9 @@ __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
-__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
+__VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({
+    ...{ class: "business-partner-subject-column" },
+});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
 __VLS_asFunctionalElement(__VLS_intrinsicElements.th, __VLS_intrinsicElements.th)({});
@@ -174,7 +176,9 @@ for (const [partner] of __VLS_getVForSourceType((__VLS_ctx.paginatedBusinessPart
     (partner.rfc);
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     (partner.category);
-    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
+    __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({
+        ...{ class: "business-partner-subject-column" },
+    });
     (partner.type === "Visitante" ? partner.subject || "—" : "—");
     __VLS_asFunctionalElement(__VLS_intrinsicElements.td, __VLS_intrinsicElements.td)({});
     (partner.employeeCount);
@@ -275,7 +279,9 @@ if (__VLS_ctx.filteredBusinessPartners.length > __VLS_ctx.partnerRowsPerPage) {
 /** @type {__VLS_StyleScopedClasses['business-directory-table-scroll']} */ ;
 /** @type {__VLS_StyleScopedClasses['workspace-table']} */ ;
 /** @type {__VLS_StyleScopedClasses['business-partner-table']} */ ;
+/** @type {__VLS_StyleScopedClasses['business-partner-subject-column']} */ ;
 /** @type {__VLS_StyleScopedClasses['business-partner-description']} */ ;
+/** @type {__VLS_StyleScopedClasses['business-partner-subject-column']} */ ;
 /** @type {__VLS_StyleScopedClasses['partner-status-pill']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-actions']} */ ;
 /** @type {__VLS_StyleScopedClasses['staff-edit-button']} */ ;

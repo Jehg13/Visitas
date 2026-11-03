@@ -1793,12 +1793,12 @@ END`;
 const dailyLogEntryPartition = `CASE
   WHEN d.event_type = 'Observaciones' THEN CONCAT('observation:', d.id)
   WHEN d.appointment_id IS NOT NULL
-    THEN CONCAT('appointment:', d.appointment_id, ':', ${dailyLogSubjectKey})
-  ELSE CONCAT('date:', DATE_FORMAT(d.entry_date, '%Y-%m-%d'), ':', ${dailyLogSubjectKey})
+    THEN CONCAT('appointment:', d.appointment_id, ':', d.subject_key)
+  ELSE CONCAT('date:', d.entry_date, ':', d.subject_key)
 END`;
 
-function dailyLogRankedEntriesCte(includeRecorder: boolean) {
-  return `WITH ranked_entries AS (
+function dailyLogRecordsCte(includeRecorder: boolean) {
+  return `WITH daily_log_records AS (
     SELECT d.id,
            DATE_FORMAT(d.entry_date, '%Y-%m-%d') AS entry_date,
            TIME_FORMAT(d.entry_time, '%H:%i') AS entry_time,
@@ -1813,25 +1813,31 @@ function dailyLogRankedEntriesCte(includeRecorder: boolean) {
              WHEN gv.id IS NOT NULL THEN 'Visitante'
              ELSE 'Sin categoría'
            END AS category,
-           ROW_NUMBER() OVER (
-             PARTITION BY ${dailyLogEntryPartition}
-             ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
-           ) AS row_num
+           (${dailyLogSubjectKey}) AS subject_key
     FROM daily_log_entries d
     ${dailyLogJoins}
   )`;
 }
 
-async function listDailyLogEntries(
+function dailyLogRankedEntriesCte(includeRecorder: boolean) {
+  return `${dailyLogRecordsCte(includeRecorder)},
+    ranked_entries AS (
+      SELECT d.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY ${dailyLogEntryPartition}
+               ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
+             ) AS row_num
+      FROM daily_log_records d
+    )`;
+}
+
+function dailyLogConditions(
   fromDate: string,
   toDate: string,
   search: string,
   event: string,
   category: string,
   hosts: string[],
-  page: number,
-  pageSize: number,
-  includeRecorder: boolean,
 ) {
   const conditions = ["d.entry_date BETWEEN ? AND ?"];
   const parameters: Array<string | number> = [fromDate, toDate];
@@ -1852,7 +1858,41 @@ async function listDailyLogEntries(
     conditions.push(`COALESCE(d.host_name, '') IN (${hosts.map(() => "?").join(", ")})`);
     parameters.push(...hosts);
   }
-  const where = conditions.join(" AND ");
+  return { where: conditions.join(" AND "), parameters };
+}
+
+function mapDailyLogEntry(row: DailyLogRow) {
+  const company = row.company_name?.trim();
+  const isManualRegistration = row.details?.startsWith("Registro manual · Folio ") ?? false;
+  return {
+    id: Number(row.id),
+    date: row.entry_date,
+    time: row.entry_time,
+    event: row.event_type,
+    person: row.person_name,
+    actorName: row.recorded_by_name,
+    details: row.details ?? "",
+    appointmentId: row.appointment_id === null ? null : Number(row.appointment_id),
+    externalStaffId: row.external_staff_id === null ? null : Number(row.external_staff_id),
+    visitorRecordId: row.visitor_record_id === null ? null : Number(row.visitor_record_id),
+    company: company || (isManualRegistration ? "Público general" : ""),
+    host: row.host_name ?? "",
+    category: row.category,
+  };
+}
+
+async function listDailyLogEntries(
+  fromDate: string,
+  toDate: string,
+  search: string,
+  event: string,
+  category: string,
+  hosts: string[],
+  page: number,
+  pageSize: number,
+  includeRecorder: boolean,
+) {
+  const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts);
   const [countRows] = await pool.execute<RowDataPacket[]>(
     `${dailyLogRankedEntriesCte(false)}
      SELECT COUNT(*) AS total
@@ -1880,28 +1920,35 @@ async function listDailyLogEntries(
      ORDER BY host_name`,
   );
   return {
-    entries: rows.map((row) => {
-      const company = row.company_name?.trim();
-      const isManualRegistration = row.details?.startsWith("Registro manual · Folio ") ?? false;
-      return {
-        id: Number(row.id),
-        date: row.entry_date,
-        time: row.entry_time,
-        event: row.event_type,
-        person: row.person_name,
-        actorName: row.recorded_by_name,
-        details: row.details ?? "",
-        appointmentId: row.appointment_id === null ? null : Number(row.appointment_id),
-        externalStaffId: row.external_staff_id === null ? null : Number(row.external_staff_id),
-        visitorRecordId: row.visitor_record_id === null ? null : Number(row.visitor_record_id),
-        company: company || (isManualRegistration ? "Público general" : ""),
-        host: row.host_name ?? "",
-        category: row.category,
-      };
-    }),
+    entries: rows.map(mapDailyLogEntry),
     total,
     hosts: hostRows.map((row) => String(row.host_name)),
   };
+}
+
+async function listRecentDailyLogEntries(
+  fromDate: string,
+  toDate: string,
+  search: string,
+  event: string,
+  category: string,
+  hosts: string[],
+  includeRecorder: boolean,
+) {
+  const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts);
+  const [rows] = await pool.execute<DailyLogRow[]>(
+    `${dailyLogRecordsCte(includeRecorder)}
+     SELECT d.id, d.entry_date, d.entry_time,
+            d.event_type, d.person_name, d.recorded_by_name, d.details,
+            d.appointment_id, d.external_staff_id, d.visitor_record_id,
+            d.company_name, d.host_name, d.category
+     FROM daily_log_records d
+     WHERE ${where}
+     ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
+     LIMIT 6`,
+    parameters,
+  );
+  return rows.map(mapDailyLogEntry);
 }
 
 async function getDailyLogSummary(fromDate: string, toDate: string) {
@@ -3655,14 +3702,18 @@ const server = Bun.serve({
               { status: 400 },
             );
           }
-          const [{ entries, total, hosts }, summary] = await Promise.all([
+          const [{ entries, total, hosts }, recentEntries, summary] = await Promise.all([
             listDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, page, pageSize, user.isAdmin,
+            ),
+            listRecentDailyLogEntries(
+              fromDate, toDate, search, event, category, hostFilters, user.isAdmin,
             ),
             getDailyLogSummary(fromDate, toDate),
           ]);
           return Response.json({
             entries,
+            recentEntries,
             summary,
             hosts,
             total,

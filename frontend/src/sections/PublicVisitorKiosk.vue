@@ -70,7 +70,7 @@ const completedStatus = ref<
   "reference" | "awaiting-id-check" | "awaiting-entry-authorization" |
   "awaiting-entry-checklist" | "entered" | "rejected"
 >("reference");
-const completedStatusError = ref("");
+const completedStatusPersistenceError = ref("");
 const pendingRegistration = ref<PendingKioskRegistration | null>(null);
 const needsReceptionIdCheck = computed(() => declaresIdRetained.value === true);
 const waitingMessage = computed(() => {
@@ -222,7 +222,7 @@ function scheduleKioskReset(delay: number) {
       sessionStorage.setItem(pendingStorageKey, JSON.stringify(pendingRegistration.value));
     } catch (error) {
       console.error("No se pudo actualizar la vigencia del folio en esta pestaña:", error);
-      completedStatusError.value = "No se pudo conservar este folio al recargar la página.";
+      completedStatusPersistenceError.value = "No se pudo conservar este folio al recargar la página.";
     }
   }
   resetTimer = window.setTimeout(resetKiosk, delay);
@@ -237,9 +237,9 @@ function resumePendingStatus() {
   statusEventSource.onopen = () => void refreshCompletedStatus();
   statusEventSource.onmessage = () => void refreshCompletedStatus();
   statusEventSource.onerror = () => {
-    completedStatusError.value = "Actualización instantánea interrumpida; verificando automáticamente…";
+    void refreshCompletedStatus();
   };
-  statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 5000);
+  statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 2000);
   void refreshCompletedStatus();
 }
 
@@ -483,7 +483,7 @@ function resetKiosk() {
   showRestoreNotice.value = false;
   completed.value = null;
   completedStatus.value = "reference";
-  completedStatusError.value = "";
+  completedStatusPersistenceError.value = "";
   requestIdempotencyKey.value = crypto.randomUUID();
   step.value = 0;
   clearErrors();
@@ -513,7 +513,6 @@ async function refreshCompletedStatus() {
     ) {
       throw new Error("El servidor devolvió un estado de revisión inválido.");
     }
-    completedStatusError.value = "";
     if (result.authorizationStatus === "Rechazada") {
       completedStatus.value = "rejected";
     } else if (result.authorizationStatus === "Autorizada" && result.entered) {
@@ -532,9 +531,7 @@ async function refreshCompletedStatus() {
       scheduleKioskReset(30000);
     }
   } catch (error) {
-    console.error("No se pudo actualizar el estado del autorregistro:", error);
-    completedStatusError.value =
-      error instanceof Error ? error.message : "No se pudo actualizar el estado de la revisión.";
+    console.warn("No se pudo consultar el estado del autorregistro; se reintentará automáticamente:", error);
   } finally {
     statusRequestInProgress = false;
   }
@@ -998,8 +995,8 @@ async function submitRegistration() {
           <span class="visitor-kiosk-waiting-indicator" aria-hidden="true"></span>
           <span>{{ waitingMessage }}</span>
         </div>
-        <p v-if="completedStatusError" class="visitor-kiosk-status-error" role="status">
-          {{ completedStatusError }}. El sistema volverá a consultar automáticamente.
+        <p v-if="completedStatusPersistenceError" class="visitor-kiosk-status-error" role="status">
+          {{ completedStatusPersistenceError }}
         </p>
         <button class="visitor-kiosk-secondary" type="button" @click="resetKiosk">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z" /></svg>
