@@ -31,6 +31,7 @@ services:
       DB_NAME: ${DB_NAME:-visitas_recep}
       DB_USER: ${DB_USER:-visitas_app}
       DB_PASSWORD: ${DB_PASSWORD}
+      APP_TIME_ZONE: ${APP_TIME_ZONE:-America/Mexico_City}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURE: ${SMTP_SECURE:-false}

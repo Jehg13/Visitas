@@ -334,6 +334,7 @@ const externalStaffPartnerOptions = computed(() =>
 );
 
 let realtimeEvents: EventSource | null = null;
+let realtimeFallbackTimer: number | undefined;
 
 function refreshVisibleSection() {
   if (document.visibilityState !== "visible") return;
@@ -387,6 +388,19 @@ function refreshAfterRealtimeUpdate() {
   window.dispatchEvent(new Event("visitas:data-changed"));
 }
 
+function stopRealtimeFallback() {
+  if (realtimeFallbackTimer === undefined) return;
+  window.clearInterval(realtimeFallbackTimer);
+  realtimeFallbackTimer = undefined;
+}
+
+function startRealtimeFallback() {
+  if (realtimeFallbackTimer !== undefined) return;
+  realtimeFallbackTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") refreshAfterRealtimeUpdate();
+  }, 3000);
+}
+
 onMounted(() => {
   if (currentUser.value.isAdmin || isReception.value) void loadDepartments();
   if (currentUser.value.isAdmin || isReception.value || isHost.value) {
@@ -397,14 +411,19 @@ onMounted(() => {
     void loadHostAccounts();
   }
   realtimeEvents = new EventSource("/api/events");
-  realtimeEvents.onopen = refreshAfterRealtimeUpdate;
+  realtimeEvents.onopen = () => {
+    stopRealtimeFallback();
+    refreshAfterRealtimeUpdate();
+  };
   realtimeEvents.onmessage = refreshAfterRealtimeUpdate;
+  realtimeEvents.onerror = startRealtimeFallback;
   document.addEventListener("visibilitychange", refreshAfterRealtimeUpdate);
 });
 
 onBeforeUnmount(() => {
   realtimeEvents?.close();
   realtimeEvents = null;
+  stopRealtimeFallback();
   document.removeEventListener("visibilitychange", refreshAfterRealtimeUpdate);
 });
 

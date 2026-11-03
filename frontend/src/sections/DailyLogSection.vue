@@ -69,6 +69,7 @@ type Department = {
 type SubjectType = "appointment" | "externalStaff" | "visitor" | "manual";
 type LogResponse = {
   entries?: LogEntry[];
+  recentEntries?: LogEntry[];
   summary?: LogSummary;
   hosts?: string[];
   total?: number;
@@ -104,6 +105,7 @@ const departmentFilter = ref("");
 const page = ref(1);
 const pageSize = 10;
 const entries = ref<LogEntry[]>([]);
+const activityEntries = ref<LogEntry[]>([]);
 const summary = ref<LogSummary>({
   movementCount: 0,
   insideNow: 0,
@@ -176,7 +178,9 @@ const selectedQuickAppointment = computed(() =>
   todayAppointments.value.find((appointment) => appointment.id === selectedQuickAppointmentId.value) ?? null,
 );
 const selectedEntry = computed(() =>
-  entries.value.find((entry) => entry.id === selectedEntryId.value) ?? null,
+  entries.value.find((entry) => entry.id === selectedEntryId.value) ??
+  activityEntries.value.find((entry) => entry.id === selectedEntryId.value) ??
+  null,
 );
 const selectedEntryIsHistorical = computed(() =>
   Boolean(selectedEntry.value && !selectedQuickAppointment.value && selectedEntry.value.date !== today.value),
@@ -262,7 +266,7 @@ const groupedEntries = computed(() => {
   }
   return [...groups.entries()].map(([date, groupEntries]) => ({ date, entries: groupEntries }));
 });
-const recentEntries = computed(() => entries.value.slice(0, 6));
+const recentEntries = computed(() => activityEntries.value);
 const rangeLabel = computed(() => {
   if (fromDate.value === toDate.value) return formatDate(fromDate.value);
   return `${formatDate(fromDate.value)} — ${formatDate(toDate.value)}`;
@@ -463,6 +467,7 @@ async function loadEntries() {
   if (!fromDate.value || !toDate.value || fromDate.value > toDate.value) {
     error.value = "Selecciona un rango de fechas válido.";
     entries.value = [];
+    activityEntries.value = [];
     return;
   }
   const currentRequest = ++requestVersion;
@@ -475,15 +480,23 @@ async function loadEntries() {
     if (!response.ok) {
       error.value = result.error ?? "No se pudo cargar la bitácora.";
       entries.value = [];
+      activityEntries.value = [];
       return;
     }
-    if (!Array.isArray(result.entries) || !result.summary || !Array.isArray(result.hosts)) {
+    if (
+      !Array.isArray(result.entries) ||
+      !Array.isArray(result.recentEntries) ||
+      !result.summary ||
+      !Array.isArray(result.hosts)
+    ) {
       console.error("La API devolvió una bitácora con formato inválido.");
       error.value = "El servidor devolvió datos de bitácora incompletos.";
       entries.value = [];
+      activityEntries.value = [];
       return;
     }
     entries.value = result.entries;
+    activityEntries.value = result.recentEntries;
     summary.value = result.summary;
     hosts.value = result.hosts;
     total.value = result.total ?? result.entries.length;
@@ -493,6 +506,7 @@ async function loadEntries() {
     if (currentRequest === requestVersion) {
       error.value = "No se pudo conectar con el servidor para cargar la bitácora.";
       entries.value = [];
+      activityEntries.value = [];
     }
   } finally {
     if (currentRequest === requestVersion) loading.value = false;
@@ -1383,7 +1397,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <form class="daily-log-filters" @submit.prevent="page = 1; loadEntries()">
             <label class="daily-log-search">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
-              <input v-model.trim="search" type="search" placeholder="Buscar por nombre o empresa…" aria-label="Buscar por nombre o empresa" />
+              <input v-model.trim="search" type="search" placeholder="Buscar por nombre, empresa o folio…" aria-label="Buscar por nombre, empresa o folio" />
             </label>
             <label>
               <span class="sr-only">Filtrar por movimiento</span>

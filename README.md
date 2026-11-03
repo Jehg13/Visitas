@@ -188,7 +188,9 @@ Nginx publica un puerto al host.
 1. Copia `.env.production.example` como `.env.production` y configura
    `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` y `DB_PASSWORD` con los datos que
    te entregue la persona responsable del VPS, además del dominio HTTPS en
-   `PUBLIC_APP_URL`. Usa un usuario MySQL propio para la aplicación, no `root`,
+   `PUBLIC_APP_URL`. `APP_TIME_ZONE` define la zona usada al guardar las horas
+   de autorregistro del kiosco; el valor predeterminado es
+   `America/Mexico_City`. Usa un usuario MySQL propio para la aplicación, no `root`,
    y no subas `.env.production` al repositorio. Si MySQL está instalado
    directamente en el mismo VPS, `DB_HOST=host.docker.internal` usa la puerta
    de enlace del host configurada por Docker; si está en otro servidor, usa su
