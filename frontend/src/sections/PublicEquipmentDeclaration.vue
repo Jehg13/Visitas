@@ -33,6 +33,7 @@ const errorMessage = ref("");
 const submitted = ref(false);
 const confirmedReview = ref(false);
 const editingItemIndex = ref<number | null>(null);
+const entryFormKey = ref(0);
 
 function emptyItem(): DeclaredItem {
   return {
@@ -104,6 +105,7 @@ function addItem() {
   else items.value.splice(editingItemIndex.value, 1, item);
   newItem.value = emptyItem();
   editingItemIndex.value = null;
+  entryFormKey.value += 1;
   errorMessage.value = "";
 }
 
@@ -119,6 +121,7 @@ function editItem(index: number) {
 function cancelEdit() {
   newItem.value = emptyItem();
   editingItemIndex.value = null;
+  entryFormKey.value += 1;
   errorMessage.value = "";
 }
 
@@ -189,11 +192,11 @@ async function submitDeclaration() {
               </thead>
               <tbody>
                 <tr v-for="(item, index) in declaration.items" :key="item.id ?? index">
-                  <td>{{ item.itemType }}</td>
-                  <td>{{ item.quantity }}</td>
-                  <td>{{ item.product }}</td>
-                  <td>{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
-                  <td>{{ item.notes || "—" }}</td>
+                  <td data-label="Tipo">{{ item.itemType }}</td>
+                  <td data-label="Cantidad">{{ item.quantity }}</td>
+                  <td data-label="Artículo">{{ item.product }}</td>
+                  <td data-label="Identificación">{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
+                  <td data-label="Observaciones">{{ item.notes || "—" }}</td>
                 </tr>
               </tbody>
             </table>
@@ -209,7 +212,7 @@ async function submitDeclaration() {
           <section class="public-equipment-entry" aria-labelledby="equipment-item-form-title">
             <h2 id="equipment-item-form-title">{{ editingItemIndex === null ? "Agregar artículo a la lista" : "Editar artículo" }}</h2>
             <p class="public-equipment-form-hint">Todos los datos son obligatorios, excepto la serie y las observaciones.</p>
-            <form class="public-equipment-entry-form" @submit.prevent="addItem">
+            <form :key="entryFormKey" class="public-equipment-entry-form" @submit.prevent="addItem">
               <label>
                 Tipo
                 <select v-model="newItem.itemType" required :disabled="saving">
@@ -282,12 +285,12 @@ async function submitDeclaration() {
                 </thead>
                 <tbody>
                   <tr v-for="(item, index) in items" :key="item.id ?? index">
-                    <td>{{ item.itemType }}</td>
-                    <td>{{ item.quantity }}</td>
-                    <td>{{ item.product }}</td>
-                    <td>{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
-                    <td>{{ item.notes || "—" }}</td>
-                    <td class="public-equipment-actions-cell">
+                    <td data-label="Tipo">{{ item.itemType }}</td>
+                    <td data-label="Cantidad">{{ item.quantity }}</td>
+                    <td data-label="Artículo">{{ item.product }}</td>
+                    <td data-label="Identificación">{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
+                    <td data-label="Observaciones">{{ item.notes || "—" }}</td>
+                    <td class="public-equipment-actions-cell" data-label="Acciones">
                       <button class="public-equipment-edit" type="button" :aria-label="`Editar ${item.product}`" :disabled="saving" @click="editItem(index)">Editar</button>
                       <button class="public-equipment-remove" type="button" :aria-label="`Eliminar ${item.product}`" :disabled="saving" @click="removeItem(index)">Eliminar</button>
                     </td>

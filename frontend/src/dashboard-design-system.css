@@ -4088,6 +4088,124 @@
   }
 }
 
+@media (max-width: 640px) {
+  .public-equipment-page {
+    box-sizing: border-box;
+    min-height: 100svh;
+    padding:
+      max(12px, env(safe-area-inset-top))
+      max(12px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+  }
+
+  .public-equipment-card {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: clamp(16px, 4vw, 22px);
+  }
+
+  .public-equipment-entry-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .public-equipment-entry-form > * {
+    min-width: 0;
+  }
+
+  .public-equipment-form-actions {
+    grid-column: 1 / -1;
+    align-items: stretch;
+  }
+
+  .public-equipment-form-actions button {
+    min-width: 0;
+    flex: 1 1 150px;
+  }
+
+  .public-equipment-list-heading {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .public-equipment-page :is(.public-equipment-table-wrap, .public-equipment-submitted-table-wrap) {
+    overflow: visible;
+    border: 0;
+  }
+
+  .public-equipment-page .public-equipment-table {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .public-equipment-page .public-equipment-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    clip-path: inset(50%);
+  }
+
+  .public-equipment-page .public-equipment-table tbody {
+    display: grid;
+    gap: 10px;
+  }
+
+  .public-equipment-page .public-equipment-table tr {
+    display: grid;
+    min-width: 0;
+    padding: 8px 12px;
+    border: 1px solid #294762;
+    border-radius: 9px;
+    background: #0b1d32;
+  }
+
+  .public-equipment-page .public-equipment-table td {
+    display: grid;
+    grid-template-columns: minmax(88px, 32%) minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    padding: 7px 0;
+    border-top: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .public-equipment-page .public-equipment-table td::before {
+    color: #93a8bf;
+    content: attr(data-label);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .public-equipment-page .public-equipment-table .public-equipment-actions-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    border-top: 1px solid #294762;
+  }
+
+  .public-equipment-page .public-equipment-actions-cell::before {
+    flex-basis: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .public-equipment-entry-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .public-equipment-form-actions {
+    grid-column: 1;
+  }
+
+  .public-equipment-form-actions button {
+    flex-basis: 100%;
+  }
+}
+
 .dashboard-app :is(
   .status-pill,
   .partner-status-pill,
