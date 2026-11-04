@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { confirmUser, notifyUser } from "../notifications";
 
-const props = defineProps<{ theme: "dark" | "light" }>();
+const props = defineProps<{ theme: "dark" | "light"; isAdmin: boolean }>();
 
 type PartnerOption = { id: number; name: string };
 type StaffOption = { id: number; businessPartnerId: number; fullName: string; companyName: string };
@@ -108,6 +108,7 @@ const personName = ref("");
 const createError = ref("");
 const generatedLink = ref("");
 const selectedDeclaration = ref<EquipmentDeclaration | null>(null);
+const deletingDeclarationId = ref<number | null>(null);
 const declarationItemsPage = ref(1);
 const declarationItemsPageSize = 7;
 const detailLoading = ref(false);
@@ -461,6 +462,34 @@ async function revokeLink(declarationId: number) {
     notifyUser(error instanceof Error ? error.message : "No se pudo revocar el enlace.");
   }
 }
+
+async function deleteDeclaration(declaration: EquipmentDeclaration) {
+  if (!props.isAdmin || deletingDeclarationId.value !== null) return;
+  const confirmed = await confirmUser(
+    `¿Eliminar la declaración de ${declaration.personName} de forma permanente? También se eliminarán sus artículos y verificaciones.`,
+    "Eliminar declaración",
+    "Sí, eliminar",
+    "warning",
+  );
+  if (!confirmed) return;
+
+  deletingDeclarationId.value = declaration.id;
+  try {
+    const response = await fetch(`/api/equipment/declarations/${declaration.id}`, {
+      method: "DELETE",
+    });
+    const result = await parseResponse<{ message?: string; error?: string }>(response);
+    if (!response.ok) throw new Error(result.error ?? "No se pudo eliminar la declaración.");
+    if (selectedDeclaration.value?.id === declaration.id) selectedDeclaration.value = null;
+    await loadDeclarations();
+    setNotice(result.message ?? "La declaración se eliminó correctamente.", "Declaración eliminada");
+  } catch (error) {
+    console.error("No se pudo eliminar la declaración de equipo:", error);
+    notifyUser(error instanceof Error ? error.message : "No se pudo eliminar la declaración.");
+  } finally {
+    deletingDeclarationId.value = null;
+  }
+}
 </script>
 
 <template>
@@ -522,8 +551,16 @@ async function revokeLink(declarationId: number) {
               </td>
               <td>{{ declaration.entryStatus ?? "Pendiente" }}</td>
               <td>{{ declaration.exitStatus ?? "Pendiente" }}</td>
-              <td>
+              <td class="equipment-history-actions">
                 <button class="equipment-open-button" type="button" @click="openDetails(declaration.id)">Abrir</button>
+                <button
+                  v-if="props.isAdmin"
+                  class="equipment-delete-button"
+                  type="button"
+                  :disabled="deletingDeclarationId !== null"
+                  :aria-label="`Eliminar declaración de ${declaration.personName}`"
+                  @click="deleteDeclaration(declaration)"
+                >{{ deletingDeclarationId === declaration.id ? "Eliminando…" : "Eliminar" }}</button>
               </td>
             </tr>
             <tr v-if="loading">

@@ -2394,6 +2394,7 @@ async function removeBusinessPartner(id: number) {
       <EquipmentSection
         v-else-if="activeSection === 'Equipo y herramientas'"
         :theme="dashboardTheme"
+        :is-admin="currentUser.isAdmin"
       />
 
       <DailyLogSection

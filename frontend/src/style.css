@@ -1876,6 +1876,34 @@ input:focus-visible {
   cursor: pointer;
 }
 
+.equipment-history-actions {
+  white-space: nowrap;
+}
+
+.equipment-history-actions .equipment-open-button + .equipment-delete-button {
+  margin-left: 6px;
+}
+
+.equipment-delete-button {
+  padding: 6px 9px;
+  border: 1px solid #6d293a;
+  border-radius: 5px;
+  background: rgb(173 31 54 / 13%);
+  color: #f294a2;
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+
+.equipment-delete-button:hover:not(:disabled) {
+  border-color: #a94358;
+  background: rgb(173 31 54 / 24%);
+}
+
+.equipment-delete-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .equipment-open-button:hover,
 .equipment-revoke-button:hover {
   border-color: #4382ba;
@@ -8418,6 +8446,18 @@ input:focus-visible {
   background: #f5f8fb;
   color: #285276;
   box-shadow: none;
+}
+
+.dashboard-app[data-theme="light"] .equipment-delete-button {
+  border-color: #e2b9c1;
+  background: #fff3f4;
+  color: #a33245;
+}
+
+.dashboard-app[data-theme="light"] .equipment-delete-button:hover:not(:disabled) {
+  border-color: #ce8793;
+  background: #ffe8eb;
+  color: #842637;
 }
 
 .dashboard-app[data-theme="light"] .button-secondary:hover,

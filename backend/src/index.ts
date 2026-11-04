@@ -2432,7 +2432,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
   const declarationPath = url.pathname.match(
     /^\/api\/equipment\/declarations(?:\/(\d+)(?:\/(link|revoke|inspections\/(entrada|salida)))?)?$/,
   );
-  if (!declarationPath || !["GET", "POST", "PUT"].includes(request.method)) return null;
+  if (!declarationPath || !["GET", "POST", "PUT", "DELETE"].includes(request.method)) return null;
 
   try {
     const user = await getRequestUser(request);
@@ -2446,6 +2446,52 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
     const phaseKey = declarationPath[3] ?? null;
     if (declarationId !== null && (!Number.isSafeInteger(declarationId) || declarationId < 1)) {
       return Response.json({ error: "La declaración seleccionada no es válida." }, { status: 400 });
+    }
+
+    if (request.method === "DELETE") {
+      if (!user.isAdmin) {
+        return Response.json({ error: "Solo Administración puede eliminar declaraciones de equipo." }, { status: 403 });
+      }
+      if (declarationId === null || action !== null) {
+        return Response.json({ error: "Indica la declaración que deseas eliminar." }, { status: 400 });
+      }
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [declarations] = await connection.execute<RowDataPacket[]>(
+          "SELECT id FROM equipment_declarations WHERE id = ? LIMIT 1 FOR UPDATE",
+          [declarationId],
+        );
+        if (!declarations[0]) {
+          await connection.rollback();
+          return Response.json({ error: "No se encontró la declaración." }, { status: 404 });
+        }
+        await connection.execute(
+          `DELETE ii FROM equipment_inspection_items ii
+           INNER JOIN equipment_inspections ei ON ei.id = ii.inspection_id
+           WHERE ei.declaration_id = ?`,
+          [declarationId],
+        );
+        await connection.execute(
+          "DELETE FROM equipment_inspections WHERE declaration_id = ?",
+          [declarationId],
+        );
+        await connection.execute(
+          "DELETE FROM equipment_declaration_items WHERE declaration_id = ?",
+          [declarationId],
+        );
+        await connection.execute(
+          "DELETE FROM equipment_declarations WHERE id = ?",
+          [declarationId],
+        );
+        await connection.commit();
+        return Response.json({ message: "La declaración y sus verificaciones se eliminaron." });
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
     }
 
     if (request.method === "GET" && declarationId === null) {
