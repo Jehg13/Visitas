@@ -733,49 +733,54 @@
 }
 
 .dashboard-app .business-partner-table {
-  width: 1560px;
-  min-width: 1560px;
+  width: 1740px;
+  min-width: 1740px;
   table-layout: fixed;
 }
 
 .dashboard-app .business-partner-table th:nth-child(1),
 .dashboard-app .business-partner-table td:nth-child(1) {
-  width: 14%;
+  width: 12%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(2),
 .dashboard-app .business-partner-table td:nth-child(2) {
-  width: 20%;
+  width: 18%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(3),
 .dashboard-app .business-partner-table td:nth-child(3) {
-  width: 10%;
+  width: 9%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(4),
 .dashboard-app .business-partner-table td:nth-child(4) {
-  width: 11%;
+  width: 10%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(5),
 .dashboard-app .business-partner-table td:nth-child(5) {
-  width: 19%;
+  width: 17%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(6),
 .dashboard-app .business-partner-table td:nth-child(6) {
-  width: 7%;
+  width: 6%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(7),
 .dashboard-app .business-partner-table td:nth-child(7) {
-  width: 9%;
+  width: 12%;
 }
 
 .dashboard-app .business-partner-table th:nth-child(8),
 .dashboard-app .business-partner-table td:nth-child(8) {
-  width: 10%;
+  width: 8%;
+}
+
+.dashboard-app .business-partner-table th:nth-child(9),
+.dashboard-app .business-partner-table td:nth-child(9) {
+  width: 8%;
 }
 
 .dashboard-app .business-partner-subject-column {
@@ -1312,7 +1317,7 @@
   padding: 0;
 }
 
-.dashboard-app .dashboard-main :is(
+.dashboard-app :is(
   .dashboard-heading,
   .workspace-grid,
   .metric-grid,
@@ -2819,6 +2824,11 @@
   color: #236fa7;
 }
 
+.app-alert-dialog.is-warning .app-alert-icon {
+  background: #fff6e6;
+  color: #a96509;
+}
+
 .app-alert-icon svg {
   width: 42px;
   height: 42px;
@@ -3482,6 +3492,61 @@
   box-shadow: 0 24px 70px rgb(24 48 72 / 20%), 0 0 24px rgb(8 120 249 / 7%);
 }
 
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-dialog {
+  border-color: var(--ds-border-strong);
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(8 120 249 / 6%), transparent 42%),
+    linear-gradient(145deg, #fff, #f5f9fe);
+  box-shadow: 0 24px 70px rgb(24 48 72 / 20%), 0 0 24px rgb(8 120 249 / 7%);
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-content .section-help-card {
+  border-color: var(--ds-border);
+  background: linear-gradient(125deg, #fff, var(--ds-surface-muted));
+  box-shadow: 0 3px 12px rgb(36 84 139 / 5%);
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-card-heading h3 {
+  color: var(--ds-text);
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-content .section-help-card > p,
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-content .section-help-steps li {
+  color: var(--ds-text-muted);
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-eyebrow {
+  color: #1c679e;
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-card-number,
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-steps li::before {
+  border-color: #b6d0ed;
+  background: #eaf4ff;
+  color: #286c9c;
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-audience-switch {
+  border-color: var(--ds-border);
+  background: #edf3f8;
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-audience-switch button {
+  color: #536b82;
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-audience-switch button:hover {
+  background: #e2edf6;
+  color: #1d4768;
+}
+
+.dashboard-app.section-help-backdrop[data-theme="light"] .section-help-audience-switch button.is-active {
+  border-color: #a9c8e3;
+  background: #fff;
+  color: #1d5e8b;
+  box-shadow: 0 1px 4px rgb(36 84 139 / 10%);
+}
+
 .dashboard-app .dashboard-main .agenda-workspace-panel {
   overflow-x: hidden;
   overflow-y: auto;
@@ -3558,6 +3623,11 @@
 .app-alert-dialog.theme-dark.is-info .app-alert-icon {
   background: rgb(50 147 237 / 17%);
   color: #82bfff;
+}
+
+.app-alert-dialog.theme-dark.is-warning .app-alert-icon {
+  background: rgb(230 157 47 / 15%);
+  color: #ffc66d;
 }
 
 .app-alert-actions {
@@ -5282,4 +5352,198 @@
 
 .dashboard-app[data-theme="light"] .dashboard-main .daily-log-quick-heading {
   border-bottom: 0;
+}
+
+.dashboard-app .dashboard-main :is(
+  .table-scroll,
+  .workspace-table-scroll,
+  .daily-log-table-scroll,
+  .equipment-items-scroll
+) {
+  height: auto;
+  max-height: none !important;
+  flex: 0 0 auto;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+.dashboard-app .dashboard-main .daily-log-panel {
+  min-height: 440px;
+  flex: 1 1 auto;
+}
+
+.dashboard-app .dashboard-main .daily-log-panel > .daily-log-table-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+}
+
+.dashboard-app .dashboard-main .daily-log-table-pagination {
+  width: 100%;
+  margin-top: auto;
+  box-sizing: border-box;
+}
+
+.section-help-dialog .section-help-content {
+  min-width: 0;
+}
+
+.section-help-dialog .section-help-card,
+.section-help-dialog .section-help-card-heading,
+.section-help-dialog .section-help-card-heading h3,
+.section-help-dialog .section-help-steps li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.equipment-disposition-options {
+  min-width: 0;
+}
+
+.equipment-disposition-options .equipment-checked-toggle {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.visitor-kiosk-inspection-form .equipment-inspection-actions {
+  flex-wrap: wrap;
+}
+
+.app-alert-backdrop {
+  padding:
+    max(12px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+}
+
+.app-alert-dialog {
+  width: min(100%, 420px);
+  max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .dashboard-app .dashboard-main .daily-log-panel {
+    min-height: 360px;
+  }
+
+  .dashboard-app .dashboard-main .daily-log-table-pagination {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .dashboard-app .dashboard-main .daily-log-table-pagination > span {
+    flex: 1 1 100%;
+  }
+
+  .dashboard-app .dashboard-main .daily-log-table-pagination > div {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .section-help-dialog .section-help-audience-switch {
+    gap: 4px;
+  }
+
+  .section-help-dialog .section-help-audience-switch button {
+    min-width: 0;
+    padding-inline: 7px;
+    font-size: 0.66rem;
+    overflow-wrap: anywhere;
+  }
+
+  .visitor-kiosk-inspection-form .equipment-inspection-actions {
+    align-items: stretch;
+  }
+
+  .visitor-kiosk-inspection-form .equipment-inspection-actions button {
+    flex: 1 1 140px;
+  }
+}
+
+@media (max-width: 520px) {
+  .dashboard-app .dashboard-main .daily-log-table-pagination {
+    font-size: 0.58rem;
+  }
+
+  .dashboard-app .dashboard-main .daily-log-table-pagination .pagination-button {
+    min-height: 32px;
+    padding-inline: 8px;
+  }
+
+  .section-help-dialog .section-help-audience-switch {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .section-help-dialog .section-help-audience-switch button {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .section-help-dialog .section-help-card {
+    padding: 11px 10px 12px;
+  }
+
+  .section-help-dialog .section-help-card-heading {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .section-help-dialog .section-help-steps li {
+    padding-left: 30px;
+  }
+
+  .app-alert-backdrop {
+    place-items: center;
+  }
+
+  .app-alert-dialog {
+    padding: 22px 16px 18px;
+    border-radius: 14px;
+  }
+
+  .app-alert-dialog .app-alert-icon {
+    width: 52px;
+    height: 52px;
+    margin-bottom: 12px;
+  }
+
+  .app-alert-dialog .app-alert-icon svg {
+    width: 34px;
+    height: 34px;
+  }
+
+  .app-alert-dialog h2 {
+    font-size: 1.1rem;
+  }
+
+  .app-alert-dialog p {
+    margin-bottom: 18px;
+    font-size: 0.84rem;
+  }
+
+  .app-alert-actions {
+    width: 100%;
+  }
+
+  .app-alert-dialog .app-alert-actions button {
+    min-width: 0;
+    flex: 1 1 120px;
+  }
+
+  .visitor-kiosk-checklist-dialog .visitor-kiosk-inspection-form .equipment-inspection-actions {
+    flex-direction: column-reverse;
+  }
+
+  .visitor-kiosk-inspection-form .equipment-inspection-actions button {
+    width: 100%;
+    flex-basis: auto;
+  }
 }

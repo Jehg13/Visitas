@@ -21,6 +21,14 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
    Copy-Item backend\.env.example backend\.env
    ```
 
+   Configura también `DB_EXTERNAL_HOST`, `DB_EXTERNAL_PORT`,
+   `DB_EXTERNAL_DATABASE`, `DB_EXTERNAL_USERNAME` y `DB_EXTERNAL_PASSWORD`
+   con los datos de MySQL que contiene `seg_users`. La contraseña solo debe
+   guardarse en el archivo local `backend\.env`, que no se sube al repositorio.
+   Para conceder el permiso inicial de administrador, define
+   `INITIAL_ADMIN_LOGIN` con un login activo de `seg_users` antes de ejecutar la
+   migración; la asignación se realiza una sola vez en `accesos_secciones`.
+
 3. Inicia MySQL:
 
    ```powershell
@@ -61,39 +69,17 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
    bun run dev:frontend
    ```
 
-Para insertar usuarios de prueba en `accesos`, configura una contraseña temporal
-local (mínimo 12 caracteres) en PowerShell y ejecuta el seed:
-
-```powershell
-$env:SEED_TEST_PASSWORD = Read-Host "Contraseña para las cuentas de prueba"
-bun run db:seed:test-users
-Remove-Item Env:SEED_TEST_PASSWORD
-```
-
-El seed es repetible e inicializa los usuarios de prueba o sustituye el marcador
-anterior, sin restablecer contraseñas que ya tengan un hash. Incluye perfiles de
-Administrador, Recepción y Programador (`jehg13072002@gmail.com`). El usuario
-Programador recibe el permiso `administrador` de la aplicación mediante
-`accesos_secciones`. Las contraseñas se guardan como hashes Argon2id. El login
-acepta usuario o correo y solo permite cuentas activas. Las tres cuentas usan
-la contraseña ingresada para ejecutar el seed; no se guarda en el repositorio ni queda en el entorno
-después de ejecutar `Remove-Item`.
-
-El seed registra los permisos de aplicación definidos para cada cuenta en
-`accesos_secciones`.
-
-Al iniciar sesión como administrador, la sección Accesos muestra los usuarios de
-`accesos` sin exponer contraseñas ni datos de activación. La tabla exacta no
-tiene columna de departamento, por eso aparece como sin vincular; el `role` se
-muestra como puesto. En Accesos se asigna un único perfil de aplicación:
-Administrador, Recepción o Sin acceso. Estas asignaciones se guardan en
-`accesos_secciones` y no modifican ningún campo de la tabla externa `accesos`,
-incluidos `active` y `priv_admin`. `priv_admin` no determina los permisos de esta
-aplicación. La migración inicial conserva el acceso de administradores existentes
-copiándolo una sola vez a `accesos_secciones`; desde entonces, sus permisos sí se
-pueden cambiar desde esta interfaz. El acceso a Anfitriones se conserva como permiso aparte y se concede
-al registrar una cuenta existente como anfitrión; no se configura desde Accesos.
-El login siempre respeta el estado `active` de la cuenta externa.
+El inicio de sesión y los listados de cuentas leen únicamente la tabla externa
+`seg_users`; no se usan cuentas locales ni se crean usuarios de prueba. Se acepta
+el login o correo y solo se autentican cuentas activas (`active` igual a `Y` o
+`1`) con contraseña Argon2id. La sección Accesos muestra las cuentas de
+`seg_users` y administra los permisos propios de esta aplicación en la tabla
+local `accesos_secciones`; no altera los datos de usuario externos. El permiso de
+Administrador debe asignarse a una cuenta real desde `accesos_secciones` antes
+de poder administrar los permisos desde la interfaz. La recuperación de
+contraseña actualiza `seg_users.pswd`, por lo que el usuario MySQL externo
+requiere permiso de lectura y actualización sobre esa tabla. El permiso
+`anfitriones` se concede al registrar una cuenta real como anfitrión.
 
 El Programador conserva acceso completo. Recepción solo tiene las vistas
 Agenda de citas y Bitácora diaria; en la Agenda puede consultar todas las citas y
@@ -144,12 +130,12 @@ dashboard recuerda la sección seleccionada por cuenta al recargar. Los perfiles
 de anfitriones de demostración se conservan en el almacenamiento local de ese
 navegador para mantener sus vínculos y contadores entre recargas; todavía no
 son registros compartidos entre navegadores ni están guardados en MySQL.
-El formulario de anfitriones permite seleccionar una cuenta de `accesos` y
+El formulario de anfitriones permite seleccionar una cuenta de `seg_users` y
 completa su login, nombre, correo, puesto y teléfono; el departamento se elige
 por separado. Al registrar una cuenta existente como anfitrión, se guarda
 también su permiso `anfitriones` en `accesos_secciones`. La opción `Otro`
 habilita la captura manual y no crea permisos porque ese login no proviene de
-una cuenta autenticable de `accesos`. La tabla de anfitriones muestra únicamente
+una cuenta autenticable de `seg_users`. La tabla de anfitriones muestra únicamente
 esos datos y el departamento; los perfiles de anfitrión siguen guardándose en
 el navegador.
 
@@ -187,8 +173,10 @@ Nginx publica un puerto al host.
 
 1. Copia `.env.production.example` como `.env.production` y configura
    `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` y `DB_PASSWORD` con los datos que
-   te entregue la persona responsable del VPS, además del dominio HTTPS en
-   `PUBLIC_APP_URL`. `APP_TIME_ZONE` define la zona usada al guardar las horas
+   te entregue la persona responsable del VPS; configura también
+   `DB_EXTERNAL_HOST`, `DB_EXTERNAL_PORT`, `DB_EXTERNAL_DATABASE`,
+   `DB_EXTERNAL_USERNAME` y `DB_EXTERNAL_PASSWORD` para la tabla externa
+   `seg_users`, además del dominio HTTPS en `PUBLIC_APP_URL`. `APP_TIME_ZONE` define la zona usada al guardar las horas
    de autorregistro del kiosco; su valor predeterminado es
    `America/Mexico_City`. Los movimientos de autorregistro usan esta zona para
    que su fecha coincida con la bitácora de recepción. Usa un usuario MySQL
@@ -241,7 +229,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 
 En una instalación nueva, `up` ejecuta la migración antes de iniciar la API.
 Las migraciones crean las tablas de la aplicación si faltan y pueden actualizar
-el esquema existente; no ejecutan el seed de usuarios de prueba. Verifica los
+el esquema existente; no crean usuarios de prueba. Verifica los
 respaldos antes de cualquier cambio de esquema.
 
 ## Producción: rendimiento y origen
@@ -267,7 +255,6 @@ respaldos antes de cualquier cambio de esquema.
 | `bun run dev:frontend` | Inicia Vue con recarga en caliente |
 | `bun run dev:backend` | Inicia la API con reinicio al cambiar archivos |
 | `bun run db:migrate` | Crea las tablas y actualiza el esquema de aplicación, incluida la propiedad de las citas |
-| `bun run db:seed:test-users` | Inserta usuarios de prueba en `accesos` sin duplicarlos |
 | `bun run typecheck` | Comprueba los tipos de frontend y backend |
 | `bun run build` | Genera el build del frontend y comprueba el backend |
 | `docker compose up -d db` | Inicia MySQL en segundo plano |
@@ -295,7 +282,7 @@ docker-compose.yml     Servicio local de base de datos
 
 ## Tablas creadas
 
-- `departments`: catálogo de departamentos. El puesto se representa con el campo `role` de `accesos` y se asigna a un departamento desde el formulario del anfitrión.
+- `departments`: catálogo de departamentos. El puesto se representa con el campo `role` de `seg_users` y se asigna a un departamento desde el formulario del anfitrión.
 - `business_partners`: contratistas, proveedores y visitantes, con RFC, categoría, asunto, empleados y estado.
 - `general_visitors`: público general, con CURP opcional.
 - `external_staff`: datos básicos del personal vinculado a una empresa de `business_partners`; el formulario selecciona la empresa del catálogo y guarda el vínculo en MySQL.
@@ -305,8 +292,7 @@ docker-compose.yml     Servicio local de base de datos
 - `visitor_kiosk_registrations`, `visitor_kiosk_items`, `visitor_kiosk_inspections` y sus tablas auxiliares: autorregistro público, artículos declarados, checklists de entrada y salida y auditoría de recepción.
 - `equipment_declarations` y `equipment_declaration_items`: declaración de un solo uso, asociada con una empresa y, cuando existe, con su cita, visitante o registro de personal externo. Cada fila conserva si el artículo es equipo o herramienta.
 - `equipment_inspections` y `equipment_inspection_items`: verificaciones separadas de Entrada y Salida, con el inspector, tipo de artículo, cantidades/características revisadas, resultados y observaciones de incidencias.
-- `accesos`: estructura local de usuarios compatible con la tabla externa; conserva exactamente sus 13 columnas y nulabilidad, sin agregar campos.
-- `accesos_secciones`: permisos de aplicación independientes por usuario (`administrador`, `recepcion`, `anfitriones`); son la fuente de autorización y no alteran `accesos`. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
+- `accesos_secciones`: permisos de aplicación locales e independientes por usuario (`administrador`, `recepcion`, `anfitriones`); son la fuente de autorización y no alteran la tabla externa `seg_users`. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
 - `password_reset_tokens`, `auth_login_failures` y `auth_recovery_limits`: enlaces de recuperación de un solo uso, bloqueos progresivos de inicio de sesión y límites anti-spam. Los tokens se almacenan como hash.
 - `visits`: tabla original de la aplicación, se conserva.
 

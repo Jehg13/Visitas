@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS business_partners (
   employee_count INT UNSIGNED NOT NULL DEFAULT 0,
   partner_type ENUM('Contratista', 'Proveedor', 'Visitante') NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by_login VARCHAR(255) NULL,
+  created_by_name VARCHAR(255) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS business_partners (
   UNIQUE KEY uq_business_partners_visitor_record (visitor_record_id),
   KEY idx_business_partners_name (name),
   KEY idx_business_partners_type_active (partner_type, is_active),
+  KEY idx_business_partners_created_by_login (created_by_login),
   CONSTRAINT fk_business_partners_visitor
     FOREIGN KEY (visitor_record_id) REFERENCES general_visitors (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
@@ -134,22 +137,6 @@ CREATE TABLE IF NOT EXISTS daily_log_entries (
   CONSTRAINT fk_daily_log_entries_visitor
     FOREIGN KEY (visitor_record_id) REFERENCES general_visitors (id)
     ON UPDATE CASCADE ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS accesos (
-  login VARCHAR(255) NOT NULL,
-  pswd VARCHAR(255) NOT NULL,
-  name VARCHAR(255) NULL,
-  email VARCHAR(255) NULL,
-  active VARCHAR(1) NULL,
-  activation_code VARCHAR(32) NULL,
-  priv_admin VARCHAR(1) NULL,
-  mfa VARCHAR(255) NULL,
-  picture LONGBLOB NULL,
-  role VARCHAR(128) NULL,
-  phone VARCHAR(64) NULL,
-  pswd_last_updated TIMESTAMP NULL,
-  mfa_last_updated TIMESTAMP NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS accesos_secciones (
@@ -278,6 +265,8 @@ CREATE TABLE IF NOT EXISTS visitor_kiosk_inspection_items (
   kiosk_item_id BIGINT UNSIGNED NULL,
   result ENUM('Conforme', 'Incidencia', 'Coincide', 'Faltante', 'Dañado', 'Extra') NOT NULL,
   notes VARCHAR(1000) NOT NULL DEFAULT '',
+  keep_at_reception BOOLEAN NOT NULL DEFAULT FALSE,
+  returned_to_visitor BOOLEAN NOT NULL DEFAULT FALSE,
   checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_visitor_kiosk_inspection_items_item (inspection_id, kiosk_item_id),

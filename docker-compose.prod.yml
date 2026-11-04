@@ -1,3 +1,25 @@
+x-backend-environment: &backend-environment
+  NODE_ENV: production
+  DB_HOST: ${DB_HOST:?Set DB_HOST in .env.production}
+  DB_PORT: ${DB_PORT:-3306}
+  DB_NAME: ${DB_NAME:?Set DB_NAME in .env.production}
+  DB_USER: ${DB_USER:?Set DB_USER in .env.production}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.production}
+  DB_EXTERNAL_HOST: ${DB_EXTERNAL_HOST:?Set DB_EXTERNAL_HOST in .env.production}
+  DB_EXTERNAL_PORT: ${DB_EXTERNAL_PORT:-3306}
+  DB_EXTERNAL_DATABASE: ${DB_EXTERNAL_DATABASE:?Set DB_EXTERNAL_DATABASE in .env.production}
+  DB_EXTERNAL_USERNAME: ${DB_EXTERNAL_USERNAME:?Set DB_EXTERNAL_USERNAME in .env.production}
+  DB_EXTERNAL_PASSWORD: ${DB_EXTERNAL_PASSWORD:?Set DB_EXTERNAL_PASSWORD in .env.production}
+  INITIAL_ADMIN_LOGIN: ${INITIAL_ADMIN_LOGIN:-}
+  APP_TIME_ZONE: ${APP_TIME_ZONE:-America/Mexico_City}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:-}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL:?Set the public HTTPS URL in .env.production}
+
 services:
   web:
     build:
@@ -24,21 +46,8 @@ services:
       context: .
       target: api
     restart: unless-stopped
-    environment: &backend-environment
-      NODE_ENV: production
-      DB_HOST: ${DB_HOST:?Set DB_HOST in .env.production}
-      DB_PORT: ${DB_PORT:-3306}
-      DB_NAME: ${DB_NAME:?Set DB_NAME in .env.production}
-      DB_USER: ${DB_USER:?Set DB_USER in .env.production}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.production}
-      APP_TIME_ZONE: ${APP_TIME_ZONE:-America/Mexico_City}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_SECURE: ${SMTP_SECURE:-false}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      SMTP_FROM: ${SMTP_FROM:-}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?Set the public HTTPS URL in .env.production}
+    environment:
+      <<: *backend-environment
     expose:
       - "3000"
     extra_hosts:

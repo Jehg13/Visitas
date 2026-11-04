@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { notifyUser } from "../notifications";
+import { confirmUser, notifyUser } from "../notifications";
+import SectionHelpDialog from "./SectionHelpDialog.vue";
 import VisitorKioskReceptionSection from "./VisitorKioskReceptionSection.vue";
 
 type LogEventType = "Llegada" | "Ingreso" | "Retiro" | "Observaciones";
@@ -91,6 +92,7 @@ const props = defineProps<{
   hosts: Host[];
   departments: Department[];
   initialRange: { from: string; to: string } | null;
+  theme: "dark" | "light";
 }>();
 const emit = defineEmits<{
   movementSaved: [];
@@ -106,7 +108,7 @@ const categoryFilter = ref("");
 const hostFilter = ref("");
 const departmentFilter = ref("");
 const page = ref(1);
-const pageSize = 10;
+const pageSize = 7;
 const recentPage = ref(1);
 const recentPageSize = 7;
 const entries = ref<LogEntry[]>([]);
@@ -157,6 +159,7 @@ const employeeRosterError = ref("");
 const employeeRosterAppointmentId = ref<number | null>(null);
 const employeeMovementId = ref<number | null>(null);
 const dialogOpen = ref(false);
+const helpOpen = ref(false);
 const logPersonType = ref<SubjectType>("appointment");
 const logSubjectId = ref("");
 const manualPerson = ref("");
@@ -164,6 +167,41 @@ const logDetails = ref("");
 let requestVersion = 0;
 let employeeRosterRequestVersion = 0;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+const dailyLogHelpSections = [
+  {
+    title: "Qué significa cada movimiento",
+    text: "Llegada indica que la persona se presentó en recepción. Entrada indica que pasó a las instalaciones. Salida indica que terminó la visita y se retiró. En proceso significa que ya se registró la llegada; Dentro, que ya se registró la entrada sin una salida posterior; y Retirado, que ya se registró la salida.",
+  },
+  {
+    title: "Cómo registrar una visita con cita",
+    steps: [
+      "En Registro rápido, busca por nombre o empresa y selecciona la cita de hoy. También puedes escanear el QR o introducir el código de referencia de ocho dígitos.",
+      "Cuando la persona se presente, selecciona Registrar llegada. Cuando vaya a pasar, selecciona Registrar entrada. Al terminar su visita, selecciona Registrar salida.",
+      "Si aparece el campo Observaciones, úsalo para dejar un detalle importante. La fecha y la hora se guardan automáticamente.",
+    ],
+  },
+  {
+    title: "Visitas de contratistas o proveedores",
+    text: "Abre el detalle de la cita y pulsa Ver empleados para registrar cada persona por separado. Una misma cita puede tener varios empleados, y cada uno puede llegar o retirarse en distinto momento.",
+  },
+  {
+    title: "Visitas sin cita y registro manual",
+    steps: [
+      "Para registrar una llegada que no está en la agenda, pulsa Registrar movimiento y elige Personal externo, Visitante registrado o Captura manual. Completa los datos y guarda la llegada. Después selecciona ese registro para añadir la entrada y, más tarde, la salida.",
+      "Si la persona ya llenó su registro manual, pulsa Introducir código y escribe el folio de ocho dígitos. Revisa los datos y la identificación presentada; después autoriza o rechaza la visita.",
+      "Si no declaró artículos, al autorizar se registra también su entrada. Si declaró artículos, verifica cada uno y elige una sola opción en el checklist: permitir su ingreso o mantenerlo resguardado en recepción. Al salir, completa el checklist de salida y confirma la devolución de los artículos resguardados. Puedes agregar una observación opcional si hace falta.",
+    ],
+  },
+  {
+    title: "Buscar y consultar movimientos",
+    steps: [
+      "Elige las fechas Desde y Hasta para consultar un periodo. Usa la búsqueda para localizar por persona, empresa o folio, o filtra por tipo de movimiento.",
+      "Pulsa una fila o un movimiento de Actividad reciente para abrir el detalle. Usa Historial para consultar los últimos 30 días y Exportar CSV para descargar los resultados del periodo y filtros seleccionados.",
+      "La tabla muestra siete movimientos por página. Los indicadores superiores resumen los movimientos del periodo, las personas que figuran dentro, las llegadas pendientes y los retiros. Revisa los datos antes de registrar cada movimiento para mantener un historial confiable.",
+    ],
+  },
+];
 
 const todayAppointments = computed(() =>
   [...props.appointments]
@@ -462,7 +500,7 @@ async function exportLog() {
     link.click();
     link.remove();
     URL.revokeObjectURL(downloadUrl);
-    notifyUser(`Se exportaron ${exportEntries.length} movimientos.`, "success");
+    notifyUser(`Se exportaron ${exportEntries.length} movimientos.`, "success", "Exportación completada");
   } catch (cause) {
     console.error("Failed to export daily log:", cause);
     notifyUser(cause instanceof Error ? cause.message : "No se pudo exportar la bitácora.");
@@ -595,7 +633,7 @@ async function submitEntry() {
     const successMessage = result.duplicate
       ? `${result.personName ?? "La persona"} ya tenía su llegada registrada.`
       : `Llegada registrada para ${result.personName ?? "la persona"}.`;
-    notifyUser(successMessage, result.duplicate ? "info" : "success");
+    notifyUser(successMessage, result.duplicate ? "info" : "success", result.duplicate ? "Movimiento duplicado" : "Movimiento registrado");
     fromDate.value = payload.date;
     toDate.value = payload.date;
     page.value = 1;
@@ -769,6 +807,7 @@ function movementIsAvailable(event: "Llegada" | "Ingreso" | "Retiro", appointmen
 async function saveQuickMovement(
   event: "Llegada" | "Ingreso" | "Retiro",
   appointment = selectedQuickAppointment.value ?? selectedEntryAppointment.value,
+  sourceEntryId?: number,
 ) {
   if (!appointment || quickActionAppointmentId.value !== null || !movementIsAvailable(event, appointment)) return;
   const operationDate = getLocalDate();
@@ -787,6 +826,7 @@ async function saveQuickMovement(
         personName: "",
         appointmentId: appointment.id,
         details: quickObservation.value.trim(),
+        ...(sourceEntryId === undefined ? {} : { sourceEntryId }),
       }),
     });
     const result = await response.json() as { message?: string; error?: string };
@@ -842,7 +882,7 @@ async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro"
   const entry = selectedEntry.value;
   if (!entry || quickActionEntryId.value !== null || !selectedAvailableMovements.value.includes(event)) return;
   if (selectedEntryAppointment.value) {
-    await saveQuickMovement(event, selectedEntryAppointment.value);
+    await saveQuickMovement(event, selectedEntryAppointment.value, entry.id);
     return;
   }
 
@@ -864,6 +904,7 @@ async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro"
         appointmentId: entry.appointmentId,
         externalStaffId: entry.externalStaffId,
         visitorRecordId: entry.visitorRecordId,
+        sourceEntryId: entry.id,
       }),
     });
     const result = await response.json() as { message?: string; error?: string };
@@ -1105,7 +1146,12 @@ async function handleQuickSearchEnter() {
 }
 
 async function removeEntry(entry: LogEntry) {
-  if (!window.confirm(`¿Eliminar el movimiento de ${entry.person}? Esta acción no se puede deshacer.`)) {
+  if (!await confirmUser(
+    `¿Eliminar el movimiento de ${entry.person}? Esta acción no se puede deshacer.`,
+    "Eliminar movimiento",
+    "Confirmar eliminación",
+    "warning",
+  )) {
     return;
   }
   try {
@@ -1115,7 +1161,7 @@ async function removeEntry(entry: LogEntry) {
       notifyUser(result.error ?? "No se pudo eliminar el movimiento.");
       return;
     }
-    notifyUser(result.message ?? "El movimiento se eliminó correctamente.", "success");
+    notifyUser(result.message ?? "El movimiento se eliminó correctamente.", "success", "Movimiento eliminado");
     await loadEntries();
   } catch (cause) {
     console.error("Failed to delete daily log movement:", cause);
@@ -1252,6 +1298,10 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
         <button class="daily-log-primary-button" type="button" @click="openCreateDialog">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           Registrar movimiento
+        </button>
+        <button class="daily-log-secondary-button daily-log-help-button" type="button" @click="helpOpen = true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M9.8 9a2.3 2.3 0 1 1 3.9 1.7c-1.1 1-1.7 1.4-1.7 2.8M12 17h.01" /></svg>
+          Ayuda
         </button>
       </div>
     </header>
@@ -1466,7 +1516,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                   <th v-if="isAdmin">Registró / autorizó</th>
                   <th>Estado</th>
                   <th>QR</th>
-                  <th><span class="sr-only">Acciones</span></th>
+                  <th v-if="isAdmin">Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1517,7 +1567,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                     >QR</button>
                     <span v-else class="daily-log-table-no-qr">N/A</span>
                   </td>
-                  <td>
+                  <td v-if="isAdmin">
                     <button
                       class="daily-log-delete"
                       type="button"
@@ -1532,17 +1582,17 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               </tbody>
             </table>
           </div>
-          <footer class="daily-log-pagination">
+          <nav class="directory-pagination daily-log-table-pagination" aria-label="Paginación de movimientos">
             <span>
               Mostrando {{ total === 0 ? 0 : (page - 1) * pageSize + 1 }}–{{ Math.min(page * pageSize, total) }}
               de {{ total }} {{ total === 1 ? "registro" : "registros" }}
             </span>
             <div>
-              <button type="button" :disabled="page <= 1 || loading" @click="page--">Anterior</button>
-              <span class="daily-log-pagination-page">Página {{ page }} de {{ pages }}</span>
-              <button type="button" :disabled="page >= pages || loading" @click="page++">Siguiente</button>
+              <button class="pagination-button" type="button" :disabled="page <= 1 || loading" @click="page--">Anterior</button>
+              <span class="pagination-current" aria-live="polite">{{ page }} / {{ pages }}</span>
+              <button class="pagination-button" type="button" :disabled="page >= pages || loading" @click="page++">Siguiente</button>
             </div>
-          </footer>
+          </nav>
         </section>
         <section class="daily-log-recent-panel" aria-labelledby="daily-log-recent-title">
           <div class="daily-log-panel-heading">
@@ -1755,7 +1805,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               </span>
               <span class="daily-log-readonly-copy">
                 <strong>Historial en modo lectura</strong>
-                <span>Solo puedes registrar movimientos del día actual.</span>
+                <span>Los registros de días anteriores son de solo lectura. Solo Administración puede modificarlos.</span>
               </span>
             </div>
             <p v-else class="daily-log-selection-complete">La visita ya está finalizada.</p>
@@ -1768,6 +1818,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           :selected-visitor-record-id="selectedQuickAppointment
             ? null
             : selectedManualVisitorRecordId ?? selectedEntry?.visitorRecordId ?? null"
+          :is-admin="isAdmin"
           @movement-saved="loadEntries"
         />
       </aside>
@@ -1825,5 +1876,13 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
         </form>
       </section>
     </div>
+    <SectionHelpDialog
+      v-if="helpOpen"
+      title="Ayuda de la bitácora diaria"
+      introduction="Usa esta sección para dejar constancia de las llegadas, entradas y salidas, y para consultar los movimientos de las visitas."
+      :sections="dailyLogHelpSections"
+      :theme="theme"
+      @close="helpOpen = false"
+    />
   </section>
 </template>

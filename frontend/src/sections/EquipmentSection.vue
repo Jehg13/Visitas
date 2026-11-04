@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { notifyUser } from "../notifications";
+import { confirmUser, notifyUser } from "../notifications";
 
 const props = defineProps<{ theme: "dark" | "light" }>();
 
@@ -43,6 +43,8 @@ type InspectionRecordItem = {
   checkedColor: string;
   result: "Pendiente" | "Conforme" | "Incidencia";
   notes: string;
+  keepAtReception: boolean;
+  returnedToVisitor: boolean;
 };
 type EquipmentInspection = {
   phase: "Entrada" | "Salida";
@@ -81,10 +83,16 @@ type InspectionDraftItem = {
   serialNumber: string;
   color: string;
   notes: string;
-  incident: boolean;
+  keepAtReception: boolean;
+  returnedToVisitor: boolean;
 };
 
 const declarations = ref<EquipmentDeclaration[]>([]);
+const declarationsLoading = ref(false);
+const declarationTotal = ref(0);
+const declarationPage = ref(1);
+const declarationPageSize = 7;
+const declarationPages = ref(1);
 const partners = ref<PartnerOption[]>([]);
 const staff = ref<StaffOption[]>([]);
 const appointments = ref<AppointmentOption[]>([]);
@@ -100,6 +108,8 @@ const personName = ref("");
 const createError = ref("");
 const generatedLink = ref("");
 const selectedDeclaration = ref<EquipmentDeclaration | null>(null);
+const declarationItemsPage = ref(1);
+const declarationItemsPageSize = 7;
 const detailLoading = ref(false);
 const inspectionPhase = ref<"entrada" | "salida" | null>(null);
 const inspectionItems = ref<InspectionDraftItem[]>([]);
@@ -113,6 +123,15 @@ const matchingStaff = computed(() =>
 const matchingAppointments = computed(() =>
   appointments.value.filter((appointment) => appointment.businessPartnerId === businessPartnerId.value),
 );
+const paginatedDeclarationItems = computed(() =>
+  (selectedDeclaration.value?.items ?? []).slice(
+    (declarationItemsPage.value - 1) * declarationItemsPageSize,
+    declarationItemsPage.value * declarationItemsPageSize,
+  ),
+);
+const declarationItemsPages = computed(() =>
+  Math.max(1, Math.ceil((selectedDeclaration.value?.items?.length ?? 0) / declarationItemsPageSize)),
+);
 const inspectionLabel = computed(() =>
   inspectionPhase.value === "entrada" ? "entrada" : "salida",
 );
@@ -120,8 +139,8 @@ const checkedInspectionItems = computed(() =>
   inspectionItems.value.filter((item) => item.checked).length,
 );
 
-function setNotice(message: string) {
-  notifyUser(message, "success");
+function setNotice(message: string, title = "Operación completada") {
+  notifyUser(message, "success", title);
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -155,11 +174,30 @@ async function loadOptions() {
 async function loadDeclarations() {
   const params = new URLSearchParams();
   if (search.value.trim()) params.set("q", search.value.trim());
+  params.set("page", String(declarationPage.value));
   const response = await fetch(`/api/equipment/declarations?${params}`);
-  const result = await parseResponse<{ declarations?: EquipmentDeclaration[]; error?: string }>(response);
+  const result = await parseResponse<{
+    declarations?: EquipmentDeclaration[];
+    total?: number;
+    pages?: number;
+    error?: string;
+  }>(response);
   if (!response.ok) throw new Error(result.error ?? "No se pudo cargar el historial.");
-  if (!Array.isArray(result.declarations)) {
+  if (
+    !Array.isArray(result.declarations) ||
+    typeof result.total !== "number" ||
+    !Number.isSafeInteger(result.total) ||
+    typeof result.pages !== "number" ||
+    !Number.isSafeInteger(result.pages)
+  ) {
     throw new Error("El servidor devolvió declaraciones con formato inválido.");
+  }
+  declarationTotal.value = result.total;
+  declarationPages.value = Math.max(1, result.pages);
+  if (declarationPage.value > declarationPages.value) {
+    declarationPage.value = declarationPages.value;
+    await loadDeclarations();
+    return;
   }
   declarations.value = result.declarations;
 }
@@ -167,6 +205,7 @@ async function loadDeclarations() {
 async function refreshDeclarations(silent = false) {
   if (declarationRefreshInProgress) return;
   declarationRefreshInProgress = true;
+  declarationsLoading.value = true;
   try {
     await loadDeclarations();
     errorMessage.value = "";
@@ -176,6 +215,7 @@ async function refreshDeclarations(silent = false) {
     if (!silent) notifyUser(error instanceof Error ? error.message : "No se pudo actualizar el historial.");
   } finally {
     declarationRefreshInProgress = false;
+    declarationsLoading.value = false;
   }
 }
 
@@ -206,8 +246,13 @@ onBeforeUnmount(() => {
 });
 
 watch(search, () => {
+  declarationPage.value = 1;
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void refreshDeclarations(), 250);
+});
+
+watch(declarationPage, () => {
+  void refreshDeclarations(true);
 });
 
 watch(businessPartnerId, (nextPartnerId, previousPartnerId) => {
@@ -266,7 +311,7 @@ async function createDeclaration() {
     if (typeof result.token !== "string") throw new Error("El servidor no devolvió el enlace de declaración.");
     generatedLink.value = `${window.location.origin}/#equipo=${encodeURIComponent(result.token)}`;
     await loadDeclarations();
-    setNotice("Declaración creada. Comparte el enlace con la persona externa.");
+    setNotice("Declaración creada. Comparte el enlace con la persona externa.", "Declaración registrada");
   } catch (error) {
     console.error("No se pudo crear la declaración de equipo:", error);
     createError.value = "";
@@ -280,7 +325,7 @@ async function copyLink(link: string) {
   try {
     await navigator.clipboard.writeText(link);
     linkMessage.value = "";
-    notifyUser("Enlace copiado.", "success");
+    notifyUser("Enlace copiado.", "success", "Enlace copiado");
   } catch (error) {
     console.error("No se pudo copiar el enlace de equipo:", error);
     linkMessage.value = "";
@@ -298,6 +343,7 @@ async function openDetails(id: number) {
       throw new Error(result.error ?? "No se pudo abrir la declaración.");
     }
     selectedDeclaration.value = result.declaration;
+    declarationItemsPage.value = 1;
     linkMessage.value = "";
   } catch (error) {
     console.error("No se pudo consultar la declaración:", error);
@@ -310,6 +356,12 @@ async function openDetails(id: number) {
 
 function getInspection(phase: "Entrada" | "Salida") {
   return selectedDeclaration.value?.inspections?.find((inspection) => inspection.phase === phase);
+}
+
+function itemKeptAtReception(declarationItemId: number) {
+  return getInspection("Entrada")?.items.some(
+    (item) => item.declarationItemId === declarationItemId && item.keepAtReception,
+  ) ?? false;
 }
 
 function startInspection(phase: "entrada" | "salida") {
@@ -329,36 +381,11 @@ function startInspection(phase: "entrada" | "salida") {
       serialNumber: phase === "salida" && entryItem ? entryItem.checkedSerialNumber : item.serialNumber,
       color: phase === "salida" && entryItem ? entryItem.checkedColor : item.color,
       notes: "",
-      incident: false,
+      keepAtReception: false,
+      returnedToVisitor: false,
     };
   });
   inspectionPhase.value = phase;
-}
-
-function inspectionNeedsNote(item: InspectionDraftItem) {
-  const declaration = selectedDeclaration.value?.items?.find((declared) => declared.id === item.declarationItemId);
-  const entry = getInspection("Entrada")?.items.find((checked) => checked.declarationItemId === item.declarationItemId);
-  const expected = inspectionPhase.value === "salida" && entry
-    ? {
-        quantity: entry.checkedQuantity,
-        product: entry.checkedProduct,
-        brand: entry.checkedBrand,
-        model: entry.checkedModel,
-        serialNumber: entry.checkedSerialNumber,
-        color: entry.checkedColor,
-      }
-    : declaration;
-  return Boolean(
-    item.incident ||
-    (expected && (
-      item.quantity !== expected.quantity ||
-      item.product.trim().toLocaleLowerCase() !== expected.product.trim().toLocaleLowerCase() ||
-      item.brand.trim().toLocaleLowerCase() !== expected.brand.trim().toLocaleLowerCase() ||
-      item.model.trim().toLocaleLowerCase() !== expected.model.trim().toLocaleLowerCase() ||
-      item.serialNumber.trim().toLocaleLowerCase() !== expected.serialNumber.trim().toLocaleLowerCase() ||
-      item.color.trim().toLocaleLowerCase() !== expected.color.trim().toLocaleLowerCase()
-    )),
-  );
 }
 
 async function saveInspection() {
@@ -371,13 +398,6 @@ async function saveInspection() {
     notifyUser(`Marca la verificación física de “${declared?.product ?? "cada artículo"}” antes de completar la revisión.`);
     return;
   }
-  const missingNote = inspectionItems.value.find(
-    (item) => inspectionNeedsNote(item) && !item.notes.trim(),
-  );
-  if (missingNote) {
-    notifyUser("Describe la incidencia antes de guardar la revisión.");
-    return;
-  }
   saving.value = true;
   errorMessage.value = "";
   try {
@@ -386,14 +406,16 @@ async function saveInspection() {
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: inspectionItems.value }),
+        body: JSON.stringify({
+          items: inspectionItems.value.map((item) => ({ ...item, incident: false })),
+        }),
       },
     );
     const result = await parseResponse<{ message?: string; error?: string }>(response);
     if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la revisión.");
     inspectionPhase.value = null;
     await Promise.all([openDetails(selectedDeclaration.value.id), loadDeclarations()]);
-    setNotice(result.message ?? "Verificación guardada.");
+    setNotice(result.message ?? "Verificación guardada.", "Checklist completado");
   } catch (error) {
     console.error("No se pudo guardar la verificación de equipo:", error);
     errorMessage.value = "";
@@ -412,7 +434,7 @@ async function refreshLink(declarationId: number) {
       throw new Error(result.error ?? "No se pudo generar el enlace.");
     }
     linkMessage.value = `${window.location.origin}/#equipo=${encodeURIComponent(result.token)}`;
-    notifyUser("Se generó un nuevo enlace de declaración.", "success");
+    notifyUser("Se generó un nuevo enlace de declaración.", "success", "Enlace generado");
   } catch (error) {
     console.error("No se pudo renovar el enlace de equipo:", error);
     linkMessage.value = "";
@@ -421,13 +443,18 @@ async function refreshLink(declarationId: number) {
 }
 
 async function revokeLink(declarationId: number) {
-  if (!window.confirm("¿Revocar el enlace pendiente? La persona ya no podrá abrirlo.")) return;
+  if (!await confirmUser(
+    "¿Revocar el enlace pendiente? La persona ya no podrá abrirlo.",
+    "Revocar enlace",
+    "Confirmar revocación",
+    "warning",
+  )) return;
   try {
     const response = await fetch(`/api/equipment/declarations/${declarationId}/revoke`, { method: "POST" });
     const result = await parseResponse<{ message?: string; error?: string }>(response);
     if (!response.ok) throw new Error(result.error ?? "No se pudo revocar el enlace.");
     linkMessage.value = "";
-    setNotice("Enlace revocado.");
+    setNotice("Enlace revocado.", "Enlace revocado");
   } catch (error) {
     console.error("No se pudo revocar el enlace de equipo:", error);
     linkMessage.value = "";
@@ -448,7 +475,7 @@ async function revokeLink(declarationId: number) {
           </div>
         </div>
         <div class="workspace-heading-actions">
-          <span class="workspace-count">{{ declarations.length }} declaraciones</span>
+          <span class="workspace-count">{{ declarationTotal }} declaraciones</span>
           <button class="button-primary" type="button" @click="openCreate">
             <svg class="icon"><use href="#i-plus" /></svg>
             Nueva declaración
@@ -508,6 +535,32 @@ async function revokeLink(declarationId: number) {
           </tbody>
         </table>
       </div>
+      <nav
+        v-if="declarationTotal > declarationPageSize"
+        class="directory-pagination"
+        aria-label="Paginación del historial de equipo"
+      >
+        <span>
+          Mostrando {{ (declarationPage - 1) * declarationPageSize + 1 }}–{{
+            Math.min(declarationPage * declarationPageSize, declarationTotal)
+          }} de {{ declarationTotal }} declaraciones
+        </span>
+        <div>
+          <button
+            class="pagination-button"
+            type="button"
+            :disabled="declarationPage <= 1 || declarationsLoading"
+            @click="declarationPage--"
+          >Anterior</button>
+          <span class="pagination-current" aria-live="polite">{{ declarationPage }} / {{ declarationPages }}</span>
+          <button
+            class="pagination-button"
+            type="button"
+            :disabled="declarationPage >= declarationPages || declarationsLoading"
+            @click="declarationPage++"
+          >Siguiente</button>
+        </div>
+      </nav>
     </section>
 
     <Teleport to="body">
@@ -620,7 +673,7 @@ async function revokeLink(declarationId: number) {
               <table class="workspace-table equipment-detail-table">
                 <thead><tr><th>Tipo</th><th>Cant.</th><th>Artículo declarado</th><th>Características</th><th>Observaciones</th></tr></thead>
                 <tbody>
-                  <tr v-for="item in selectedDeclaration.items" :key="item.id">
+                  <tr v-for="item in paginatedDeclarationItems" :key="item.id">
                     <td>{{ item.itemType }}</td>
                     <td>{{ item.quantity }}</td>
                     <td>{{ item.product }}</td>
@@ -630,6 +683,32 @@ async function revokeLink(declarationId: number) {
                 </tbody>
               </table>
             </div>
+            <nav
+              v-if="(selectedDeclaration.items?.length ?? 0) > declarationItemsPageSize"
+              class="directory-pagination"
+              aria-label="Paginación de artículos declarados"
+            >
+              <span>
+                Mostrando {{ (declarationItemsPage - 1) * declarationItemsPageSize + 1 }}–{{
+                  Math.min(declarationItemsPage * declarationItemsPageSize, selectedDeclaration.items?.length ?? 0)
+                }} de {{ selectedDeclaration.items?.length ?? 0 }} artículos
+              </span>
+              <div>
+                <button
+                  class="pagination-button"
+                  type="button"
+                  :disabled="declarationItemsPage <= 1"
+                  @click="declarationItemsPage--"
+                >Anterior</button>
+                <span class="pagination-current" aria-live="polite">{{ declarationItemsPage }} / {{ declarationItemsPages }}</span>
+                <button
+                  class="pagination-button"
+                  type="button"
+                  :disabled="declarationItemsPage >= declarationItemsPages"
+                  @click="declarationItemsPage++"
+                >Siguiente</button>
+              </div>
+            </nav>
             <div v-for="inspection in selectedDeclaration.inspections" :key="inspection.phase" class="equipment-inspection-history">
               <header class="equipment-inspection-history-heading">
                 <span class="equipment-inspection-history-icon" aria-hidden="true">✓</span>
@@ -651,6 +730,15 @@ async function revokeLink(declarationId: number) {
                     <strong>{{ item.checkedProduct }}</strong>
                     <small>{{ [item.checkedBrand, item.checkedModel, item.checkedSerialNumber, item.checkedColor].filter(Boolean).join(" · ") || "Sin identificación adicional" }}</small>
                     <p v-if="item.notes">{{ item.notes }}</p>
+                    <strong v-if="item.keepAtReception" class="equipment-retention-status">
+                      Mantener en recepción
+                    </strong>
+                    <strong
+                      v-if="inspection.phase === 'Salida' && itemKeptAtReception(item.declarationItemId)"
+                      class="equipment-retention-status"
+                    >
+                      {{ item.returnedToVisitor ? "Devuelto al visitante" : "Permanece en recepción" }}
+                    </strong>
                   </div>
                   <span class="equipment-inspection-result" :class="item.result === 'Conforme' ? 'is-complete' : 'has-incident'">
                     {{ item.result }}
@@ -664,7 +752,7 @@ async function revokeLink(declarationId: number) {
             <div class="equipment-checklist-heading">
               <div>
                 <h3>Checklist de {{ inspectionLabel }}</h3>
-                <p>Los datos declarados se muestran sin edición. Marca cada artículo después de compararlo físicamente con la persona y reporta cualquier incidencia.</p>
+                <p>Compara cada artículo físicamente. En la entrada, elige si puede ingresar o si se queda resguardado en recepción; ambas opciones confirman que fue verificado.</p>
               </div>
               <span class="equipment-checklist-progress">
                 {{ checkedInspectionItems }} / {{ inspectionItems.length }} verificados
@@ -700,14 +788,44 @@ async function revokeLink(declarationId: number) {
                 <div><span>Color</span><strong>{{ item.color || "—" }}</strong></div>
               </div>
               <label class="equipment-notes-label">
-                Observaciones{{ item.incident ? " (obligatorias por incidencia)" : " (opcional)" }}
-                <textarea v-model.trim="item.notes" maxlength="1000" rows="2" :required="item.incident" />
+                Observación (opcional)
+                <textarea v-model.trim="item.notes" maxlength="1000" rows="2" placeholder="Escribe cualquier observación sobre este artículo." />
               </label>
-              <label class="equipment-incident-toggle">
-                <input v-model="item.incident" type="checkbox" />
-                Reportar incidencia
+              <fieldset v-if="inspectionPhase === 'entrada'" class="equipment-disposition-options">
+                <legend>Decisión de entrada (selecciona una opción)</legend>
+                <label
+                  class="equipment-checked-toggle"
+                  :class="{ 'is-checked': item.checked && !item.keepAtReception }"
+                >
+                  <input
+                    type="radio"
+                    :name="`equipment-entry-${item.declarationItemId}`"
+                    :checked="item.checked && !item.keepAtReception"
+                    @change="item.checked = true; item.keepAtReception = false"
+                  />
+                  <span>Verificado para ingresar</span>
+                </label>
+                <label
+                  class="equipment-checked-toggle"
+                  :class="{ 'is-checked': item.checked && item.keepAtReception }"
+                >
+                  <input
+                    type="radio"
+                    :name="`equipment-entry-${item.declarationItemId}`"
+                    :checked="item.checked && item.keepAtReception"
+                    @change="item.checked = true; item.keepAtReception = true"
+                  />
+                  <span>Verificado y mantener en recepción</span>
+                </label>
+              </fieldset>
+              <label
+                v-if="inspectionPhase === 'salida' && itemKeptAtReception(item.declarationItemId)"
+                class="equipment-retain-toggle"
+              >
+                <input v-model="item.returnedToVisitor" type="checkbox" />
+                Se devolvió al visitante
               </label>
-              <label class="equipment-checked-toggle" :class="{ 'is-checked': item.checked }">
+              <label v-if="inspectionPhase === 'salida'" class="equipment-checked-toggle" :class="{ 'is-checked': item.checked }">
                 <input v-model="item.checked" type="checkbox" />
                 <span>{{ item.checked ? "Artículo revisado físicamente" : "Marcar como revisado" }}</span>
               </label>

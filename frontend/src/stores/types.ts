@@ -64,7 +64,6 @@ export type AccessAccount = {
   active: string | null;
   role: string | null;
   phone: string | null;
-  picture: string;
   sectionAccess: SectionAccess[];
 };
 
@@ -87,6 +86,7 @@ export type BusinessPartner = {
   employeeCount: number;
   type: BusinessPartnerType;
   status: BusinessPartnerStatus;
+  registeredBy: string;
 };
 
 export type GeneralVisitor = {

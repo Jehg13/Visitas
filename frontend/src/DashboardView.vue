@@ -205,7 +205,7 @@ const appointmentSaving = ref(false);
 const appointmentLoading = ref(false);
 const appointmentSearch = ref("");
 const appointmentsPage = ref(1);
-const appointmentsPerPage = 5;
+const appointmentsPerPage = 7;
 const calendarMonth = ref(getLocalDate().slice(0, 7));
 const externalStaffSearch = ref("");
 const externalStaffName = ref("");
@@ -606,7 +606,7 @@ async function saveAccessAccount() {
       }
     }
     editingAccessAccount.value = null;
-    showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`, "success");
+    showToast(`Se actualizaron las secciones autorizadas para ${account.login}.`, "success", "Permisos actualizados");
   } catch (error) {
     console.error("Failed to save account section access:", error);
     showToast("No se pudo conectar con el servidor para actualizar el acceso.");
@@ -746,6 +746,7 @@ const filteredBusinessPartners = computed(() => {
         partner.category,
         partner.type,
         partner.status,
+        partner.registeredBy,
       ]
         .join(" ")
         .toLocaleLowerCase()
@@ -977,8 +978,8 @@ async function loadDepartmentHosts(silent = false) {
   }
 }
 
-function showToast(message: string, type: AppAlertType = "error") {
-  notifyUser(message, type);
+function showToast(message: string, type: AppAlertType = "error", title?: string) {
+  notifyUser(message, type, title);
 }
 
 async function logout() {
@@ -1239,7 +1240,11 @@ async function submitDepartment() {
     departmentDialogOpen.value = false;
     editingDepartmentId.value = null;
     departmentName.value = "";
-    showToast(departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.", "success");
+    showToast(
+      departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.",
+      "success",
+      departmentId === null ? "Departamento registrado" : "Departamento actualizado",
+    );
   } catch (error) {
     console.error("Failed to save department:", error);
     showToast("No se pudo conectar con el servidor para guardar el departamento.");
@@ -1253,6 +1258,13 @@ async function removeDepartment(id: number) {
     showToast("No se puede eliminar el departamento porque tiene anfitriones asignados.");
     return;
   }
+  const department = departments.value.find((item) => item.id === id);
+  if (!await confirmUser(
+    `¿Eliminar el departamento${department ? ` ${department.name}` : ""}? Esta acción no se puede deshacer.`,
+    "Eliminar departamento",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
   try {
     const response = await fetch(`/api/departments/${id}`, { method: "DELETE" });
     const result = await response.json() as { departments?: Department[]; error?: string };
@@ -1266,7 +1278,7 @@ async function removeDepartment(id: number) {
       return;
     }
     departments.value = result.departments;
-    showToast("El departamento se eliminó.", "success");
+    showToast("El departamento se eliminó.", "success", "Departamento eliminado");
   } catch (error) {
     console.error("Failed to delete department:", error);
     showToast("No se pudo conectar con el servidor para eliminar el departamento.");
@@ -1450,6 +1462,7 @@ async function submitHost() {
         ? "El anfitrión se registró con los datos de Accesos."
         : "Los datos del anfitrión se actualizaron.",
       "success",
+      hostId === null ? "Anfitrión registrado" : "Anfitrión actualizado",
     );
   } catch (error) {
     console.error("Failed to save department host:", error);
@@ -1460,6 +1473,13 @@ async function submitHost() {
 }
 
 async function removeHost(id: number) {
+  const host = hosts.value.find((item) => item.id === id);
+  if (!await confirmUser(
+    `¿Eliminar el anfitrión${host ? ` ${host.name}` : ""}?`,
+    "Eliminar anfitrión",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
   try {
     const response = await fetch(`/api/department-hosts/${id}`, { method: "DELETE" });
     const result = await response.json() as { hosts?: Host[]; error?: string };
@@ -1473,7 +1493,7 @@ async function removeHost(id: number) {
       return;
     }
     setDepartmentHosts(result.hosts);
-    showToast("El anfitrión se eliminó.", "success");
+    showToast("El anfitrión se eliminó.", "success", "Anfitrión eliminado");
   } catch (error) {
     console.error("Failed to delete department host:", error);
     showToast("No se pudo conectar con el servidor para eliminar el anfitrión.");
@@ -1565,6 +1585,7 @@ async function submitAppointment() {
     showToast(
       result.message ?? (appointmentId === null ? "La cita se guardó en la agenda." : "La cita se actualizó en la agenda."),
       "success",
+      appointmentId === null ? "Cita registrada" : "Cita actualizada",
     );
     visitorName.value = "";
     visitorEmail.value = "";
@@ -1605,7 +1626,12 @@ async function deleteAppointment(appointment: Appointment) {
   }
   if (
     deletingAppointmentId.value !== null ||
-    !window.confirm(`¿Quitar de la agenda la cita cancelada de ${appointment.visitor}? Se conservará en el historial.`)
+    !await confirmUser(
+      `¿Quitar de la agenda la cita cancelada de ${appointment.visitor}? Se conservará en el historial.`,
+      "Eliminar cita",
+      "Confirmar eliminación",
+      "warning",
+    )
   ) {
     return;
   }
@@ -1628,7 +1654,7 @@ async function deleteAppointment(appointment: Appointment) {
       return;
     }
     appointments.value = result.appointments;
-    showToast("La cita se eliminó de la agenda.", "success");
+    showToast("La cita se eliminó de la agenda.", "success", "Cita eliminada");
   } catch (error) {
     console.error("Failed to delete appointment:", error);
     showToast("No se pudo conectar con el servidor para eliminar la cita.");
@@ -1639,7 +1665,12 @@ async function deleteAppointment(appointment: Appointment) {
 
 async function cancelAppointment(appointment: Appointment) {
   if (appointment.status === "Cancelada" || appointment.status === "Retirado") return;
-  if (!await confirmUser(`¿Cancelar la cita de ${appointment.visitor}?`, "Cancelar cita")) return;
+  if (!await confirmUser(
+    `¿Cancelar la cita de ${appointment.visitor}?`,
+    "Cancelar cita",
+    "Confirmar cancelación",
+    "warning",
+  )) return;
 
   try {
     const response = await fetch(`/api/appointments/${appointment.id}`, {
@@ -1661,7 +1692,7 @@ async function cancelAppointment(appointment: Appointment) {
       return;
     }
     appointments.value = result.appointments;
-    showToast(`Se canceló la cita de ${appointment.visitor}.`, "success");
+    showToast(`Se canceló la cita de ${appointment.visitor}.`, "success", "Cita cancelada");
   } catch (error) {
     console.error("Failed to cancel appointment:", error);
     showToast("No se pudo conectar con el servidor para cancelar la cita.");
@@ -1753,6 +1784,7 @@ async function submitExternalStaff() {
         ? "El trabajador externo se registró."
         : "Los datos del trabajador externo se actualizaron.",
       "success",
+      editingId === null ? "Personal registrado" : "Datos actualizados",
     );
   } catch (error) {
     console.error("Failed to save external staff:", error);
@@ -1763,6 +1795,13 @@ async function submitExternalStaff() {
 }
 
 async function removeExternalStaff(id: number) {
+  const staffMember = externalStaff.value.find((item) => item.id === id);
+  if (!await confirmUser(
+    `¿Eliminar el registro${staffMember ? ` de ${staffMember.fullName}` : ""}?`,
+    "Eliminar registro",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
   try {
     const response = await fetch(`/api/external-staff/${id}`, { method: "DELETE" });
     const result = await response.json() as {
@@ -1779,7 +1818,7 @@ async function removeExternalStaff(id: number) {
       return;
     }
     externalStaff.value = result.externalStaff;
-    showToast("El trabajador externo se eliminó.", "success");
+    showToast("El trabajador externo se eliminó.", "success", "Registro eliminado");
   } catch (error) {
     console.error("Failed to delete external staff:", error);
     showToast("No se pudo conectar con el servidor para eliminar al trabajador externo.");
@@ -1897,7 +1936,11 @@ async function submitBusinessPartner() {
     }
     businessPartners.value = result.businessPartners;
     businessPartnerDialogOpen.value = false;
-    showToast(partnerId === null ? "La empresa se registró correctamente." : "Los datos de la empresa se actualizaron.", "success");
+    showToast(
+      partnerId === null ? "La empresa se registró correctamente." : "Los datos de la empresa se actualizaron.",
+      "success",
+      partnerId === null ? "Empresa registrada" : "Datos actualizados",
+    );
   } catch (error) {
     console.error("Failed to save business partner:", error);
     showToast("No se pudo conectar con el servidor para guardar la empresa.");
@@ -1914,6 +1957,13 @@ async function submitBusinessPartner() {
 }
 
 async function removeBusinessPartner(id: number) {
+  const partner = businessPartners.value.find((item) => item.id === id);
+  if (!await confirmUser(
+    `¿Eliminar el registro${partner ? ` de ${partner.name}` : ""}? Esta acción no se puede deshacer.`,
+    "Eliminar registro",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
   try {
     const response = await fetch(`/api/business-partners/${id}`, { method: "DELETE" });
     const result = await response.json() as {
@@ -1930,7 +1980,7 @@ async function removeBusinessPartner(id: number) {
       return;
     }
     businessPartners.value = result.businessPartners;
-    showToast("La empresa se eliminó.", "success");
+    showToast("La empresa se eliminó.", "success", "Registro eliminado");
   } catch (error) {
     console.error("Failed to delete business partner:", error);
     showToast("No se pudo conectar con el servidor para eliminar la empresa.");
@@ -2257,6 +2307,10 @@ async function removeBusinessPartner(id: number) {
         :loading="appointmentLoading"
         :can-create-appointments="currentUser.isAdmin || isHost"
         :can-manage-appointments="currentUser.isAdmin || isHost"
+        :is-admin="currentUser.isAdmin"
+        :is-reception="isReception"
+        :is-host="isHost"
+        :theme="dashboardTheme"
         @update:page="appointmentsPage = $event"
         @create="openAppointmentDialog"
         @cancel="cancelAppointment"
@@ -2306,6 +2360,7 @@ async function removeBusinessPartner(id: number) {
         :loading="businessDirectoryLoading"
         :dispatch-appointment="qrDispatchAppointment"
         :sending-staff-id="sendingExternalQrStaffId"
+        :theme="dashboardTheme"
         @create="openExternalStaffDialog(undefined, $event)"
         @edit="openExternalStaffDialog"
         @remove="removeExternalStaff"
@@ -2329,6 +2384,8 @@ async function removeBusinessPartner(id: number) {
         :partner-rows-per-page="partnerRowsPerPage"
         :loading="businessDirectoryLoading"
         :business-partner-saving="businessPartnerSaving"
+        :is-admin="currentUser.isAdmin"
+        :theme="dashboardTheme"
         @create-partner="openBusinessPartnerDialog()"
         @edit-partner="openBusinessPartnerDialog"
         @remove-partner="removeBusinessPartner"
@@ -2342,6 +2399,7 @@ async function removeBusinessPartner(id: number) {
       <DailyLogSection
         v-else-if="activeSection === 'Bitácora diaria'"
         :initial-range="dailyLogInitialRange"
+        :theme="dashboardTheme"
         :is-admin="currentUser.isAdmin"
         :appointments="appointments"
         :appointments-loading="appointmentLoading"

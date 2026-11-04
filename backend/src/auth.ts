@@ -1,6 +1,7 @@
 import type { RowDataPacket } from "mysql2";
-import type { PoolConnection as PromisePoolConnection } from "mysql2/promise";
+import { createHash, timingSafeEqual } from "node:crypto";
 import pool from "./db";
+import { getExternalUsersPool } from "./external-users-db";
 
 type AccessRow = RowDataPacket & {
   login: string;
@@ -9,7 +10,6 @@ type AccessRow = RowDataPacket & {
   email: string | null;
   active: string | null;
   role: string | null;
-  section_admin: number;
 };
 
 export type AuthenticatedUser = {
@@ -28,7 +28,6 @@ type UserIdentityRow = RowDataPacket & {
   email: string | null;
   active: string | null;
   role: string | null;
-  section_admin: number;
 };
 
 const dummyPasswordHash = Bun.password.hash(crypto.randomUUID(), {
@@ -36,26 +35,26 @@ const dummyPasswordHash = Bun.password.hash(crypto.randomUUID(), {
 });
 
 export async function getActiveUser(login: string): Promise<AuthenticatedUser | null> {
-  const [rows] = await pool.execute<UserIdentityRow[]>(
-    `SELECT login, pswd, name, email, active, role,
-            EXISTS (
-              SELECT 1 FROM accesos_secciones s
-              WHERE s.login = accesos.login AND s.seccion = 'administrador'
-            ) AS section_admin
-     FROM accesos
+  const [rows] = await getExternalUsersPool().execute<UserIdentityRow[]>(
+    `SELECT login, pswd, name, email, active, role
+     FROM seg_users
      WHERE login = ?
      LIMIT 1`,
     [login],
   );
   const user = rows[0];
   if (!user || !["Y", "1"].includes(user.active ?? "")) return null;
+  const [sectionRows] = await pool.execute<RowDataPacket[]>(
+    "SELECT 1 FROM accesos_secciones WHERE login = ? AND seccion = 'administrador' LIMIT 1",
+    [user.login],
+  );
 
   return {
     login: user.login,
     name: user.name,
     email: user.email,
     role: user.role,
-    isAdmin: Boolean(user.section_admin),
+    isAdmin: sectionRows.length > 0,
     sessionKey: user.pswd,
   };
 }
@@ -63,44 +62,45 @@ export async function getActiveUser(login: string): Promise<AuthenticatedUser | 
 export async function authenticateUser(
   identifier: string,
   password: string,
-  connection?: PromisePoolConnection,
 ): Promise<AuthenticatedUser | null> {
-  const query = `SELECT login, pswd, name, email, active, role,
-          EXISTS (
-            SELECT 1 FROM accesos_secciones s
-            WHERE s.login = accesos.login AND s.seccion = 'administrador'
-          ) AS section_admin
-   FROM accesos
+  const query = `SELECT login, pswd, name, email, active, role
+   FROM seg_users
    WHERE login = ? OR email = ?
    LIMIT 1`;
   const values = [identifier, identifier];
-  const [rows] = connection
-    ? await connection.execute<AccessRow[]>(query, values)
-    : await pool.execute<AccessRow[]>(
-        query,
-        values,
-      );
+  const [rows] = await getExternalUsersPool().execute<AccessRow[]>(query, values);
   const user = rows[0];
-  const hash = user?.pswd.startsWith("$argon2id$")
+  const isArgon2id = user?.pswd.startsWith("$argon2id$") ?? false;
+  const isLegacyMd5 = user ? /^[a-f\d]{32}$/i.test(user.pswd) : false;
+  const hash = user && isArgon2id
     ? user.pswd
     : await dummyPasswordHash;
   const passwordMatches = await Bun.password.verify(password, hash);
+  const legacyMd5Matches = isLegacyMd5 && user
+    ? timingSafeEqual(
+        Buffer.from(createHash("md5").update(password, "utf8").digest("hex")),
+        Buffer.from(user.pswd.toLowerCase()),
+      )
+    : false;
 
   if (
     !user ||
-    !user.pswd.startsWith("$argon2id$") ||
-    !passwordMatches ||
+    !(isArgon2id ? passwordMatches : legacyMd5Matches) ||
     !["Y", "1"].includes(user.active ?? "")
   ) {
     return null;
   }
+  const [sectionRows] = await pool.execute<RowDataPacket[]>(
+    "SELECT 1 FROM accesos_secciones WHERE login = ? AND seccion = 'administrador' LIMIT 1",
+    [user.login],
+  );
 
   return {
     login: user.login,
     name: user.name,
     email: user.email,
     role: user.role,
-    isAdmin: Boolean(user.section_admin),
+    isAdmin: sectionRows.length > 0,
     sessionKey: user.pswd,
   };
 }

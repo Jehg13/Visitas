@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed, ref, watch } from "vue";
+
 type Department = {
   id: number;
   name: string;
@@ -15,13 +17,27 @@ type Host = {
   accessRoles: ("Administrador" | "Recepción" | "Anfitriones")[];
 };
 
-defineProps<{
+const props = defineProps<{
   hosts: Host[];
   filteredHosts: Host[];
   departments: Department[];
   eligibleDepartmentCount: number;
   search: string;
 }>();
+
+const page = ref(1);
+const pageSize = 7;
+const pages = computed(() => Math.max(1, Math.ceil(props.filteredHosts.length / pageSize)));
+const paginatedHosts = computed(() =>
+  props.filteredHosts.slice((page.value - 1) * pageSize, page.value * pageSize),
+);
+
+watch(
+  () => props.filteredHosts,
+  () => {
+    page.value = 1;
+  },
+);
 
 const emit = defineEmits<{
   "update:search": [value: string];
@@ -74,7 +90,7 @@ const emit = defineEmits<{
             </tr>
           </thead>
           <tbody>
-            <tr v-for="host in filteredHosts" :key="host.id">
+            <tr v-for="host in paginatedHosts" :key="host.id">
               <td><strong>{{ host.login }}</strong></td>
               <td>{{ host.name }}</td>
               <td>{{ host.email || "—" }}</td>
@@ -103,6 +119,21 @@ const emit = defineEmits<{
           </tbody>
         </table>
       </div>
+      <nav
+        v-if="filteredHosts.length > pageSize"
+        class="directory-pagination"
+        aria-label="Paginación de anfitriones"
+      >
+        <span>
+          Mostrando {{ (page - 1) * pageSize + 1 }}–{{ Math.min(page * pageSize, filteredHosts.length) }}
+          de {{ filteredHosts.length }} anfitriones
+        </span>
+        <div>
+          <button class="pagination-button" type="button" :disabled="page <= 1" @click="page--">Anterior</button>
+          <span class="pagination-current" aria-live="polite">{{ page }} / {{ pages }}</span>
+          <button class="pagination-button" type="button" :disabled="page >= pages" @click="page++">Siguiente</button>
+        </div>
+      </nav>
     </section>
   </section>
 </template>

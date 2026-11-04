@@ -87,6 +87,8 @@ const emit = defineEmits<{
 
 const today = getLocalDate();
 const selectedAgendaDate = ref(today);
+const selectedAgendaPage = ref(1);
+const agendaPageSize = 7;
 const historyFromDate = ref(getDateOffset(-6));
 const historyToDate = ref(today);
 const customDateRange = ref(false);
@@ -108,6 +110,13 @@ const selectedAgendaAppointments = computed(() =>
     .filter((appointment) => appointment.date === (selectedAgendaDate.value || today))
     .sort((first, second) => first.time.localeCompare(second.time)),
 );
+const paginatedAgendaAppointments = computed(() => {
+  const start = (selectedAgendaPage.value - 1) * agendaPageSize;
+  return selectedAgendaAppointments.value.slice(start, start + agendaPageSize);
+});
+const agendaPages = computed(() =>
+  Math.max(1, Math.ceil(selectedAgendaAppointments.value.length / agendaPageSize)),
+);
 const todayAppointments = computed(() =>
   props.appointments
     .filter((appointment) => appointment.date === today)
@@ -121,6 +130,9 @@ const selectedAgendaDateLabel = computed(() => {
     month: "long",
     year: "numeric",
   }).format(new Date(year, month - 1, day, 12));
+});
+watch([selectedAgendaDate, selectedAgendaAppointments], () => {
+  selectedAgendaPage.value = 1;
 });
 const activities = computed<Activity[]>(() =>
   recentEntries.value.slice(0, 6).map((entry) => ({
@@ -553,7 +565,7 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="appointment in selectedAgendaAppointments" :key="appointment.id">
+            <tr v-for="appointment in paginatedAgendaAppointments" :key="appointment.id">
               <td class="appointment-time">{{ appointment.time }}</td>
               <td><strong>{{ appointment.visitor }}</strong><small>{{ appointment.registeredBy }}</small></td>
               <td>{{ appointment.company }}</td>
@@ -608,6 +620,32 @@ onBeforeUnmount(() => {
           </tbody>
         </table>
       </div>
+      <nav
+        v-if="selectedAgendaAppointments.length > agendaPageSize"
+        class="directory-pagination"
+        aria-label="Paginación de agenda de inicio"
+      >
+        <span>
+          Mostrando {{ (selectedAgendaPage - 1) * agendaPageSize + 1 }}–{{
+            Math.min(selectedAgendaPage * agendaPageSize, selectedAgendaAppointments.length)
+          }} de {{ selectedAgendaAppointments.length }} citas
+        </span>
+        <div>
+          <button
+            class="pagination-button"
+            type="button"
+            :disabled="selectedAgendaPage <= 1"
+            @click="selectedAgendaPage--"
+          >Anterior</button>
+          <span class="pagination-current" aria-live="polite">{{ selectedAgendaPage }} / {{ agendaPages }}</span>
+          <button
+            class="pagination-button"
+            type="button"
+            :disabled="selectedAgendaPage >= agendaPages"
+            @click="selectedAgendaPage++"
+          >Siguiente</button>
+        </div>
+      </nav>
     </section>
 
     <section class="panel activity-panel" aria-labelledby="activity-title">

@@ -1,4 +1,5 @@
 import pool from "./db";
+import { getExternalUsersPool } from "./external-users-db";
 import { authenticateUser, getActiveUser, type AuthenticatedUser } from "./auth";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
@@ -117,7 +118,6 @@ type AccessAccountRow = RowDataPacket & {
   active: string | null;
   role: string | null;
   phone: string | null;
-  picture: Buffer | null;
 };
 
 type SectionAccessRow = RowDataPacket & {
@@ -131,7 +131,6 @@ type UserSectionAccessRow = RowDataPacket & {
 
 type AccessLoginRow = RowDataPacket & {
   login: string;
-  section_admin?: number;
 };
 
 type DepartmentRow = RowDataPacket & {
@@ -179,6 +178,8 @@ type BusinessPartnerRow = RowDataPacket & {
   employee_count: number;
   partner_type: "Contratista" | "Proveedor" | "Visitante";
   is_active: number;
+  created_by_login: string | null;
+  created_by_name: string | null;
 };
 
 type GeneralVisitorRow = RowDataPacket & {
@@ -210,15 +211,10 @@ type VisitorKioskRegistrationRow = RowDataPacket & {
   visit_reason: string;
   authorization_status: "Pendiente" | "Autorizada" | "Rechazada";
   identification_type: string;
-  visitor_declared_id_retained: number | boolean;
-  reception_id_claim_status: "No aplica" | "Pendiente" | "Confirmada" | "No confirmada";
-  reception_received_id_at: Date | string | null;
-  reception_received_id_by: string | null;
-  id_returned_at: Date | string | null;
-  id_returned_by: string | null;
   entry_checklist_complete: number | boolean;
   exit_checklist_complete: number | boolean;
   created_at: Date | string;
+  created_date?: string;
 };
 
 type AppointmentRow = RowDataPacket & {
@@ -329,6 +325,7 @@ type DailyLogInput = {
   appointmentId: number | null;
   externalStaffId: number | null;
   visitorRecordId: number | null;
+  sourceEntryId: number | null;
 };
 
 type BusinessPartnerInput = {
@@ -380,6 +377,8 @@ type EquipmentInspectionItemInput = Omit<EquipmentDeclaredItemInput, "itemType">
   declarationItemId: number;
   incident: boolean;
   checked: boolean;
+  keepAtReception: boolean;
+  returnedToVisitor: boolean;
 };
 
 function parseEquipmentDeclaredItems(value: unknown): EquipmentDeclaredItemInput[] | null {
@@ -418,7 +417,10 @@ function parseEquipmentInspectionItems(value: unknown): EquipmentInspectionItemI
   const ids = new Set<number>();
   for (const item of value) {
     if (!isRecord(item)) return null;
-    const { declarationItemId, quantity, product, brand, model, serialNumber, color, notes, incident, checked } = item;
+    const {
+      declarationItemId, quantity, product, brand, model, serialNumber, color,
+      notes, incident, checked, keepAtReception, returnedToVisitor,
+    } = item;
     if (
       typeof declarationItemId !== "number" || !Number.isSafeInteger(declarationItemId) ||
       declarationItemId < 1 || ids.has(declarationItemId) ||
@@ -430,6 +432,8 @@ function parseEquipmentInspectionItems(value: unknown): EquipmentInspectionItemI
       typeof color !== "string" || color.length > 80 ||
       typeof notes !== "string" || notes.length > 1000 ||
       typeof incident !== "boolean" ||
+      typeof keepAtReception !== "boolean" ||
+      typeof returnedToVisitor !== "boolean" ||
       typeof checked !== "boolean" || !checked
     ) return null;
     ids.add(declarationItemId);
@@ -444,6 +448,8 @@ function parseEquipmentInspectionItems(value: unknown): EquipmentInspectionItemI
       notes: notes.trim(),
       incident,
       checked,
+      keepAtReception,
+      returnedToVisitor,
     });
   }
   return items;
@@ -458,8 +464,8 @@ function hashAuthValue(scope: string, value: string) {
 }
 
 async function authenticateWithLockout(identifier: string, password: string, sourceAddress: string) {
-  const [accounts] = await pool.execute<RowDataPacket[]>(
-    "SELECT login FROM accesos WHERE login = ? OR email = ? LIMIT 1",
+  const [accounts] = await getExternalUsersPool().execute<RowDataPacket[]>(
+    "SELECT login FROM seg_users WHERE login = ? OR email = ? LIMIT 1",
     [identifier, identifier],
   );
   const principal = String(accounts[0]?.login ?? identifier.trim()).toLowerCase();
@@ -488,7 +494,7 @@ async function authenticateWithLockout(identifier: string, password: string, sou
       return { user: null, retryAfterSeconds: remainingSeconds };
     }
 
-    const user = await authenticateUser(identifier, password, connection);
+    const user = await authenticateUser(identifier, password);
     if (user) {
       await connection.execute(
         "DELETE FROM auth_login_failures WHERE principal_hash = ? AND source_hash = ?",
@@ -730,13 +736,15 @@ type VisitorKioskRegistrationInput = {
   carriesItems: boolean;
   items: VisitorKioskItemInput[];
   identificationTypes: (typeof visitorIdentificationTypes)[number][];
-  declaresIdRetained: boolean;
 };
 
 type VisitorKioskInspectionInput = {
   itemId: number;
   result: "Coincide" | "Faltante" | "Dañado";
   notes: string;
+  checked: boolean;
+  keepAtReception: boolean;
+  returnedToVisitor: boolean;
 };
 
 const visitorKioskRateLimits = new Map<string, { count: number; resetAt: number }>();
@@ -750,7 +758,6 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     carriesItems,
     items,
     identificationTypes,
-    declaresIdRetained,
   } = value;
   if (
     typeof visitorName !== "string" || !visitorName.trim() || visitorName.trim().length > 180 ||
@@ -771,8 +778,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
         typeof type !== "string" ||
         !visitorIdentificationTypes.includes(type as VisitorKioskRegistrationInput["identificationTypes"][number]),
     ) ||
-    new Set(identificationTypes).size !== identificationTypes.length ||
-    typeof declaresIdRetained !== "boolean"
+    new Set(identificationTypes).size !== identificationTypes.length
   ) {
     return null;
   }
@@ -817,7 +823,6 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     carriesItems,
     items: parsedItems,
     identificationTypes: identificationTypes as (typeof visitorIdentificationTypes)[number][],
-    declaresIdRetained,
   };
 }
 
@@ -841,7 +846,10 @@ function parseVisitorKioskInspection(value: unknown): VisitorKioskInspectionInpu
         item.result !== "Faltante" &&
         item.result !== "Dañado") ||
       typeof item.notes !== "string" ||
-      item.notes.length > 1000
+      item.notes.length > 1000 ||
+      item.checked !== true ||
+      typeof item.keepAtReception !== "boolean" ||
+      typeof item.returnedToVisitor !== "boolean"
     ) {
       return null;
     }
@@ -850,6 +858,9 @@ function parseVisitorKioskInspection(value: unknown): VisitorKioskInspectionInpu
       itemId,
       result: item.result,
       notes: item.notes.trim(),
+      checked: item.checked,
+      keepAtReception: item.keepAtReception,
+      returnedToVisitor: item.returnedToVisitor,
     });
   }
   return items;
@@ -861,11 +872,15 @@ async function writeVisitorKioskMovement(
   event: "Ingreso" | "Retiro",
   actorLogin: string,
   actorName: string,
+  movementNotes: string[] = [],
 ) {
   const { date, time } = getAppDateTime();
+  const movementDetails = movementNotes.length > 0
+    ? ` · ${movementNotes.join(" · ")}`
+    : "";
   const details = event === "Ingreso" && !Boolean(registration.kiosk_items_present)
     ? `Registro manual · Folio ${registration.folio} · Ingreso autorizado sin equipo ni herramientas`
-    : `Registro manual · Folio ${registration.folio} · Checklist de ${event === "Ingreso" ? "entrada" : "salida"} completado`;
+    : `Registro manual · Folio ${registration.folio} · Checklist de ${event === "Ingreso" ? "entrada" : "salida"} completado${movementDetails}`;
   const [existing] = await connection.execute<RowDataPacket[]>(
     `SELECT id
      FROM daily_log_entries
@@ -904,7 +919,7 @@ async function handleVisitorKioskRequest(
     }
     try {
       const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT r.authorization_status, r.reception_id_claim_status,
+        `SELECT r.authorization_status,
                 (
                   EXISTS (
                     SELECT 1 FROM visitor_kiosk_inspections i
@@ -938,7 +953,6 @@ async function handleVisitorKioskRequest(
       if (!rows[0]) return Response.json({ error: "No se encontró el registro." }, { status: 404 });
       return Response.json({
         authorizationStatus: rows[0].authorization_status,
-        receptionIdClaimStatus: rows[0].reception_id_claim_status,
         entryChecklistComplete: Boolean(rows[0].entry_checklist_complete),
         entered: Boolean(rows[0].entered),
       });
@@ -1067,8 +1081,8 @@ async function handleVisitorKioskRequest(
       const [registrationResult] = await connection.execute<ResultSetHeader>(
         `INSERT INTO visitor_kiosk_registrations
            (visitor_record_id, folio, company_name, visit_reason, carries_equipment, identification_type,
-            visitor_declared_id_retained, reception_id_claim_status, idempotency_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            idempotency_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           visitorRecordId,
           folio,
@@ -1076,8 +1090,6 @@ async function handleVisitorKioskRequest(
           input.visitReason,
           input.carriesItems,
           input.identificationTypes.join(", "),
-          input.declaresIdRetained,
-          input.declaresIdRetained ? "Pendiente" : "No aplica",
           requestKey,
         ],
       );
@@ -1121,7 +1133,7 @@ async function handleVisitorKioskRequest(
          VALUES (?, 'Registrado', NULL, 'Autorregistro', ?)`,
         [
           registrationResult.insertId,
-          `Visitante declaró ${input.declaresIdRetained ? "" : "no "}haber entregado sus identificaciones para resguardo.`,
+          `Tipo(s) de identificación presentada(s): ${input.identificationTypes.join(", ")}.`,
         ],
       );
       await connection.commit();
@@ -1196,9 +1208,6 @@ async function handleVisitorKioskRequest(
                   WHERE k.registration_id = r.id
                 ) AS kiosk_items_present,
                 r.company_name, r.visit_reason, r.authorization_status, r.identification_type,
-                r.visitor_declared_id_retained, r.reception_id_claim_status,
-                r.reception_received_id_at, r.reception_received_id_by,
-                r.id_returned_at, r.id_returned_by,
                 EXISTS (
                   SELECT 1 FROM visitor_kiosk_inspections i
                   WHERE i.registration_id = r.id AND i.phase = 'Entrada'
@@ -1227,6 +1236,8 @@ async function handleVisitorKioskRequest(
           description: string;
           result: string;
           notes: string;
+          keepAtReception: boolean;
+          returnedToVisitor: boolean;
         }>;
       }>>();
       if (ids.length > 0) {
@@ -1259,7 +1270,8 @@ async function handleVisitorKioskRequest(
         const [inspections] = await pool.execute<RowDataPacket[]>(
           `SELECT i.id, i.registration_id, i.phase, i.inspector_name,
                   DATE_FORMAT(i.completed_at, '%Y-%m-%d %H:%i:%s') AS completed_at,
-                  ii.kiosk_item_id, kiosk_item.description, ii.result, ii.notes
+                  ii.kiosk_item_id, kiosk_item.description, ii.result, ii.notes,
+                  ii.keep_at_reception, ii.returned_to_visitor
            FROM visitor_kiosk_inspections i
            LEFT JOIN visitor_kiosk_inspection_items ii ON ii.inspection_id = i.id
            LEFT JOIN visitor_kiosk_items kiosk_item ON kiosk_item.id = ii.kiosk_item_id
@@ -1290,6 +1302,8 @@ async function handleVisitorKioskRequest(
                 : String(row.description ?? ""),
               result: String(row.result),
               notes: row.result === "Extra" ? "" : String(row.notes ?? ""),
+              keepAtReception: Boolean(row.keep_at_reception),
+              returnedToVisitor: Boolean(row.returned_to_visitor),
             });
           }
         }
@@ -1304,12 +1318,6 @@ async function handleVisitorKioskRequest(
           visitReason: row.visit_reason,
           authorizationStatus: row.authorization_status,
           identificationType: row.identification_type,
-          visitorDeclaredIdRetained: Boolean(row.visitor_declared_id_retained),
-          receptionIdClaimStatus: row.reception_id_claim_status,
-          receptionReceivedIdAt: row.reception_received_id_at,
-          receptionReceivedIdBy: row.reception_received_id_by,
-          idReturnedAt: row.id_returned_at,
-          idReturnedBy: row.id_returned_by,
           entryChecklistComplete: Boolean(row.entry_checklist_complete),
           exitChecklistComplete: Boolean(row.exit_checklist_complete),
           createdAt: row.created_at,
@@ -1344,9 +1352,6 @@ async function handleVisitorKioskRequest(
       ![
         "authorize",
         "reject",
-        "receive-identification",
-        "deny-identification",
-        "return-identification",
         "complete-entry-checklist",
         "complete-exit-checklist",
       ].includes(String(body.action))
@@ -1361,7 +1366,7 @@ async function handleVisitorKioskRequest(
       (body.action === "complete-entry-checklist" || body.action === "complete-exit-checklist") &&
       inspectionItems === null
     ) {
-      return Response.json({ error: "Revisa todos los artículos y describe cualquier incidencia." }, { status: 400 });
+      return Response.json({ error: "Verifica todos los artículos y agrega una observación válida si es necesario." }, { status: 400 });
     }
     const connection = await pool.getConnection();
     try {
@@ -1373,9 +1378,7 @@ async function handleVisitorKioskRequest(
                   WHERE k.registration_id = r.id
                 ) AS kiosk_items_present,
                 r.company_name, r.visit_reason,
-                r.authorization_status, r.identification_type, r.visitor_declared_id_retained,
-                r.reception_id_claim_status,
-                r.reception_received_id_at, r.reception_received_id_by, r.id_returned_at, r.id_returned_by,
+                r.authorization_status, r.identification_type,
                 EXISTS (
                   SELECT 1 FROM visitor_kiosk_inspections i
                   WHERE i.registration_id = r.id AND i.phase = 'Entrada'
@@ -1384,7 +1387,8 @@ async function handleVisitorKioskRequest(
                   SELECT 1 FROM visitor_kiosk_inspections i
                   WHERE i.registration_id = r.id AND i.phase = 'Salida'
                 ) AS exit_checklist_complete,
-                r.created_at
+                r.created_at,
+                DATE_FORMAT(r.created_at, '%Y-%m-%d') AS created_date
          FROM visitor_kiosk_registrations r
          INNER JOIN general_visitors v ON v.id = r.visitor_record_id
          WHERE r.id = ? LIMIT 1 FOR UPDATE`,
@@ -1395,6 +1399,13 @@ async function handleVisitorKioskRequest(
         await connection.rollback();
         return Response.json({ error: "No se encontró el registro seleccionado." }, { status: 404 });
       }
+      if (!user.isAdmin && registration.created_date !== getAppDateTime().date) {
+        await connection.rollback();
+        return Response.json(
+          { error: "Los autorregistros de días anteriores son de solo lectura para Recepción. Solicita apoyo a Administración." },
+          { status: 403 },
+        );
+      }
       let auditAction: string;
       let auditDetails = "";
       switch (body.action) {
@@ -1403,17 +1414,6 @@ async function handleVisitorKioskRequest(
           if (registration.authorization_status !== "Pendiente") {
             await connection.rollback();
             return Response.json({ error: "Este registro ya fue procesado por recepción." }, { status: 409 });
-          }
-          if (
-            body.action === "authorize" &&
-            Boolean(registration.visitor_declared_id_retained) &&
-            registration.reception_id_claim_status === "Pendiente"
-          ) {
-            await connection.rollback();
-            return Response.json(
-              { error: "Confirma o indica que no se recibió la identificación antes de autorizar la entrada." },
-              { status: 409 },
-            );
           }
           await connection.execute(
             "UPDATE visitor_kiosk_registrations SET authorization_status = ? WHERE id = ?",
@@ -1432,57 +1432,6 @@ async function handleVisitorKioskRequest(
               user.name?.trim() || user.login,
             );
           }
-          break;
-        case "receive-identification":
-          if (
-            !registration.visitor_declared_id_retained ||
-            registration.reception_id_claim_status !== "Pendiente" ||
-            registration.reception_received_id_at
-          ) {
-            await connection.rollback();
-            return Response.json({ error: "La recepción física no puede confirmarse para este registro." }, { status: 409 });
-          }
-          await connection.execute(
-            `UPDATE visitor_kiosk_registrations
-             SET reception_received_id_at = NOW(), reception_received_id_by = ?,
-                 reception_id_claim_status = 'Confirmada'
-             WHERE id = ?`,
-            [user.login, registrationId],
-          );
-          auditAction = "Identificación recibida por recepción";
-          auditDetails = "Recepción confirmó la recepción física del documento.";
-          break;
-        case "deny-identification":
-          if (
-            !registration.visitor_declared_id_retained ||
-            registration.reception_id_claim_status !== "Pendiente" ||
-            registration.reception_received_id_at
-          ) {
-            await connection.rollback();
-            return Response.json({ error: "La declaración de resguardo ya fue procesada." }, { status: 409 });
-          }
-          await connection.execute(
-            `UPDATE visitor_kiosk_registrations
-             SET reception_id_claim_status = 'No confirmada'
-             WHERE id = ?`,
-            [registrationId],
-          );
-          auditAction = "Resguardo de identificación no confirmado";
-          auditDetails = "Recepción no pudo confirmar que la identificación se hubiera dejado para resguardo; la visita queda pendiente de autorización.";
-          break;
-        case "return-identification":
-          if (!registration.reception_received_id_at || registration.id_returned_at) {
-            await connection.rollback();
-            return Response.json({ error: "No hay una identificación recibida pendiente de devolución." }, { status: 409 });
-          }
-          await connection.execute(
-            `UPDATE visitor_kiosk_registrations
-             SET id_returned_at = NOW(), id_returned_by = ?
-             WHERE id = ?`,
-            [user.login, registrationId],
-          );
-          auditAction = "Identificación devuelta";
-          auditDetails = "Recepción registró la devolución del documento.";
           break;
         case "complete-entry-checklist":
         case "complete-exit-checklist": {
@@ -1518,9 +1467,33 @@ async function handleVisitorKioskRequest(
             return Response.json({ error: "Completa primero el checklist de entrada." }, { status: 409 });
           }
           const [declaredItems] = await connection.execute<RowDataPacket[]>(
-            "SELECT id FROM visitor_kiosk_items WHERE registration_id = ? ORDER BY id",
+            "SELECT id, description FROM visitor_kiosk_items WHERE registration_id = ? ORDER BY id",
             [registrationId],
           );
+          const entryRetainedItemIds = new Set<number>();
+          if (phase === "Salida") {
+            const [entryRetainedItems] = await connection.execute<RowDataPacket[]>(
+              `SELECT ii.kiosk_item_id
+               FROM visitor_kiosk_inspections i
+               INNER JOIN visitor_kiosk_inspection_items ii ON ii.inspection_id = i.id
+               WHERE i.registration_id = ? AND i.phase = 'Entrada'
+                 AND ii.keep_at_reception = TRUE`,
+              [registrationId],
+            );
+            for (const item of entryRetainedItems) {
+              entryRetainedItemIds.add(Number(item.kiosk_item_id));
+            }
+          }
+          if (
+            inspectionItems!.some((item) =>
+              (phase === "Entrada" && item.returnedToVisitor) ||
+              (phase === "Salida" && item.keepAtReception) ||
+              (phase === "Salida" && item.returnedToVisitor && !entryRetainedItemIds.has(item.itemId)),
+            )
+          ) {
+            await connection.rollback();
+            return Response.json({ error: "La devolución solo puede marcarse en salida para artículos que quedaron en recepción durante la entrada." }, { status: 400 });
+          }
           const reviewedIds = new Set(
             inspectionItems!.map((item) => item.itemId),
           );
@@ -1541,17 +1514,62 @@ async function handleVisitorKioskRequest(
           for (const item of inspectionItems!) {
             await connection.execute(
               `INSERT INTO visitor_kiosk_inspection_items
-                 (inspection_id, kiosk_item_id, result, notes, checked_at)
-               VALUES (?, ?, ?, ?, NOW())`,
-              [inspectionResult.insertId, item.itemId, item.result, item.notes],
+                 (inspection_id, kiosk_item_id, result, notes, keep_at_reception,
+                  returned_to_visitor, checked_at)
+               VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+              [
+                inspectionResult.insertId,
+                item.itemId,
+                item.result,
+                item.notes,
+                item.keepAtReception,
+                item.returnedToVisitor,
+              ],
             );
           }
           auditAction = `Checklist de ${phase.toLowerCase()} completado`;
           const missing = inspectionItems!.filter((item) => item.result === "Faltante").length;
           const damaged = inspectionItems!.filter((item) => item.result === "Dañado").length;
+          const retainedItems = declaredItems
+            .filter((declared) =>
+              inspectionItems!.some((item) =>
+                item.itemId === Number(declared.id) && item.keepAtReception,
+              ),
+            )
+            .map((item) => String(item.description));
+          const returnedItems = declaredItems
+            .filter((declared) =>
+              inspectionItems!.some((item) =>
+                item.itemId === Number(declared.id) && item.returnedToVisitor,
+              ),
+            )
+            .map((item) => String(item.description));
+          const stillRetainedItems = declaredItems
+            .filter((declared) =>
+              entryRetainedItemIds.has(Number(declared.id)) &&
+              !inspectionItems!.some((item) =>
+                item.itemId === Number(declared.id) && item.returnedToVisitor,
+              ),
+            )
+            .map((item) => String(item.description));
+          const movementNotes = phase === "Entrada"
+            ? retainedItems.length > 0
+              ? [`Mantener en recepción: ${retainedItems.join(", ")}`]
+              : []
+            : [
+                ...(returnedItems.length > 0
+                  ? [`Devuelto al visitante: ${returnedItems.join(", ")}`]
+                  : []),
+                ...(stillRetainedItems.length > 0
+                  ? [`Permanece en recepción: ${stillRetainedItems.join(", ")}`]
+                  : []),
+              ];
           auditDetails =
             `${declaredItemCount} artículo(s) declarado(s) revisado(s); ` +
-            `${missing} faltante(s), ${damaged} dañado(s).`;
+            `${missing} faltante(s), ${damaged} dañado(s).` +
+            (movementNotes.length > 0
+              ? ` ${movementNotes.join(". ")}.`
+              : "");
           if (phase === "Entrada" && registration.authorization_status === "Autorizada") {
             await writeVisitorKioskMovement(
               connection,
@@ -1559,6 +1577,7 @@ async function handleVisitorKioskRequest(
               "Ingreso",
               user.login,
               user.name?.trim() || user.login,
+              movementNotes,
             );
           }
           if (phase === "Salida") {
@@ -1581,6 +1600,7 @@ async function handleVisitorKioskRequest(
               "Retiro",
               user.login,
               user.name?.trim() || user.login,
+              movementNotes,
             );
           }
           break;
@@ -1648,7 +1668,17 @@ function isValidDateString(value: string): boolean {
 
 function parseDailyLogInput(value: unknown): DailyLogInput | null {
   if (!isRecord(value)) return null;
-  const { event, date, time, personName, details, appointmentId, externalStaffId, visitorRecordId } = value;
+  const {
+    event,
+    date,
+    time,
+    personName,
+    details,
+    appointmentId,
+    externalStaffId,
+    visitorRecordId,
+    sourceEntryId,
+  } = value;
   const linkedIds = [appointmentId, externalStaffId, visitorRecordId].filter(
     (id) => typeof id === "number" && id > 0,
   );
@@ -1670,6 +1700,7 @@ function parseDailyLogInput(value: unknown): DailyLogInput | null {
     !validOptionalId(appointmentId) ||
     !validOptionalId(externalStaffId) ||
     !validOptionalId(visitorRecordId) ||
+    !validOptionalId(sourceEntryId) ||
     linkedIds.length > (allowsAppointmentAndStaff ? 2 : 1) ||
     (typeof visitorRecordId === "number" && linkedIds.length > 1)
   ) {
@@ -1684,15 +1715,18 @@ function parseDailyLogInput(value: unknown): DailyLogInput | null {
     appointmentId: typeof appointmentId === "number" ? appointmentId : null,
     externalStaffId: typeof externalStaffId === "number" ? externalStaffId : null,
     visitorRecordId: typeof visitorRecordId === "number" ? visitorRecordId : null,
+    sourceEntryId: typeof sourceEntryId === "number" ? sourceEntryId : null,
   };
 }
 
-async function listBusinessPartners() {
-  const [rows] = await pool.query<BusinessPartnerRow[]>(
+async function listBusinessPartners(ownerLogin?: string, includeRegistrant = true) {
+  const [rows] = await pool.execute<BusinessPartnerRow[]>(
     `SELECT id, name, description, rfc, category, subject, visitor_record_id,
-            employee_count, partner_type, is_active
+            employee_count, partner_type, is_active, created_by_login, created_by_name
      FROM business_partners
+     ${ownerLogin === undefined ? "" : "WHERE created_by_login = ?"}
      ORDER BY name, id`,
+    ownerLogin === undefined ? [] : [ownerLogin],
   );
   return rows.map((row) => ({
     id: Number(row.id),
@@ -1703,6 +1737,13 @@ async function listBusinessPartners() {
     subject: row.subject ?? "",
     employeeCount: Number(row.employee_count),
     type: row.partner_type,
+    registeredBy: includeRegistrant
+      ? row.created_by_login
+        ? row.created_by_name?.trim()
+          ? `${row.created_by_name.trim()} (${row.created_by_login})`
+          : row.created_by_login
+        : "Registro manual"
+      : "",
     status: row.partner_type === "Visitante"
       ? "No aplica" as const
       : row.is_active ? "Activa" as const : "Inactiva" as const,
@@ -2106,7 +2147,8 @@ async function listDepartmentHosts() {
     `SELECT h.id, h.login, h.name, h.department_id, h.role, h.email, h.phone,
             GROUP_CONCAT(s.seccion ORDER BY s.seccion SEPARATOR ',') AS section_access
      FROM department_hosts h
-     LEFT JOIN accesos_secciones s ON s.login = h.login
+     LEFT JOIN accesos_secciones s
+       ON s.login COLLATE utf8mb4_unicode_ci = h.login COLLATE utf8mb4_unicode_ci
      GROUP BY h.id, h.login, h.name, h.department_id, h.role, h.email, h.phone
      ORDER BY h.name, h.login`,
   );
@@ -2162,8 +2204,8 @@ function parseDepartmentHost(value: unknown): DepartmentHostInput | null {
 }
 
 async function listHostAccounts() {
-  const [accounts] = await pool.query<HostAccountRow[]>(
-    "SELECT login, name, email, role, phone FROM accesos ORDER BY name, login",
+  const [accounts] = await getExternalUsersPool().query<HostAccountRow[]>(
+    "SELECT login, name, email, role, phone FROM seg_users ORDER BY name, login",
   );
   return accounts.map((account) => ({
     login: account.login,
@@ -2267,23 +2309,10 @@ async function resolveRequestUser(request: Request): Promise<AuthenticatedUser |
   return user;
 }
 
-function pictureDataUrl(picture: Buffer | null) {
-  if (!picture?.length) return "";
-  const mimeType = picture.subarray(0, 8).toString("hex").startsWith("89504e47")
-    ? "image/png"
-    : picture.subarray(0, 3).toString("hex") === "ffd8ff"
-      ? "image/jpeg"
-      : picture.subarray(0, 4).toString("ascii") === "RIFF" &&
-          picture.subarray(8, 12).toString("ascii") === "WEBP"
-        ? "image/webp"
-        : "application/octet-stream";
-  return `data:${mimeType};base64,${picture.toString("base64")}`;
-}
-
 async function listAccessAccounts() {
-  const [accounts] = await pool.query<AccessAccountRow[]>(
-    `SELECT login, name, email, active, role, phone, picture
-     FROM accesos
+  const [accounts] = await getExternalUsersPool().query<AccessAccountRow[]>(
+    `SELECT login, name, email, active, role, phone
+     FROM seg_users
      ORDER BY login`,
   );
   const [sectionAccessRows] = await pool.query<SectionAccessRow[]>(
@@ -2303,7 +2332,6 @@ async function listAccessAccounts() {
     active: account.active,
     role: account.role,
     phone: account.phone,
-    picture: pictureDataUrl(account.picture),
     sectionAccess: sectionsByLogin.get(account.login) ?? [],
   }));
 }
@@ -2423,7 +2451,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
     if (request.method === "GET" && declarationId === null) {
       const search = (url.searchParams.get("q") ?? "").trim();
       const page = Number(url.searchParams.get("page") ?? 1);
-      const pageSize = 50;
+      const pageSize = 7;
       if (search.length > 180 || !Number.isSafeInteger(page) || page < 1) {
         return Response.json({ error: "La búsqueda o página solicitada no es válida." }, { status: 400 });
       }
@@ -2466,6 +2494,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         total: Number(countRows[0].total),
         page,
         pageSize,
+        pages: Math.max(1, Math.ceil(Number(countRows[0].total) / pageSize)),
         declarations: rows.map((row) => ({
           id: Number(row.id),
           personName: row.person_name,
@@ -2637,7 +2666,8 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                   ii.declared_brand, ii.declared_model, ii.declared_serial_number,
                   ii.declared_color, ii.checked_quantity, ii.checked_product,
                   ii.checked_brand, ii.checked_model, ii.checked_serial_number,
-                  ii.checked_color, ii.result, ii.notes
+                  ii.checked_color, ii.result, ii.notes, ii.keep_at_reception,
+                  ii.returned_to_visitor
            FROM equipment_inspection_items ii
            WHERE ii.inspection_id = ? ORDER BY ii.id`,
           [inspection.id],
@@ -2666,6 +2696,8 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
             checkedColor: item.checked_color,
             result: item.result,
             notes: item.notes,
+            keepAtReception: Boolean(item.keep_at_reception),
+            returnedToVisitor: Boolean(item.returned_to_visitor),
           })),
         };
       }));
@@ -2798,8 +2830,39 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
            VALUES (?, ?, 'Completada', ?, ?, NOW())`,
           [declarationId, phase, user.login, user.name?.trim() || user.login],
         );
+        const entryRetentionByItemId = new Map<number, boolean>();
+        if (phase === "Salida") {
+          const [entryRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT declaration_item_id, keep_at_reception
+             FROM equipment_inspection_items
+             WHERE inspection_id = (
+               SELECT id FROM equipment_inspections
+               WHERE declaration_id = ? AND phase = 'Entrada' AND status = 'Completada'
+             )`,
+            [declarationId],
+          );
+          for (const item of entryRows) {
+            entryRetentionByItemId.set(
+              Number(item.declaration_item_id),
+              Boolean(item.keep_at_reception),
+            );
+          }
+        }
         for (const declared of declaredItems) {
           const checked = inspectionItems.find((item) => item.declarationItemId === Number(declared.id))!;
+          if (
+            (phase === "Entrada" && checked.returnedToVisitor) ||
+            (phase === "Salida" && checked.keepAtReception) ||
+            (phase === "Salida" &&
+              checked.returnedToVisitor &&
+              !entryRetentionByItemId.get(Number(declared.id)))
+          ) {
+            await connection.rollback();
+            return Response.json(
+              { error: "La devolución solo puede marcarse en salida para artículos que quedaron en recepción durante la entrada." },
+              { status: 400 },
+            );
+          }
           let expected = {
             quantity: Number(declared.quantity),
             product: String(declared.product),
@@ -2845,8 +2908,9 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                (inspection_id, declaration_item_id, declared_item_type, declared_quantity, declared_product,
                 declared_brand, declared_model, declared_serial_number, declared_color,
                 checked_quantity, checked_product, checked_brand, checked_model,
-                checked_serial_number, checked_color, result, notes, checked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+                checked_serial_number, checked_color, result, notes, keep_at_reception,
+                returned_to_visitor, checked_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
             [
               insert.insertId,
               declared.id,
@@ -2865,6 +2929,8 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
               expected.color,
               incident ? "Incidencia" : "Conforme",
               checked.notes.trim(),
+              checked.keepAtReception,
+              checked.returnedToVisitor,
             ],
           );
         }
@@ -3092,9 +3158,9 @@ const server = Bun.serve({
           );
         }
 
-        const [accounts] = await pool.execute<RowDataPacket[]>(
+        const [accounts] = await getExternalUsersPool().execute<RowDataPacket[]>(
           `SELECT login, name, email
-           FROM accesos
+           FROM seg_users
            WHERE LOWER(email) = ? AND active IN ('Y', '1')
            LIMIT 2`,
           [email],
@@ -3256,10 +3322,13 @@ const server = Bun.serve({
         if (!passwordHash.startsWith("$argon2id$")) {
           throw new Error("No se pudo generar el hash seguro de la contraseña.");
         }
-        await connection.execute(
-          "UPDATE accesos SET pswd = ? WHERE login = ?",
+        const [updatedAccount] = await getExternalUsersPool().execute<ResultSetHeader>(
+          "UPDATE seg_users SET pswd = ?, pswd_last_updated = NOW() WHERE login = ? AND active IN ('Y', '1')",
           [passwordHash, reset.login],
         );
+        if (updatedAccount.affectedRows !== 1) {
+          throw new Error("The external user account was not updated.");
+        }
         await connection.execute(
           "UPDATE password_reset_tokens SET used_at = NOW() WHERE login = ? AND used_at IS NULL",
           [reset.login],
@@ -3422,12 +3491,12 @@ const server = Bun.serve({
         if (!login || login.length > 255) {
           return Response.json({ error: "El usuario seleccionado no es válido." }, { status: 400 });
         }
-        const [matches] = await pool.execute<AccessLoginRow[]>(
-          "SELECT login FROM accesos WHERE login = ? LIMIT 1",
+        const [matches] = await getExternalUsersPool().execute<AccessLoginRow[]>(
+          "SELECT login FROM seg_users WHERE login = ? AND active IN ('Y', '1') LIMIT 1",
           [login],
         );
         if (matches.length === 0) {
-          return Response.json({ error: "El login debe pertenecer a una cuenta de Accesos." }, { status: 404 });
+          return Response.json({ error: "El login debe pertenecer a una cuenta externa activa." }, { status: 404 });
         }
 
         const accountLogin = matches[0].login;
@@ -3468,11 +3537,16 @@ const server = Bun.serve({
           if (partnerId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
-          return Response.json({ businessPartners: await listBusinessPartners() });
+          const ownerLogin = await hasHostOnlyAccess(user) ? user.login : undefined;
+          return Response.json({ businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) });
         }
         if (!(await canManageExternalModules(user))) {
           return Response.json({ error: "No tienes permiso para modificar contratistas y proveedores." }, { status: 403 });
         }
+        if (request.method === "DELETE" && !user.isAdmin) {
+          return Response.json({ error: "No tienes permiso para eliminar contratistas y proveedores." }, { status: 403 });
+        }
+        const ownerLogin = user.isAdmin ? undefined : user.login;
         if (
           (request.method === "POST" && partnerId !== null) ||
           (request.method !== "POST" && partnerId === null)
@@ -3480,14 +3554,17 @@ const server = Bun.serve({
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
         if (request.method === "DELETE") {
+          const deleteQuery = ownerLogin === undefined
+            ? "DELETE FROM business_partners WHERE id = ?"
+            : "DELETE FROM business_partners WHERE id = ? AND created_by_login = ?";
           const [result] = await pool.execute<ResultSetHeader>(
-            "DELETE FROM business_partners WHERE id = ?",
-            [partnerId],
+            deleteQuery,
+            ownerLogin === undefined ? [partnerId] : [partnerId, ownerLogin],
           );
           if (result.affectedRows === 0) {
             return Response.json({ error: "No se encontró la empresa seleccionada." }, { status: 404 });
           }
-          return Response.json({ businessPartners: await listBusinessPartners() });
+          return Response.json({ businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) });
         }
 
         let body: unknown;
@@ -3508,14 +3585,15 @@ const server = Bun.serve({
           const connection = await pool.getConnection();
           try {
             await connection.beginTransaction();
+            const ownerCondition = ownerLogin === undefined ? "" : "AND created_by_login = ?";
             const [currentPartners] = await connection.execute<BusinessPartnerRow[]>(
               `SELECT id, name, description, rfc, category, subject, visitor_record_id,
-                      employee_count, partner_type, is_active
+                      employee_count, partner_type, is_active, created_by_login, created_by_name
                FROM business_partners
-               WHERE id = ?
+               WHERE id = ? ${ownerCondition}
                LIMIT 1
                FOR UPDATE`,
-              [partnerId],
+              ownerLogin === undefined ? [partnerId] : [partnerId, ownerLogin],
             );
             if (!currentPartners[0]) {
               await connection.rollback();
@@ -3593,8 +3671,8 @@ const server = Bun.serve({
             await connection.execute(
               `INSERT INTO business_partners
                  (name, description, rfc, category, subject, visitor_record_id,
-                  employee_count, partner_type, is_active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  employee_count, partner_type, is_active, created_by_login, created_by_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 partner.name,
                 partner.description,
@@ -3605,6 +3683,8 @@ const server = Bun.serve({
                 partner.employeeCount,
                 partner.type,
                 partner.status !== "Inactiva",
+                user.login,
+                user.name?.trim() || null,
               ],
             );
             await connection.commit();
@@ -3617,7 +3697,7 @@ const server = Bun.serve({
         }
 
         return Response.json(
-          { businessPartners: await listBusinessPartners() },
+          { businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) },
           { status: request.method === "POST" ? 201 : 200 },
         );
       } catch (error) {
@@ -3804,6 +3884,9 @@ const server = Bun.serve({
         if (!(await hasSectionAccess(user, "recepcion"))) {
           return Response.json({ error: "No tienes permiso para consultar la bitácora." }, { status: 403 });
         }
+        if (request.method === "DELETE" && !user.isAdmin) {
+          return Response.json({ error: "No tienes permiso para eliminar movimientos de la bitácora." }, { status: 403 });
+        }
         const entryId = dailyLogPath[1] ? Number(dailyLogPath[1]) : null;
         if (entryId !== null && (!Number.isSafeInteger(entryId) || entryId < 1)) {
           return Response.json({ error: "El movimiento seleccionado no es válido." }, { status: 400 });
@@ -3820,7 +3903,7 @@ const server = Bun.serve({
           const category = url.searchParams.get("category") ?? "";
           const hostFilters = url.searchParams.getAll("host").map((host) => host.trim());
           const page = Number(url.searchParams.get("page") ?? 1);
-          const pageSize = Number(url.searchParams.get("pageSize") ?? 50);
+          const pageSize = Number(url.searchParams.get("pageSize") ?? 7);
           const recentPage = Number(url.searchParams.get("recentPage") ?? 1);
           const recentPageSize = 7;
           const daySpan =
@@ -3943,6 +4026,24 @@ const server = Bun.serve({
             { error: "Recepción solo puede registrar movimientos del día actual. Solicita apoyo a Administración." },
             { status: 403 },
           );
+        }
+        if (!user.isAdmin && isMovementEvent && input.sourceEntryId !== null) {
+          const [sourceEntries] = await pool.execute<RowDataPacket[]>(
+            `SELECT DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
+             FROM daily_log_entries
+             WHERE id = ?
+             LIMIT 1`,
+            [input.sourceEntryId],
+          );
+          if (!sourceEntries[0]) {
+            return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+          }
+          if (String(sourceEntries[0].entry_date) !== currentBusinessDate) {
+            return Response.json(
+              { error: "Los movimientos de días anteriores son de solo lectura para Recepción. Solicita apoyo a Administración." },
+              { status: 403 },
+            );
+          }
         }
 
         let personName = input.personName;
@@ -5974,13 +6075,9 @@ const server = Bun.serve({
           return Response.json({ error: "El usuario seleccionado no es válido." }, { status: 400 });
         }
 
-        const [matches] = await pool.execute<AccessLoginRow[]>(
-          `SELECT login,
-                  EXISTS (
-                    SELECT 1 FROM accesos_secciones s
-                    WHERE s.login = accesos.login AND s.seccion = 'administrador'
-                  ) AS section_admin
-           FROM accesos WHERE login = ? LIMIT 1`,
+        const [matches] = await getExternalUsersPool().execute<AccessLoginRow[]>(
+          `SELECT login
+           FROM seg_users WHERE login = ? LIMIT 1`,
           [login],
         );
         if (matches.length === 0) {
@@ -5991,21 +6088,26 @@ const server = Bun.serve({
         const connection = await pool.getConnection();
         try {
           await connection.beginTransaction();
-          const targetIsAdmin = Boolean(matches[0].section_admin);
+          const [currentAdmin] = await connection.execute<RowDataPacket[]>(
+            "SELECT 1 FROM accesos_secciones WHERE login = ? AND seccion = 'administrador' LIMIT 1",
+            [accountLogin],
+          );
+          const targetIsAdmin = currentAdmin.length > 0;
           if (targetIsAdmin && !body.sections.includes("administrador")) {
             const [admins] = await connection.execute<RowDataPacket[]>(
-              `              SELECT a.login
-              FROM accesos a
-              WHERE a.active IN ('Y', '1')
-                AND EXISTS (
-                  SELECT 1 FROM accesos_secciones s
-                  WHERE s.login = a.login AND s.seccion = 'administrador'
-                )
-                 AND a.login <> ?
-               LIMIT 1`,
+              "SELECT login FROM accesos_secciones WHERE seccion = 'administrador' AND login <> ?",
               [accountLogin],
             );
-            if (admins.length === 0) {
+            const adminLogins = admins.map((admin) => String(admin.login));
+            let activeAdmins: RowDataPacket[] = [];
+            if (adminLogins.length > 0) {
+              const [rows] = await getExternalUsersPool().query<RowDataPacket[]>(
+                "SELECT login FROM seg_users WHERE active IN ('Y', '1') AND login IN (?) LIMIT 1",
+                [adminLogins],
+              );
+              activeAdmins = rows;
+            }
+            if (activeAdmins.length === 0) {
               await connection.rollback();
               return Response.json(
                 { error: "Debe permanecer al menos una cuenta activa con acceso de administrador." },
@@ -6042,9 +6144,18 @@ const server = Bun.serve({
     }
 
     if (request.method === "GET" && url.pathname === "/api/health") {
+      let databaseConnected = false;
+      let usersDatabaseConnected = false;
       try {
         await pool.query("SELECT 1");
-        return Response.json({ status: "ok", database: "connected" });
+        databaseConnected = true;
+        await getExternalUsersPool().query("SELECT 1 FROM seg_users LIMIT 1");
+        usersDatabaseConnected = true;
+        return Response.json({
+          status: "ok",
+          database: "connected",
+          usersDatabase: "connected",
+        });
       } catch (error) {
         const databaseError = error as {
           code?: string;
@@ -6056,16 +6167,20 @@ const server = Bun.serve({
           code: databaseError.code ?? "UNKNOWN_DATABASE_ERROR",
           errno: databaseError.errno,
           sqlState: databaseError.sqlState,
-          host: Bun.env.DB_HOST ?? "127.0.0.1",
-          port: Number(Bun.env.DB_PORT ?? 3306),
-          database: Bun.env.DB_NAME ?? "visitas_recep",
+          host: usersDatabaseConnected
+            ? Bun.env.DB_HOST ?? "127.0.0.1"
+            : Bun.env.DB_EXTERNAL_HOST ?? "not configured",
+          database: usersDatabaseConnected
+            ? Bun.env.DB_NAME ?? "visitas_recep"
+            : Bun.env.DB_EXTERNAL_DATABASE ?? "not configured",
           message: databaseError.message,
         };
         console.error("Database health check failed:", diagnostic);
         return Response.json(
           {
             status: "error",
-            database: "disconnected",
+            database: databaseConnected ? "connected" : "disconnected",
+            usersDatabase: usersDatabaseConnected ? "connected" : "disconnected",
             code: diagnostic.code,
           },
           { status: 503 },
@@ -6121,9 +6236,13 @@ console.log(
   },
 );
 
-void pool.query("SELECT 1")
+void Promise.resolve()
+  .then(() => Promise.all([
+    pool.query("SELECT 1"),
+    getExternalUsersPool().query("SELECT 1 FROM seg_users LIMIT 1"),
+  ]))
   .then(() => {
-    console.log("Database startup check succeeded.");
+    console.log("Application and external users database startup checks succeeded.");
   })
   .catch((error: unknown) => {
     const databaseError = error as { code?: string; errno?: number; sqlState?: string; message?: string };
@@ -6134,6 +6253,8 @@ void pool.query("SELECT 1")
       host: Bun.env.DB_HOST ?? "127.0.0.1",
       port: Number(Bun.env.DB_PORT ?? 3306),
       database: Bun.env.DB_NAME ?? "visitas_recep",
+      usersDatabaseHost: Bun.env.DB_EXTERNAL_HOST ?? "not configured",
+      usersDatabaseName: Bun.env.DB_EXTERNAL_DATABASE ?? "not configured",
       message: databaseError.message,
     });
   });

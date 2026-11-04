@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 
 type AccessAccount = {
   login: string;
@@ -8,7 +8,6 @@ type AccessAccount = {
   active: string | null;
   role: string | null;
   phone: string | null;
-  picture: string;
   sectionAccess: ("recepcion" | "anfitriones" | "administrador")[];
 };
 
@@ -23,6 +22,8 @@ const emit = defineEmits<{
   edit: [account: AccessAccount];
 }>();
 
+const currentPage = ref(1);
+const pageSize = 7;
 const filteredAccounts = computed(() => {
   const query = props.search.trim().toLocaleLowerCase();
   if (!query) return props.accounts;
@@ -44,6 +45,24 @@ const filteredAccounts = computed(() => {
       .includes(query),
   );
 });
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredAccounts.value.length / pageSize)));
+const paginatedAccounts = computed(() => {
+  const start = (currentPage.value - 1) * pageSize;
+  return filteredAccounts.value.slice(start, start + pageSize);
+});
+const firstVisibleAccount = computed(() =>
+  filteredAccounts.value.length === 0 ? 0 : (currentPage.value - 1) * pageSize + 1,
+);
+const lastVisibleAccount = computed(() =>
+  Math.min(currentPage.value * pageSize, filteredAccounts.value.length),
+);
+
+watch(
+  [() => props.search, () => props.accounts],
+  () => {
+    currentPage.value = 1;
+  },
+);
 </script>
 
 <template>
@@ -87,9 +106,10 @@ const filteredAccounts = computed(() => {
   <div v-if="accounts.length > 0" class="workspace-table-scroll">
     <table class="workspace-table access-table">
       <caption class="workspace-table-caption access-table-caption">
-        <span class="access-table-caption-title">Usuarios en accesos</span>
+        <span class="access-table-caption-title">Usuarios reales de seg_users</span>
         <span class="access-table-caption-count">
-          {{ filteredAccounts.length }} de {{ accounts.length }} cuentas
+          {{ firstVisibleAccount }}–{{ lastVisibleAccount }} de {{ filteredAccounts.length }}
+          {{ filteredAccounts.length === 1 ? "cuenta" : "cuentas" }}
         </span>
       </caption>
       <thead>
@@ -100,11 +120,10 @@ const filteredAccounts = computed(() => {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="account in filteredAccounts" :key="account.login">
+        <tr v-for="account in paginatedAccounts" :key="account.login">
           <td>
             <div class="host-identity">
-              <img v-if="account.picture" class="host-picture-avatar" :src="account.picture" alt="" />
-              <span v-else class="host-picture-avatar host-picture-placeholder">
+              <span class="host-picture-avatar host-picture-placeholder" aria-hidden="true">
                 <svg class="icon"><use href="#i-user" /></svg>
               </span>
               <strong>{{ account.login }}</strong>
@@ -153,7 +172,27 @@ const filteredAccounts = computed(() => {
       </tbody>
     </table>
   </div>
+  <nav v-if="accounts.length > 0" class="directory-pagination access-pagination" aria-label="Paginación de accesos">
+    <span>
+      Mostrando {{ firstVisibleAccount }}–{{ lastVisibleAccount }} de {{ filteredAccounts.length }} cuentas
+    </span>
+    <div>
+      <button
+        class="pagination-button"
+        type="button"
+        :disabled="currentPage <= 1"
+        @click="currentPage -= 1"
+      >Anterior</button>
+      <span class="pagination-current" aria-live="polite">{{ currentPage }} / {{ totalPages }}</span>
+      <button
+        class="pagination-button"
+        type="button"
+        :disabled="currentPage >= totalPages"
+        @click="currentPage += 1"
+      >Siguiente</button>
+    </div>
+  </nav>
   <p v-else class="workspace-hint">
-    Inicia sesión con una cuenta administradora para consultar las cuentas de la tabla `accesos`.
+    Inicia sesión con una cuenta administradora para consultar las cuentas externas.
   </p>
 </template>

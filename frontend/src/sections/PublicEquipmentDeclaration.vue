@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 type ItemType = "Equipo" | "Herramienta";
 type DeclaredItem = {
@@ -26,6 +26,8 @@ type PublicDeclaration = {
 const token = new URLSearchParams(window.location.hash.slice(1)).get("equipo") ?? "";
 const declaration = ref<PublicDeclaration | null>(null);
 const items = ref<DeclaredItem[]>([]);
+const itemsPage = ref(1);
+const itemsPageSize = 7;
 const newItem = ref<DeclaredItem>(emptyItem());
 const loading = ref(true);
 const saving = ref(false);
@@ -34,6 +36,17 @@ const submitted = ref(false);
 const confirmedReview = ref(false);
 const editingItemIndex = ref<number | null>(null);
 const entryFormKey = ref(0);
+const visibleItems = computed(() =>
+  items.value
+    .map((item, index) => ({ item, index }))
+    .slice((itemsPage.value - 1) * itemsPageSize, itemsPage.value * itemsPageSize),
+);
+const itemsPages = computed(() => Math.max(1, Math.ceil(items.value.length / itemsPageSize)));
+const visibleSubmittedItems = computed(() =>
+  (declaration.value?.items ?? [])
+    .map((item, index) => ({ item, index }))
+    .slice((itemsPage.value - 1) * itemsPageSize, itemsPage.value * itemsPageSize),
+);
 
 function emptyItem(): DeclaredItem {
   return {
@@ -101,8 +114,10 @@ function addItem() {
     errorMessage.value = "Completa tipo, cantidad, artículo, marca, modelo y color. La serie y las observaciones son opcionales.";
     return;
   }
-  if (editingItemIndex.value === null) items.value.push(item);
-  else items.value.splice(editingItemIndex.value, 1, item);
+  if (editingItemIndex.value === null) {
+    items.value.push(item);
+    itemsPage.value = itemsPages.value;
+  } else items.value.splice(editingItemIndex.value, 1, item);
   newItem.value = emptyItem();
   editingItemIndex.value = null;
   entryFormKey.value += 1;
@@ -127,6 +142,7 @@ function cancelEdit() {
 
 function removeItem(index: number) {
   items.value.splice(index, 1);
+  itemsPage.value = Math.min(itemsPage.value, itemsPages.value);
   if (editingItemIndex.value === index) cancelEdit();
   else if (editingItemIndex.value !== null && index < editingItemIndex.value) editingItemIndex.value -= 1;
 }
@@ -191,7 +207,7 @@ async function submitDeclaration() {
                 <tr><th>Tipo</th><th>Cant.</th><th>Artículo</th><th>Identificación</th><th>Observaciones</th></tr>
               </thead>
               <tbody>
-                <tr v-for="(item, index) in declaration.items" :key="item.id ?? index">
+                <tr v-for="{ item, index } in visibleSubmittedItems" :key="item.id ?? index">
                   <td data-label="Tipo">{{ item.itemType }}</td>
                   <td data-label="Cantidad">{{ item.quantity }}</td>
                   <td data-label="Artículo">{{ item.product }}</td>
@@ -201,12 +217,32 @@ async function submitDeclaration() {
               </tbody>
             </table>
           </div>
+          <nav
+            v-if="declaration.items.length > itemsPageSize"
+            class="public-equipment-pagination"
+            aria-label="Paginación del resumen de artículos"
+          >
+            <span>
+              Mostrando {{ (itemsPage - 1) * itemsPageSize + 1 }}–{{
+                Math.min(itemsPage * itemsPageSize, declaration.items.length)
+              }} de {{ declaration.items.length }} artículos
+            </span>
+            <div>
+              <button type="button" :disabled="itemsPage <= 1" @click="itemsPage--">Anterior</button>
+              <span aria-live="polite">{{ itemsPage }} / {{ Math.max(1, Math.ceil(declaration.items.length / itemsPageSize)) }}</span>
+              <button
+                type="button"
+                :disabled="itemsPage >= Math.ceil(declaration.items.length / itemsPageSize)"
+                @click="itemsPage++"
+              >Siguiente</button>
+            </div>
+          </nav>
         </div>
 
         <template v-else>
           <div class="public-equipment-warning" role="note">
             <strong>Enlace de un solo uso: revisa todo antes de enviar.</strong>
-            <p>Agrega cada equipo y herramienta que llevarás. En recepción solo podrá ingresar lo que aparezca en esta lista; si omites un artículo, no se permitirá su entrada. Después de enviar no podrás cambiar la declaración y este enlace quedará desactivado.</p>
+            <p>Registra todos los equipos, herramientas y artículos que ingresarás, como celulares, laptops, equipo de protección personal (cascos, chalecos, lentes, guantes, etc.), herramientas manuales y eléctricas, dispositivos electrónicos y otros artículos. <strong>En recepción solo se permitirá el acceso a los artículos declarados.</strong> Una vez enviado, no podrás modificar la lista y el enlace quedará desactivado.</p>
           </div>
 
           <section class="public-equipment-entry" aria-labelledby="equipment-item-form-title">
@@ -284,7 +320,7 @@ async function submitDeclaration() {
                   <tr><th>Tipo</th><th>Cant.</th><th>Artículo</th><th>Identificación</th><th>Observaciones</th><th><span class="sr-only">Acciones</span></th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(item, index) in items" :key="item.id ?? index">
+                  <tr v-for="{ item, index } in visibleItems" :key="item.id ?? index">
                     <td data-label="Tipo">{{ item.itemType }}</td>
                     <td data-label="Cantidad">{{ item.quantity }}</td>
                     <td data-label="Artículo">{{ item.product }}</td>
@@ -298,7 +334,25 @@ async function submitDeclaration() {
                 </tbody>
               </table>
             </div>
-            <p v-else class="public-equipment-empty">Todavía no agregas artículos. Registra aquí todo lo que llevarás.</p>
+            <nav
+              v-if="items.length > itemsPageSize"
+              class="public-equipment-pagination"
+              aria-label="Paginación de artículos declarados"
+            >
+              <span>
+                Mostrando {{ (itemsPage - 1) * itemsPageSize + 1 }}–{{
+                  Math.min(itemsPage * itemsPageSize, items.length)
+                }} de {{ items.length }} artículos
+              </span>
+              <div>
+                <button type="button" :disabled="itemsPage <= 1" @click="itemsPage--">Anterior</button>
+                <span aria-live="polite">{{ itemsPage }} / {{ itemsPages }}</span>
+                <button type="button" :disabled="itemsPage >= itemsPages" @click="itemsPage++">Siguiente</button>
+              </div>
+            </nav>
+            <p v-if="items.length === 0" class="public-equipment-empty">
+              Todavía no agregas artículos. Registra aquí todo lo que llevarás.
+            </p>
           </section>
 
           <form class="public-equipment-submit-form" @submit.prevent="submitDeclaration">

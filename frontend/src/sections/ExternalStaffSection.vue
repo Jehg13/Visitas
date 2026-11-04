@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import SectionHelpDialog from "./SectionHelpDialog.vue";
 
 type BusinessPartner = {
   id: number;
@@ -34,7 +35,32 @@ const props = defineProps<{
   loading: boolean;
   dispatchAppointment: Appointment | null;
   sendingStaffId: number | null;
+  theme: "dark" | "light";
 }>();
+
+const helpOpen = ref(false);
+const externalStaffHelpSections = [
+  {
+    title: "Encontrar una empresa y su personal",
+    steps: [
+      "En la vista inicial aparecen las empresas registradas y la cantidad de empleados. Selecciona una empresa para abrir su lista.",
+      "Usa el buscador para localizar empresas o empleados por nombre, teléfono o correo. En la lista de empleados puedes recorrer las páginas si hay más de siete.",
+      "Pulsa Volver a empresas para regresar a la lista completa.",
+    ],
+  },
+  {
+    title: "Registrar o actualizar a una persona",
+    text: "Pulsa Registrar empleado y elige o confirma la empresa relacionada. Captura el nombre completo y, cuando estén disponibles, el teléfono y un correo válido. Usa Editar para corregir datos y Eliminar para quitar a la persona de la lista.",
+  },
+  {
+    title: "Usar los pases QR",
+    steps: [
+      "Desde una cita de contratista en la agenda, selecciona Enviar QR. Se abrirá esta sección con la empresa correspondiente para preparar los pases.",
+      "Cada empleado tiene un QR individual. Usa Ver QR para mostrarlo y Enviar QR para mandarlo al correo registrado; si no hay un correo válido, actualiza sus datos antes.",
+      "El sistema indicará quién recibirá el enlace de un solo uso para declarar equipo y herramientas. Confirma que el correo de esa persona esté actualizado antes de enviar los pases.",
+    ],
+  },
+];
 
 const staffTableScroll = ref<HTMLDivElement | null>(null);
 const selectedCompanyId = ref<number | null>(props.dispatchAppointment?.businessPartnerId ?? null);
@@ -90,6 +116,20 @@ const selectedCompanyStaff = computed(() =>
         .includes(searchQuery.value),
     ),
 );
+const staffPage = ref(1);
+const staffPageSize = 7;
+const staffPages = computed(() =>
+  Math.max(1, Math.ceil(selectedCompanyStaff.value.length / staffPageSize)),
+);
+const paginatedStaff = computed(() =>
+  selectedCompanyStaff.value.slice(
+    (staffPage.value - 1) * staffPageSize,
+    staffPage.value * staffPageSize,
+  ),
+);
+watch([selectedCompanyStaff, selectedCompanyId], () => {
+  staffPage.value = 1;
+});
 const equipmentRecipientId = computed(() =>
   props.staff
     .filter((person) => person.businessPartnerId === selectedCompanyId.value)
@@ -131,6 +171,10 @@ const emit = defineEmits<{
           <span v-else class="workspace-count">
             {{ companiesWithStaffCount.length }} {{ companiesWithStaffCount.length === 1 ? "empresa" : "empresas" }}
           </span>
+          <button class="button-secondary section-help-trigger" type="button" @click="helpOpen = true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M9.8 9a2.3 2.3 0 1 1 3.9 1.7c-1.1 1-1.7 1.4-1.7 2.8M12 17h.01" /></svg>
+            Ayuda
+          </button>
           <button
             v-if="selectedCompany"
             class="button-secondary"
@@ -222,7 +266,7 @@ const emit = defineEmits<{
             </tr>
           </thead>
           <tbody>
-            <tr v-for="person in selectedCompanyStaff" :key="person.id">
+            <tr v-for="person in paginatedStaff" :key="person.id">
               <td>
                 <strong class="external-staff-person-name">{{ person.fullName }}</strong>
                 <span
@@ -270,6 +314,30 @@ const emit = defineEmits<{
           </tbody>
         </table>
       </div>
+      <nav
+        v-if="selectedCompany && selectedCompanyStaff.length > staffPageSize"
+        class="directory-pagination"
+        aria-label="Paginación de personal externo"
+      >
+        <span>
+          Mostrando {{ (staffPage - 1) * staffPageSize + 1 }}–{{
+            Math.min(staffPage * staffPageSize, selectedCompanyStaff.length)
+          }} de {{ selectedCompanyStaff.length }} empleados
+        </span>
+        <div>
+          <button class="pagination-button" type="button" :disabled="staffPage <= 1" @click="staffPage--">Anterior</button>
+          <span class="pagination-current" aria-live="polite">{{ staffPage }} / {{ staffPages }}</span>
+          <button class="pagination-button" type="button" :disabled="staffPage >= staffPages" @click="staffPage++">Siguiente</button>
+        </div>
+      </nav>
     </section>
+    <SectionHelpDialog
+      v-if="helpOpen"
+      title="Ayuda del personal de externos"
+      introduction="Aquí puedes consultar las empresas contratistas o proveedoras y administrar el personal relacionado con cada una."
+      :sections="externalStaffHelpSections"
+      :theme="theme"
+      @close="helpOpen = false"
+    />
   </section>
 </template>

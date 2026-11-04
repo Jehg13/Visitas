@@ -24,6 +24,8 @@ type KioskInspectionResult = {
   description: string;
   result: "Coincide" | "Faltante" | "Dañado" | "Extra" | "Conforme" | "Incidencia";
   notes: string;
+  keepAtReception: boolean;
+  returnedToVisitor: boolean;
 };
 type KioskInspection = {
   id: number;
@@ -42,12 +44,6 @@ type KioskRegistration = {
   visitReason: string;
   authorizationStatus: "Pendiente" | "Autorizada" | "Rechazada";
   identificationType: string;
-  visitorDeclaredIdRetained: boolean;
-  receptionIdClaimStatus: "No aplica" | "Pendiente" | "Confirmada" | "No confirmada";
-  receptionReceivedIdAt: string | null;
-  receptionReceivedIdBy: string | null;
-  idReturnedAt: string | null;
-  idReturnedBy: string | null;
   entryChecklistComplete: boolean;
   exitChecklistComplete: boolean;
   createdAt: string;
@@ -57,14 +53,15 @@ type KioskRegistration = {
 };
 type InspectionDraftItem = {
   itemId: number;
-  result: "" | "Faltante" | "Dañado";
   notes: string;
   checked: boolean;
-  incident: boolean;
+  keepAtReception: boolean;
+  returnedToVisitor: boolean;
 };
 
 const props = defineProps<{
   selectedVisitorRecordId: number | null;
+  isAdmin: boolean;
 }>();
 const emit = defineEmits<{
   movementSaved: [];
@@ -75,6 +72,8 @@ const loading = ref(true);
 const errorMessage = ref("");
 const savingRegistrationId = ref<number | null>(null);
 const registrationDetails = ref<KioskRegistration | null>(null);
+const registrationItemsPage = ref(1);
+const registrationItemsPageSize = 7;
 const inspectionRegistration = ref<KioskRegistration | null>(null);
 const inspectionPhase = ref<"Entrada" | "Salida" | null>(null);
 const inspectionDraft = ref<InspectionDraftItem[]>([]);
@@ -85,8 +84,38 @@ const selectedRegistration = computed(() =>
     (registration) => registration.visitorRecordId === props.selectedVisitorRecordId,
   ) ?? null,
 );
+const selectedRegistrationIsReadOnly = computed(() =>
+  Boolean(
+    selectedRegistration.value &&
+    !props.isAdmin &&
+    selectedRegistration.value.createdAt.slice(0, 10) !== getLocalDate(),
+  ),
+);
+function getLocalDate() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+function itemKeptAtReception(registration: KioskRegistration | null, itemId: number) {
+  return registration?.inspections
+    .find((inspection) => inspection.phase === "Entrada")
+    ?.items.some((item) => item.itemId === itemId && item.keepAtReception) ?? false;
+}
+function checklistItemKeptAtReception(itemId: number) {
+  return inspectionRegistration.value?.inspections
+    .find((inspection) => inspection.phase === "Entrada")
+    ?.items.some((item) => item.itemId === itemId && item.keepAtReception) ?? false;
+}
 const checkedInspectionItems = computed(() =>
   inspectionDraft.value.filter((item) => item.checked).length,
+);
+const paginatedRegistrationItems = computed(() =>
+  (registrationDetails.value?.items ?? []).slice(
+    (registrationItemsPage.value - 1) * registrationItemsPageSize,
+    registrationItemsPage.value * registrationItemsPageSize,
+  ),
+);
+const registrationItemsPages = computed(() =>
+  Math.max(1, Math.ceil((registrationDetails.value?.items.length ?? 0) / registrationItemsPageSize)),
 );
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.headers.get("content-type")?.includes("application/json")) {
@@ -149,17 +178,14 @@ onBeforeUnmount(() => {
 
 async function processRegistration(
   registration: KioskRegistration,
-  action: "authorize" | "reject" | "receive-identification" | "deny-identification" | "return-identification",
+  action: "authorize" | "reject",
 ) {
-  if (savingRegistrationId.value !== null) return;
+  if (savingRegistrationId.value !== null || selectedRegistrationIsReadOnly.value) return;
   const actionMessage = {
     authorize: "autorizar esta visita",
     reject: "rechazar esta visita",
-    "receive-identification": "confirmar la recepción física de esta identificación",
-    "deny-identification": "registrar que recepción no pudo confirmar el resguardo de esta identificación",
-    "return-identification": "registrar la devolución de esta identificación",
   }[action];
-  if (!await confirmUser(`¿Deseas ${actionMessage}?`, action === "deny-identification" ? "Registrar no confirmado" : "Confirmar acción")) return;
+  if (!await confirmUser(`¿Deseas ${actionMessage}?`, "Confirmar acción")) return;
 
   savingRegistrationId.value = registration.id;
   try {
@@ -182,15 +208,16 @@ async function processRegistration(
 }
 
 function openChecklist(registration: KioskRegistration, phase: "Entrada" | "Salida") {
+  if (selectedRegistrationIsReadOnly.value) return;
   inspectionRegistration.value = registration;
   inspectionPhase.value = phase;
   entryPolicyConfirmed.value = false;
   inspectionDraft.value = registration.items.map((item) => ({
     itemId: item.id,
-    result: "",
     notes: "",
     checked: false,
-    incident: false,
+    keepAtReception: false,
+    returnedToVisitor: false,
   }));
 }
 
@@ -207,17 +234,10 @@ function checklistItem(itemId: number) {
 
 async function completeChecklist(registration: KioskRegistration) {
   const phase = inspectionPhase.value;
-  if (!phase || savingRegistrationId.value !== null) return;
+  if (!phase || savingRegistrationId.value !== null || selectedRegistrationIsReadOnly.value) return;
   const uncheckedItem = inspectionDraft.value.find((item) => !item.checked);
   if (uncheckedItem) {
     notifyUser("Marca la verificación física de todos los artículos antes de completar el checklist.");
-    return;
-  }
-  const incompleteIncident = inspectionDraft.value.find(
-    (item) => item.incident && (!item.result || !item.notes.trim()),
-  );
-  if (incompleteIncident) {
-    notifyUser("Selecciona el tipo de incidencia y agrega observaciones antes de completar el checklist.");
     return;
   }
   if (phase === "Entrada" && !entryPolicyConfirmed.value) {
@@ -233,8 +253,11 @@ async function completeChecklist(registration: KioskRegistration) {
         action: phase === "Entrada" ? "complete-entry-checklist" : "complete-exit-checklist",
         items: inspectionDraft.value.map((item) => ({
           itemId: item.itemId,
-          result: item.incident ? item.result : "Coincide",
+          result: "Coincide",
           notes: item.notes,
+          checked: item.checked,
+          keepAtReception: phase === "Entrada" && item.keepAtReception,
+          returnedToVisitor: phase === "Salida" && item.returnedToVisitor,
         })),
       }),
     });
@@ -303,54 +326,19 @@ async function completeChecklist(registration: KioskRegistration) {
         <div class="visitor-kiosk-reception-identification-copy">
           <span class="visitor-kiosk-reception-label">Identificación presentada</span>
           <strong>{{ selectedRegistration.identificationType }}</strong>
-          <small>
-            {{ selectedRegistration.visitorDeclaredIdRetained
-              ? selectedRegistration.receptionIdClaimStatus === "Pendiente"
-                ? "Pendiente de confirmar por recepción."
-                : selectedRegistration.receptionIdClaimStatus === "No confirmada"
-                  ? "Recepción no confirmó el resguardo; la visita sigue pendiente de autorización."
-                  : `Recibida por ${selectedRegistration.receptionReceivedIdBy}${selectedRegistration.idReturnedAt ? ` · Devuelta por ${selectedRegistration.idReturnedBy}` : ""}`
-              : "Presentada solo para verificación." }}
-          </small>
-        </div>
-        <div
-          v-if="
-            (selectedRegistration.visitorDeclaredIdRetained && selectedRegistration.receptionIdClaimStatus === 'Pendiente') ||
-            (selectedRegistration.receptionReceivedIdAt && !selectedRegistration.idReturnedAt)
-          "
-          class="visitor-kiosk-reception-identification-actions"
-        >
-          <button
-            v-if="selectedRegistration.visitorDeclaredIdRetained && selectedRegistration.receptionIdClaimStatus === 'Pendiente'"
-            class="visitor-kiosk-reception-button is-identification"
-            type="button"
-            :disabled="savingRegistrationId === selectedRegistration.id"
-            @click="processRegistration(selectedRegistration, 'receive-identification')"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.5 17 19 7" /></svg>
-            Confirmar recepción
-          </button>
-          <button
-            v-if="selectedRegistration.visitorDeclaredIdRetained && selectedRegistration.receptionIdClaimStatus === 'Pendiente'"
-            class="visitor-kiosk-reception-button is-reject"
-            type="button"
-            :disabled="savingRegistrationId === selectedRegistration.id"
-            @click="processRegistration(selectedRegistration, 'deny-identification')"
-          >No se confirmó</button>
-          <button
-            v-if="selectedRegistration.receptionReceivedIdAt && !selectedRegistration.idReturnedAt"
-            class="visitor-kiosk-reception-button is-identification"
-            type="button"
-            :disabled="savingRegistrationId === selectedRegistration.id"
-            @click="processRegistration(selectedRegistration, 'return-identification')"
-          >
-            Registrar devolución
-          </button>
         </div>
       </div>
+      <p v-if="selectedRegistrationIsReadOnly" class="daily-log-readonly-notice" role="status">
+        <span class="daily-log-readonly-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+        </span>
+        <span class="daily-log-readonly-copy">
+          <strong>Registro anterior en modo lectura</strong>
+          <span>Solo Administración puede modificar autorizaciones y checklists de días anteriores.</span>
+        </span>
+      </p>
       <div
-        v-if="selectedRegistration.authorizationStatus === 'Pendiente' &&
-          (!selectedRegistration.visitorDeclaredIdRetained || selectedRegistration.receptionIdClaimStatus !== 'Pendiente')"
+        v-if="selectedRegistration.authorizationStatus === 'Pendiente' && !selectedRegistrationIsReadOnly"
         class="visitor-kiosk-reception-authorization"
       >
         <span class="visitor-kiosk-reception-label">Revisión de recepción</span>
@@ -379,19 +367,28 @@ async function completeChecklist(registration: KioskRegistration) {
           <strong>Equipo y herramientas</strong>
           <small>{{ selectedRegistration.items.length }} artículo(s) declarado(s)</small>
         </div>
-        <button class="daily-log-secondary-button" type="button" @click="registrationDetails = selectedRegistration">
+        <button
+          class="daily-log-secondary-button"
+          type="button"
+          @click="registrationDetails = selectedRegistration; registrationItemsPage = 1"
+        >
           Ver detalle
         </button>
       </div>
       <ul>
         <li v-for="item in selectedRegistration.items" :key="item.id">
-          <span>{{ item.type }} · {{ item.description }}</span>
+          <span>
+            {{ item.type }} · {{ item.description }}
+            <small v-if="itemKeptAtReception(selectedRegistration, item.id)" class="equipment-retention-status">
+              Mantener en recepción
+            </small>
+          </span>
           <small>Cantidad: {{ item.quantity }}</small>
         </li>
       </ul>
       <div class="daily-log-selection-action-group">
         <button
-          v-if="selectedRegistration.authorizationStatus === 'Autorizada' && !selectedRegistration.entryChecklistComplete"
+          v-if="selectedRegistration.authorizationStatus === 'Autorizada' && !selectedRegistration.entryChecklistComplete && !selectedRegistrationIsReadOnly"
           class="daily-log-selection-action"
           type="button"
           :disabled="savingRegistrationId === selectedRegistration.id"
@@ -401,12 +398,15 @@ async function completeChecklist(registration: KioskRegistration) {
           Autoriza la visita para habilitar el checklist de entrada.
         </span>
         <button
-          v-else-if="selectedRegistration.authorizationStatus === 'Autorizada' && !selectedRegistration.exitChecklistComplete"
+          v-else-if="selectedRegistration.authorizationStatus === 'Autorizada' && !selectedRegistration.exitChecklistComplete && !selectedRegistrationIsReadOnly"
           class="daily-log-selection-action is-exit"
           type="button"
           :disabled="savingRegistrationId === selectedRegistration.id"
           @click="openChecklist(selectedRegistration, 'Salida')"
         >Revisar checklist de salida</button>
+        <span v-else-if="selectedRegistrationIsReadOnly">
+          Registro de un día anterior: consulta únicamente.
+        </span>
         <span v-else-if="selectedRegistration.exitChecklistComplete">Checklists completados</span>
       </div>
     </div>
@@ -431,7 +431,7 @@ async function completeChecklist(registration: KioskRegistration) {
         <table class="workspace-table">
           <thead><tr><th>Tipo</th><th>Descripción</th><th>Cantidad</th><th>Marca / modelo / serie / color</th></tr></thead>
           <tbody>
-            <tr v-for="(item, index) in registrationDetails.items" :key="`${index}-${item.description}`">
+            <tr v-for="(item, index) in paginatedRegistrationItems" :key="`${index}-${item.description}`">
               <td>{{ item.type }}</td>
               <td>{{ item.description }}</td>
               <td>{{ item.quantity }}</td>
@@ -440,6 +440,32 @@ async function completeChecklist(registration: KioskRegistration) {
           </tbody>
         </table>
       </div>
+      <nav
+        v-if="registrationDetails.items.length > registrationItemsPageSize"
+        class="directory-pagination"
+        aria-label="Paginación de artículos del registro"
+      >
+        <span>
+          Mostrando {{ (registrationItemsPage - 1) * registrationItemsPageSize + 1 }}–{{
+            Math.min(registrationItemsPage * registrationItemsPageSize, registrationDetails.items.length)
+          }} de {{ registrationDetails.items.length }} artículos
+        </span>
+        <div>
+          <button
+            class="pagination-button"
+            type="button"
+            :disabled="registrationItemsPage <= 1"
+            @click="registrationItemsPage--"
+          >Anterior</button>
+          <span class="pagination-current" aria-live="polite">{{ registrationItemsPage }} / {{ registrationItemsPages }}</span>
+          <button
+            class="pagination-button"
+            type="button"
+            :disabled="registrationItemsPage >= registrationItemsPages"
+            @click="registrationItemsPage++"
+          >Siguiente</button>
+        </div>
+      </nav>
       <h3>Checklists de entrada y salida</h3>
       <p v-if="registrationDetails.inspections.length === 0" class="dialog-description">
         Aún no se han completado revisiones de artículos.
@@ -453,6 +479,15 @@ async function completeChecklist(registration: KioskRegistration) {
             <li v-for="(item, index) in inspection.items" :key="`${inspection.id}-${index}`">
               <strong>{{ item.description }}</strong>
               <span>{{ item.result }}<template v-if="item.notes"> · {{ item.notes }}</template></span>
+              <small v-if="item.keepAtReception" class="equipment-retention-status">
+                Mantener en recepción
+              </small>
+              <small
+                v-if="inspection.phase === 'Salida' && itemKeptAtReception(registrationDetails, item.itemId ?? 0)"
+                class="equipment-retention-status"
+              >
+                {{ item.returnedToVisitor ? "Devuelto al visitante" : "Permanece en recepción" }}
+              </small>
             </li>
           </ul>
         </li>
@@ -498,7 +533,12 @@ async function completeChecklist(registration: KioskRegistration) {
           </span>
         </div>
         <p class="visitor-kiosk-checklist-notice">
-          Solo puede ingresar equipo o herramientas registrados. Reporta artículos faltantes o dañados con sus observaciones.
+          <template v-if="inspectionPhase === 'Entrada'">
+            Solo puede ingresar equipo o herramientas registrados. Después de verificar cada artículo, elige una opción: permitir su ingreso o mantenerlo resguardado en recepción.
+          </template>
+          <template v-else>
+            Verifica cada artículo a la salida. Si quedó bajo resguardo en recepción, confirma si ya fue devuelto al visitante.
+          </template>
         </p>
         <div
           class="equipment-checklist-progress-track"
@@ -526,23 +566,45 @@ async function completeChecklist(registration: KioskRegistration) {
             <div><span>Serie</span><strong>{{ checklistItem(item.itemId)?.serialNumber || "—" }}</strong></div>
             <div><span>Color</span><strong>{{ checklistItem(item.itemId)?.color || "—" }}</strong></div>
           </div>
-          <label class="equipment-incident-toggle">
-            <input v-model="item.incident" type="checkbox" @change="!item.incident && (item.result = '')" />
-            Reportar incidencia
+          <label class="equipment-notes-label">
+            Observación (opcional)
+            <textarea v-model.trim="item.notes" maxlength="1000" rows="2" placeholder="Escribe cualquier observación sobre este artículo." />
           </label>
-          <label v-if="item.incident" class="visitor-kiosk-incident-result">
-            Tipo de incidencia
-            <select v-model="item.result" required>
-              <option value="" disabled>Selecciona</option>
-              <option value="Faltante">Artículo faltante</option>
-              <option value="Dañado">Artículo dañado</option>
-            </select>
+          <fieldset v-if="inspectionPhase === 'Entrada'" class="equipment-disposition-options">
+            <legend>Decisión de entrada (selecciona una opción)</legend>
+            <label
+              class="equipment-checked-toggle"
+              :class="{ 'is-checked': item.checked && !item.keepAtReception }"
+            >
+              <input
+                type="radio"
+                :name="`visitor-entry-${item.itemId}`"
+                :checked="item.checked && !item.keepAtReception"
+                @change="item.checked = true; item.keepAtReception = false"
+              />
+              <span>Verificado para ingresar</span>
+            </label>
+            <label
+              class="equipment-checked-toggle"
+              :class="{ 'is-checked': item.checked && item.keepAtReception }"
+            >
+              <input
+                type="radio"
+                :name="`visitor-entry-${item.itemId}`"
+                :checked="item.checked && item.keepAtReception"
+                @change="item.checked = true; item.keepAtReception = true"
+              />
+              <span>Verificado y mantener en recepción</span>
+            </label>
+          </fieldset>
+          <label
+            v-else-if="checklistItemKeptAtReception(item.itemId)"
+            class="equipment-retain-toggle"
+          >
+            <input v-model="item.returnedToVisitor" type="checkbox" />
+            Se devolvió al visitante
           </label>
-          <label v-if="item.incident" class="equipment-notes-label">
-            Observaciones (obligatorias por incidencia)
-            <textarea v-model.trim="item.notes" maxlength="1000" rows="2" required />
-          </label>
-          <label class="equipment-checked-toggle" :class="{ 'is-checked': item.checked }">
+          <label v-if="inspectionPhase === 'Salida'" class="equipment-checked-toggle" :class="{ 'is-checked': item.checked }">
             <input v-model="item.checked" type="checkbox" />
             <span>{{ item.checked ? "Artículo revisado físicamente" : "Marcar como revisado" }}</span>
           </label>

@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { computed, ref } from "vue";
+import SectionHelpDialog from "./SectionHelpDialog.vue";
+
 type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
 type Appointment = {
   id: number;
@@ -21,7 +24,7 @@ type CalendarDay = {
   appointments: Appointment[];
 };
 
-defineProps<{
+const props = defineProps<{
   filter: "day" | "all";
   search: string;
   selectedAppointments: Appointment[];
@@ -37,7 +40,87 @@ defineProps<{
   loading: boolean;
   canCreateAppointments: boolean;
   canManageAppointments: boolean;
+  isAdmin: boolean;
+  isReception: boolean;
+  isHost: boolean;
+  theme: "dark" | "light";
 }>();
+
+const helpOpen = ref(false);
+type HelpAudience = "reception" | "host";
+const helpAudience = ref<HelpAudience>("reception");
+const effectiveHelpAudience = computed<HelpAudience>(() =>
+  props.isAdmin
+    ? helpAudience.value
+    : props.isHost && !props.isReception
+      ? "host"
+      : "reception",
+);
+const helpTitle = computed(() =>
+  effectiveHelpAudience.value === "host"
+    ? "Ayuda de la agenda para anfitriones"
+    : "Ayuda de la agenda para recepción",
+);
+const helpIntroduction = computed(() =>
+  effectiveHelpAudience.value === "host"
+    ? "Usa la agenda para programar tus visitas y preparar su acceso."
+    : "Usa la agenda para consultar las visitas programadas y apoyar su recepción.",
+);
+const appointmentHelpSections = computed(() =>
+  effectiveHelpAudience.value === "host"
+    ? [
+        {
+          title: "Consultar tus citas",
+          steps: [
+            "Usa Citas del día para revisar las visitas de la fecha elegida en el calendario. Selecciona Todas las citas para consultar la agenda completa.",
+            "Busca por nombre de visitante, empresa o anfitrión. Cambia el mes y selecciona un día para revisar las citas programadas.",
+            "Revisa hora, visitante, empresa, estado y pase QR para confirmar que los datos estén correctos.",
+          ],
+        },
+        {
+          title: "Crear una cita",
+          steps: [
+            "Pulsa Nueva cita y selecciona la empresa o persona que visitará.",
+            "Indica visitante, fecha y hora. Tu nombre aparecerá como anfitrión; verifica la información antes de guardar.",
+            "Comparte el pase QR con la persona visitante para que pueda presentarlo al llegar.",
+          ],
+        },
+        {
+          title: "Editar o cancelar una cita",
+          text: "Si necesitas corregir una cita activa, pulsa Editar y guarda los cambios. Si la visita ya no se realizará, pulsa Cancelar. Las citas que ya fueron retiradas o canceladas no se pueden editar.",
+        },
+        {
+          title: "Visitas de contratistas",
+          text: "En una cita de contratista puedes usar Enviar QR para distribuir pases individuales al personal y compartir el enlace para declarar equipo y herramientas. Verifica que cada persona tenga un correo válido.",
+        },
+        {
+          title: "Entender los estados",
+          text: "Pendiente indica que la visita aún no se presenta; En proceso, que ya se registró su llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que la cita ya no se realizará.",
+        },
+      ]
+    : [
+        {
+          title: "Consultar la agenda",
+          steps: [
+            "Usa Citas del día para ver las visitas de la fecha elegida en el calendario. Selecciona Todas las citas para consultar otras fechas.",
+            "Busca por nombre del visitante, empresa o anfitrión. También puedes cambiar el mes y elegir un día del calendario.",
+            "Revisa la hora, el visitante, la empresa, el anfitrión y el estado de cada cita.",
+          ],
+        },
+        {
+          title: "Mostrar el pase QR",
+          text: "En la fila de la cita, pulsa Ver QR para mostrar el pase correspondiente. Confirma que el nombre y la empresa coincidan con la persona que se presenta.",
+        },
+        {
+          title: "Registrar los movimientos",
+          text: "La agenda sirve para consultar la programación. Cuando una persona llegue, registra su llegada, entrada y salida desde Bitácora diaria. Si necesita corregirse o cancelarse una cita, contacta al anfitrión responsable.",
+        },
+        {
+          title: "Entender los estados",
+          text: "Pendiente indica que la visita aún no se presenta; En proceso, que ya se registró su llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que la cita ya no se realizará.",
+        },
+      ],
+);
 
 const emit = defineEmits<{
   "update:filter": [value: "day" | "all"];
@@ -66,6 +149,10 @@ const emit = defineEmits<{
         </div>
         <div class="workspace-heading-actions">
           <span class="workspace-count">{{ selectedAppointments.length }} citas</span>
+          <button class="button-secondary section-help-trigger" type="button" @click="helpOpen = true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M9.8 9a2.3 2.3 0 1 1 3.9 1.7c-1.1 1-1.7 1.4-1.7 2.8M12 17h.01" /></svg>
+            Ayuda
+          </button>
           <button
             v-if="canCreateAppointments"
             class="button-primary"
@@ -253,4 +340,29 @@ const emit = defineEmits<{
       </section>
     </section>
   </section>
+  <SectionHelpDialog
+    v-if="helpOpen"
+    :title="helpTitle"
+    :introduction="helpIntroduction"
+    :sections="appointmentHelpSections"
+    :theme="theme"
+    @close="helpOpen = false"
+  >
+    <template v-if="isAdmin" #before-content>
+      <div class="section-help-audience-switch" role="group" aria-label="Seleccionar guía de agenda">
+        <button
+          type="button"
+          :class="{ 'is-active': helpAudience === 'reception' }"
+          :aria-pressed="helpAudience === 'reception'"
+          @click="helpAudience = 'reception'"
+        >Ayuda para recepción</button>
+        <button
+          type="button"
+          :class="{ 'is-active': helpAudience === 'host' }"
+          :aria-pressed="helpAudience === 'host'"
+          @click="helpAudience = 'host'"
+        >Ayuda para anfitrión</button>
+      </div>
+    </template>
+  </SectionHelpDialog>
 </template>

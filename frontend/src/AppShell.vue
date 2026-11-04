@@ -2,11 +2,12 @@
 import { computed, defineAsyncComponent, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import AppAlert from "./components/AppAlert.vue";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 import type { AccessAccount, AuthenticatedUser } from "./stores/types";
+import { dashboardSectionForPath } from "./dashboardRoutes";
 
 const DashboardView = defineAsyncComponent(() => import("./DashboardView.vue"));
 const LoginView = defineAsyncComponent(() => import("./LoginView.vue"));
@@ -18,14 +19,37 @@ const PublicVisitorKiosk = defineAsyncComponent(() =>
 );
 const sessionChecking = ref(true);
 const route = useRoute();
+const router = useRouter();
 const visitorKioskRoute = computed(() => route.path === "/registro");
-const publicEquipmentToken = new URLSearchParams(window.location.hash.slice(1)).get("equipo");
+const routeHashParameters = computed(() => new URLSearchParams(route.hash.slice(1)));
+const publicEquipmentToken = computed(() => routeHashParameters.value.get("equipo"));
 const passwordResetToken = ref(
-  new URLSearchParams(window.location.hash.slice(1)).get("restablecer") ?? "",
+  routeHashParameters.value.get("restablecer") ?? "",
 );
 const authStore = useAuthStore();
 const dashboardStore = useDashboardStore();
 const { user } = storeToRefs(authStore);
+
+watch(
+  [() => route.path, () => route.hash, user, sessionChecking],
+  ([path, hash, currentUser, checkingSession]) => {
+    if (checkingSession) return;
+    const publicRoute =
+      path === "/registro" ||
+      new URLSearchParams(hash.slice(1)).has("equipo") ||
+      new URLSearchParams(hash.slice(1)).has("restablecer");
+
+    if (currentUser && (publicRoute || (path !== "/" && !dashboardSectionForPath(path)))) {
+      void router.replace("/");
+      return;
+    }
+
+    if (!currentUser && path !== "/" && path !== "/registro" && dashboardSectionForPath(path)) {
+      void router.replace("/");
+    }
+  },
+  { immediate: true },
+);
 const pageMetadata = computed(() => {
   if (visitorKioskRoute.value) {
     return {
@@ -33,7 +57,7 @@ const pageMetadata = computed(() => {
       description: "Registra manualmente tu visita a las instalaciones de CyMEZ y declara el equipo que ingresas.",
     };
   }
-  if (publicEquipmentToken) {
+  if (publicEquipmentToken.value) {
     return {
       title: "Declaración de equipo | CyMEZ Recep",
       description: "Completa la declaración de equipo y herramientas para tu visita a las instalaciones de CyMEZ.",
@@ -62,7 +86,7 @@ watch(pageMetadata, (metadata) => {
   const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
   if (description) description.content = metadata.description;
   const robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
-  if (robots) robots.content = user.value || publicEquipmentToken || passwordResetToken.value
+  if (robots) robots.content = user.value || publicEquipmentToken.value || passwordResetToken.value
     ? "noindex, nofollow"
     : "index, follow";
 }, { immediate: true });
@@ -84,18 +108,6 @@ function closeSession() {
 
 onMounted(async () => {
   window.addEventListener("hashchange", syncPasswordResetToken);
-  if (visitorKioskRoute.value) {
-    sessionChecking.value = false;
-    return;
-  }
-  if (passwordResetToken.value) {
-    sessionChecking.value = false;
-    return;
-  }
-  if (publicEquipmentToken) {
-    sessionChecking.value = false;
-    return;
-  }
   try {
     const response = await fetch("/api/auth/session");
     if (response.ok) {

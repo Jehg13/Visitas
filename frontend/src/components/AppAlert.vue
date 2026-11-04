@@ -9,8 +9,10 @@ let removeAlertListener: (() => void) | null = null;
 let dismissTimer: number | undefined;
 
 const title = computed(() => {
+  if (alert.value?.title) return alert.value.title;
   if (alert.value?.type === "success") return "Operación completada";
   if (alert.value?.type === "info") return "Aviso";
+  if (alert.value?.type === "warning") return "Revisa esta acción";
   return "No se pudo completar";
 });
 
@@ -76,6 +78,10 @@ onBeforeUnmount(() => {
             <svg v-else-if="alert.type === 'info'" viewBox="0 0 48 48">
               <circle cx="24" cy="24" r="20" />
               <path d="M24 21v12m0-20h.02" />
+            </svg>
+            <svg v-else-if="alert.type === 'warning'" viewBox="0 0 48 48">
+              <path d="M24 5 45 42H3L24 5Z" />
+              <path d="M24 18v11m0 6h.02" />
             </svg>
             <svg v-else viewBox="0 0 48 48">
               <circle cx="24" cy="24" r="20" />

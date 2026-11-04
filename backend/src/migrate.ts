@@ -1,4 +1,5 @@
 import pool from "./db";
+import { getExternalUsersPool } from "./external-users-db";
 import type { RowDataPacket } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { randomInt } from "node:crypto";
@@ -80,6 +81,41 @@ async function migrate() {
        MODIFY kiosk_item_id BIGINT UNSIGNED NULL,
        MODIFY result ENUM('Conforme', 'Incidencia', 'Coincide', 'Faltante', 'Dañado', 'Extra') NOT NULL`,
     );
+    for (const [tableName, columnName] of [
+      ["visitor_kiosk_inspection_items", "keep_at_reception"],
+      ["equipment_inspection_items", "keep_at_reception"],
+    ]) {
+      const [columns] = await connection.execute<RowDataPacket[]>(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [tableName, columnName],
+      );
+      if (columns.length === 0) {
+        await connection.query(
+          `ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` BOOLEAN NOT NULL DEFAULT FALSE AFTER notes`,
+        );
+      }
+    }
+    for (const tableName of [
+      "visitor_kiosk_inspection_items",
+      "equipment_inspection_items",
+    ]) {
+      const [columns] = await connection.execute<RowDataPacket[]>(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+           AND COLUMN_NAME = 'returned_to_visitor'`,
+        [tableName],
+      );
+      if (columns.length === 0) {
+        await connection.query(
+          `ALTER TABLE \`${tableName}\`
+           ADD COLUMN returned_to_visitor BOOLEAN NOT NULL DEFAULT FALSE
+           AFTER keep_at_reception`,
+        );
+      }
+    }
     const [visitorColumns] = await connection.query<RowDataPacket[]>(
       `SELECT COLUMN_NAME
        FROM INFORMATION_SCHEMA.COLUMNS
@@ -96,6 +132,38 @@ async function migrate() {
     if (!existingVisitorColumns.has("visitor_record_id")) {
       await connection.query(
         "ALTER TABLE business_partners ADD COLUMN visitor_record_id BIGINT UNSIGNED NULL AFTER subject",
+      );
+    }
+    const [businessPartnerOwnerColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'business_partners'
+         AND COLUMN_NAME IN ('created_by_login', 'created_by_name')`,
+    );
+    const existingBusinessPartnerOwnerColumns = new Set(
+      businessPartnerOwnerColumns.map((column) => String(column.COLUMN_NAME)),
+    );
+    if (!existingBusinessPartnerOwnerColumns.has("created_by_login")) {
+      await connection.query(
+        "ALTER TABLE business_partners ADD COLUMN created_by_login VARCHAR(255) NULL AFTER is_active",
+      );
+    }
+    if (!existingBusinessPartnerOwnerColumns.has("created_by_name")) {
+      await connection.query(
+        "ALTER TABLE business_partners ADD COLUMN created_by_name VARCHAR(255) NULL AFTER created_by_login",
+      );
+    }
+    const [businessPartnerOwnerIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'business_partners'
+         AND INDEX_NAME = 'idx_business_partners_created_by_login'`,
+    );
+    if (businessPartnerOwnerIndexes.length === 0) {
+      await connection.query(
+        "ALTER TABLE business_partners ADD INDEX idx_business_partners_created_by_login (created_by_login)",
       );
     }
     await connection.query(
@@ -141,19 +209,30 @@ async function migrate() {
          PRIMARY KEY (migration_key)
        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     );
-    const [legacyAdminAccessMigration] = await connection.execute<RowDataPacket[]>(
-      "SELECT migration_key FROM app_migrations WHERE migration_key = 'legacy-admin-section-access-v1' LIMIT 1",
-    );
-    if (legacyAdminAccessMigration.length === 0) {
-      await connection.query(
-        `INSERT IGNORE INTO accesos_secciones (login, seccion)
-         SELECT login, 'administrador'
-         FROM accesos
-         WHERE priv_admin IN ('Y', '1')`,
+    const initialAdminLogin = Bun.env.INITIAL_ADMIN_LOGIN?.trim();
+    if (initialAdminLogin) {
+      if (initialAdminLogin.length > 255) {
+        throw new Error("INITIAL_ADMIN_LOGIN must be 255 characters or fewer.");
+      }
+      const [initialAdminMigration] = await connection.execute<RowDataPacket[]>(
+        "SELECT migration_key FROM app_migrations WHERE migration_key = 'initial-admin-section-access-v1' LIMIT 1",
       );
-      await connection.execute(
-        "INSERT INTO app_migrations (migration_key) VALUES ('legacy-admin-section-access-v1')",
-      );
+      if (initialAdminMigration.length === 0) {
+        const [externalAdmins] = await getExternalUsersPool().execute<RowDataPacket[]>(
+          "SELECT login FROM seg_users WHERE login = ? AND active IN ('Y', '1') LIMIT 1",
+          [initialAdminLogin],
+        );
+        if (externalAdmins.length === 0) {
+          throw new Error("INITIAL_ADMIN_LOGIN must match an active account in seg_users.");
+        }
+        await connection.execute(
+          "INSERT IGNORE INTO accesos_secciones (login, seccion) VALUES (?, 'administrador')",
+          [initialAdminLogin],
+        );
+        await connection.execute(
+          "INSERT INTO app_migrations (migration_key) VALUES ('initial-admin-section-access-v1')",
+        );
+      }
     }
     const [visitorBackfill] = await connection.execute<RowDataPacket[]>(
       "SELECT migration_key FROM app_migrations WHERE migration_key = 'visitor-partners-backfill-v1' LIMIT 1",
@@ -232,21 +311,43 @@ async function migrate() {
         "ALTER TABLE appointments ADD COLUMN created_by_login VARCHAR(255) NULL AFTER registered_by",
       );
     }
-    await connection.query(
-      `UPDATE appointments appointment_row
-       JOIN accesos owner_account
-         ON owner_account.login = appointment_row.registered_by
-         OR owner_account.name = appointment_row.registered_by
-       LEFT JOIN accesos other_account
-         ON other_account.login <> owner_account.login
-        AND (
-          other_account.login = appointment_row.registered_by
-          OR other_account.name = appointment_row.registered_by
-        )
-       SET appointment_row.created_by_login = owner_account.login
-       WHERE appointment_row.created_by_login IS NULL
-         AND other_account.login IS NULL`,
+    const [unassignedAppointments] = await connection.query<RowDataPacket[]>(
+      `SELECT id, registered_by
+       FROM appointments
+       WHERE created_by_login IS NULL AND registered_by <> ''`,
     );
+    const registeredByValues = [...new Set(
+      unassignedAppointments.map((appointment) => String(appointment.registered_by).trim()).filter(Boolean),
+    )];
+    if (registeredByValues.length > 0) {
+      const [users] = await getExternalUsersPool().query<RowDataPacket[]>(
+        `SELECT login, name
+         FROM seg_users
+         WHERE login IN (?) OR name IN (?)`,
+        [registeredByValues, registeredByValues],
+      );
+      const loginsByIdentity = new Map<string, Set<string>>();
+      for (const user of users) {
+        const login = String(user.login);
+        for (const identity of [user.login, user.name]) {
+          if (typeof identity !== "string" || !identity.trim()) continue;
+          const key = identity.trim().toLocaleLowerCase();
+          const logins = loginsByIdentity.get(key) ?? new Set<string>();
+          logins.add(login);
+          loginsByIdentity.set(key, logins);
+        }
+      }
+      for (const appointment of unassignedAppointments) {
+        const key = String(appointment.registered_by).trim().toLocaleLowerCase();
+        const logins = loginsByIdentity.get(key);
+        if (logins?.size === 1) {
+          await connection.execute(
+            "UPDATE appointments SET created_by_login = ? WHERE id = ? AND created_by_login IS NULL",
+            [[...logins][0], appointment.id],
+          );
+        }
+      }
+    }
     const [appointmentOwnerIndexes] = await connection.query<RowDataPacket[]>(
       `SELECT INDEX_NAME
        FROM INFORMATION_SCHEMA.STATISTICS

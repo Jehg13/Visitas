@@ -6,7 +6,6 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "db:migrate": "bun src/migrate.ts",
-    "db:seed:test-users": "bun src/seed-test-users.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS equipment_inspection_items (
   checked_color VARCHAR(80) NOT NULL DEFAULT '',
   result ENUM('Pendiente', 'Conforme', 'Incidencia') NOT NULL DEFAULT 'Pendiente',
   notes VARCHAR(1000) NOT NULL DEFAULT '',
+  keep_at_reception BOOLEAN NOT NULL DEFAULT FALSE,
+  returned_to_visitor BOOLEAN NOT NULL DEFAULT FALSE,
   checked_at DATETIME NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_equipment_inspection_items_item (inspection_id, declaration_item_id),

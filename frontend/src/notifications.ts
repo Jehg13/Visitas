@@ -1,8 +1,9 @@
-export type AppAlertType = "success" | "error" | "info";
+export type AppAlertType = "success" | "error" | "info" | "warning";
 
 export type AppAlertPayload = {
   type: AppAlertType;
   message: string;
+  title?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   resolve?: (confirmed: boolean) => void;
@@ -10,10 +11,10 @@ export type AppAlertPayload = {
 
 const appAlertEvent = "visitas:alert";
 
-export function notifyUser(message: string, type: AppAlertType = "error") {
+export function notifyUser(message: string, type: AppAlertType = "error", title?: string) {
   if (!message.trim()) return;
   window.dispatchEvent(new CustomEvent<AppAlertPayload>(appAlertEvent, {
-    detail: { type, message },
+    detail: { type, message, title },
   }));
 }
 
@@ -25,10 +26,15 @@ export function listenForAlerts(listener: (alert: AppAlertPayload) => void) {
   return () => window.removeEventListener(appAlertEvent, handler);
 }
 
-export function confirmUser(message: string, confirmLabel = "Confirmar") {
+export function confirmUser(
+  message: string,
+  confirmLabel = "Confirmar",
+  title = "Confirmar acción",
+  type: AppAlertType = "info",
+) {
   return new Promise<boolean>((resolve) => {
     window.dispatchEvent(new CustomEvent<AppAlertPayload>(appAlertEvent, {
-      detail: { type: "info", message, confirmLabel, cancelLabel: "Cancelar", resolve },
+      detail: { type, title, message, confirmLabel, cancelLabel: "Cancelar", resolve },
     }));
   });
 }

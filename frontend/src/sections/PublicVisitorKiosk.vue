@@ -29,7 +29,6 @@ type KioskSessionDraft = {
   itemDraft: KioskItem;
   editingItemIndex: number | null;
   identificationTypesSelected: IdentificationType[];
-  declaresIdRetained: boolean | null;
   informationConfirmed: boolean;
 };
 
@@ -38,7 +37,6 @@ type PendingKioskRegistration = {
   completed: RegistrationResult;
   requestIdempotencyKey: string;
   carriesItems: boolean | null;
-  declaresIdRetained: boolean;
   expiresAt: number;
 };
 
@@ -63,22 +61,16 @@ const items = ref<KioskItem[]>([]);
 const itemDraft = ref<KioskItem>(newItem());
 const editingItemIndex = ref<number | null>(null);
 const identificationTypesSelected = ref<IdentificationType[]>([]);
-const declaresIdRetained = ref<boolean | null>(null);
 const informationConfirmed = ref(false);
 const completed = ref<RegistrationResult | null>(null);
 const completedStatus = ref<
-  "reference" | "awaiting-id-check" | "awaiting-entry-authorization" |
-  "awaiting-entry-checklist" | "entered" | "rejected"
->("reference");
+  "awaiting-entry-authorization" | "awaiting-entry-checklist" | "entered" | "rejected"
+>("awaiting-entry-authorization");
 const completedStatusPersistenceError = ref("");
 const pendingRegistration = ref<PendingKioskRegistration | null>(null);
-const needsReceptionIdCheck = computed(() => declaresIdRetained.value === true);
 const waitingMessage = computed(() => {
-  if (completedStatus.value === "awaiting-id-check") {
-    return "Esperando que recepción confirme la entrega de identificación…";
-  }
   if (completedStatus.value === "awaiting-entry-authorization") {
-    return "Identificación revisada. Esperando autorización de entrada…";
+    return "Esperando autorización de entrada por recepción…";
   }
   if (completedStatus.value === "awaiting-entry-checklist") {
     return "Entrada autorizada. Recepción debe completar el checklist de equipo…";
@@ -171,7 +163,6 @@ function isKioskSessionDraft(value: unknown): value is KioskSessionDraft {
         Number(value.editingItemIndex) < value.items.length)) &&
     Array.isArray(value.identificationTypesSelected) &&
     value.identificationTypesSelected.every(isIdentificationType) &&
-    (typeof value.declaresIdRetained === "boolean" || value.declaresIdRetained === null) &&
     typeof value.informationConfirmed === "boolean"
   );
 }
@@ -186,7 +177,6 @@ function isPendingKioskRegistration(value: unknown): value is PendingKioskRegist
     value.completed.visitorName.length <= 180 &&
     isIdempotencyKey(value.requestIdempotencyKey) &&
     (typeof value.carriesItems === "boolean" || value.carriesItems === null) &&
-    typeof value.declaresIdRetained === "boolean" &&
     Number.isSafeInteger(value.expiresAt)
   );
 }
@@ -208,7 +198,6 @@ function persistDraft() {
     itemDraft: itemDraft.value,
     editingItemIndex: editingItemIndex.value,
     identificationTypesSelected: identificationTypesSelected.value,
-    declaresIdRetained: declaresIdRetained.value,
     informationConfirmed: informationConfirmed.value,
   };
   sessionStorage.setItem(draftStorageKey, JSON.stringify(draft));
@@ -252,7 +241,6 @@ function restoreKioskSession() {
         pendingRegistration.value = parsed;
         completed.value = parsed.completed;
         carriesItems.value = parsed.carriesItems;
-        declaresIdRetained.value = parsed.declaresIdRetained;
         requestIdempotencyKey.value = parsed.requestIdempotencyKey;
         step.value = 5;
         resetTimer = window.setTimeout(
@@ -283,7 +271,6 @@ function restoreKioskSession() {
     itemDraft.value = parsed.itemDraft;
     editingItemIndex.value = parsed.editingItemIndex;
     identificationTypesSelected.value = parsed.identificationTypesSelected;
-    declaresIdRetained.value = parsed.declaresIdRetained;
     informationConfirmed.value = parsed.informationConfirmed;
     showRestoreNotice.value = true;
   } catch (error) {
@@ -314,7 +301,6 @@ watch(
     itemDraft,
     editingItemIndex,
     identificationTypesSelected,
-    declaresIdRetained,
     informationConfirmed,
     requestIdempotencyKey,
     completed,
@@ -389,9 +375,6 @@ function continueStep() {
       identificationTypesSelected.value.some((type) => !identificationTypes.includes(type))
     ) {
       errors.identificationType = "Selecciona al menos un tipo de identificación.";
-    }
-    if (declaresIdRetained.value === null) {
-      errors.declaresIdRetained = "Indica si declaras haber entregado tu identificación para resguardo.";
     }
     fieldErrors.value = errors;
     if (Object.keys(errors).length > 0) return;
@@ -478,11 +461,10 @@ function resetKiosk() {
   itemDraft.value = newItem();
   editingItemIndex.value = null;
   identificationTypesSelected.value = [];
-  declaresIdRetained.value = null;
   informationConfirmed.value = false;
   showRestoreNotice.value = false;
   completed.value = null;
-  completedStatus.value = "reference";
+  completedStatus.value = "awaiting-entry-authorization";
   completedStatusPersistenceError.value = "";
   requestIdempotencyKey.value = crypto.randomUUID();
   step.value = 0;
@@ -499,7 +481,6 @@ async function refreshCompletedStatus() {
     });
     const result = await parseResponse<{
       authorizationStatus?: "Pendiente" | "Autorizada" | "Rechazada";
-      receptionIdClaimStatus?: "No aplica" | "Pendiente" | "Confirmada" | "No confirmada";
       entryChecklistComplete?: boolean;
       entered?: boolean;
       error?: string;
@@ -507,7 +488,6 @@ async function refreshCompletedStatus() {
     if (!response.ok) throw new Error(result.error ?? "No se pudo consultar la revisión de recepción.");
     if (
       !["Pendiente", "Autorizada", "Rechazada"].includes(String(result.authorizationStatus)) ||
-      !["No aplica", "Pendiente", "Confirmada", "No confirmada"].includes(String(result.receptionIdClaimStatus)) ||
       typeof result.entryChecklistComplete !== "boolean" ||
       typeof result.entered !== "boolean"
     ) {
@@ -519,12 +499,8 @@ async function refreshCompletedStatus() {
       completedStatus.value = "entered";
     } else if (result.authorizationStatus === "Autorizada" && !result.entryChecklistComplete) {
       completedStatus.value = "awaiting-entry-checklist";
-    } else if (result.receptionIdClaimStatus === "Confirmada" || result.receptionIdClaimStatus === "No confirmada") {
-      completedStatus.value = "awaiting-entry-authorization";
-    } else if (result.receptionIdClaimStatus === "No aplica") {
-      completedStatus.value = "awaiting-entry-authorization";
     } else {
-      completedStatus.value = "awaiting-id-check";
+      completedStatus.value = "awaiting-entry-authorization";
     }
     if (completedStatus.value === "entered" || completedStatus.value === "rejected") {
       closeStatusEventSource();
@@ -544,8 +520,7 @@ async function submitRegistration() {
   }
   if (
     identificationTypesSelected.value.length === 0 ||
-    identificationTypesSelected.value.some((type) => !identificationTypes.includes(type)) ||
-    declaresIdRetained.value === null
+    identificationTypesSelected.value.some((type) => !identificationTypes.includes(type))
   ) {
     fieldErrors.value = {
       identificationType: "Revisa los datos de identificación.",
@@ -579,7 +554,6 @@ async function submitRegistration() {
         carriesItems: carriesItems.value,
         items: carriesItems.value ? items.value : [],
         identificationTypes: identificationTypesSelected.value,
-        declaresIdRetained: declaresIdRetained.value,
       }),
     });
     const result = await parseResponse<RegistrationResult & { error?: string }>(response);
@@ -592,7 +566,6 @@ async function submitRegistration() {
       completed: result,
       requestIdempotencyKey: requestIdempotencyKey.value,
       carriesItems: carriesItems.value,
-      declaresIdRetained: declaresIdRetained.value,
       expiresAt: Date.now() + 120000,
     };
     try {
@@ -603,7 +576,7 @@ async function submitRegistration() {
       notifyUser("El registro se guardó, pero no se pudo conservar el folio en esta pestaña.");
     }
     completed.value = result;
-    completedStatus.value = declaresIdRetained.value ? "awaiting-id-check" : "reference";
+    completedStatus.value = "awaiting-entry-authorization";
     step.value = 5;
     resumePendingStatus();
     scheduleKioskReset(120000);
@@ -698,7 +671,7 @@ async function submitRegistration() {
           <h1>Datos del <span>visitante</span></h1>
         </div>
         <h1 v-else>{{ step === 2 ? "Equipo y herramientas" : step === 3 ? "Identificación" : "Revisa tu registro" }}</h1>
-        <p v-if="step === 2" class="visitor-kiosk-equipment-rule" role="note">Declara todo el equipo y las herramientas que ingresarás a las instalaciones. Solo se permite el ingreso de artículos registrados; lo que no registres no podrá ingresar.</p>
+        <p v-if="step === 2" class="visitor-kiosk-equipment-rule" role="note">Declara todo lo que ingresarás, incluidos celulares, laptops y herramientas. Si llevas equipo de protección (casco, chaleco, lentes, guantes, etc.), decláralo también. Solo ingresan artículos declarados.</p>
         <p v-else-if="step === 3">Selecciona el tipo de identificación presentada. No captures números ni fotografías del documento.</p>
       </header>
       <p v-if="showRestoreNotice" class="visitor-kiosk-save-notice" role="status">
@@ -890,12 +863,6 @@ async function submitRegistration() {
           </div>
           <small v-if="fieldErrors.identificationType" class="visitor-kiosk-field-error">{{ fieldErrors.identificationType }}</small>
         </div>
-        <fieldset class="visitor-kiosk-id-question">
-          <legend>¿Declaras que tus identificaciones fueron entregadas a recepción para resguardo?</legend>
-          <label><input v-model="declaresIdRetained" type="radio" :value="true" /> Sí, las entregué para resguardo</label>
-          <label><input v-model="declaresIdRetained" type="radio" :value="false" /> No, solo las presenté para verificación</label>
-          <small v-if="fieldErrors.declaresIdRetained" class="visitor-kiosk-field-error">{{ fieldErrors.declaresIdRetained }}</small>
-        </fieldset>
         <div class="visitor-kiosk-actions">
           <button class="visitor-kiosk-secondary" type="button" @click="previousStep">Anterior</button>
           <button class="visitor-kiosk-primary" type="button" @click="continueStep">Continuar</button>
@@ -909,7 +876,6 @@ async function submitRegistration() {
           <div><dt>Asunto</dt><dd>{{ visitReason }}</dd></div>
           <div><dt>Equipo y herramientas</dt><dd>{{ carriesItems ? items.map((item) => `${item.type}: ${item.description} (cantidad ${item.quantity})`).join("; ") : "No lleva artículos" }}</dd></div>
           <div><dt>Identificación</dt><dd>{{ identificationTypesSelected.join(", ") }}</dd></div>
-          <div><dt>Declaración de resguardo</dt><dd>{{ declaresIdRetained ? "Declara que las entregó para resguardo" : "Declara que solo las presentó para verificación" }}</dd></div>
         </dl>
         <label class="visitor-kiosk-confirmation">
           <input v-model="informationConfirmed" type="checkbox" />
@@ -941,7 +907,6 @@ async function submitRegistration() {
         <div class="visitor-kiosk-success-mark" :class="`is-${completedStatus}`" aria-hidden="true">
           <svg v-if="completedStatus === 'entered'" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="m14 24 7 7 14-15" /></svg>
           <svg v-else-if="completedStatus === 'rejected'" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="m17 17 14 14m0-14L17 31" /></svg>
-          <svg v-else-if="completedStatus === 'reference'" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="M17 13h10l6 6v16H17z" /><path d="M27 13v7h6m-12 5h8m-8 5h8" /></svg>
           <svg v-else viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="M24 13v12l8 5" /></svg>
         </div>
         <p class="visitor-kiosk-eyebrow">
@@ -949,47 +914,33 @@ async function submitRegistration() {
             ? "REVISIÓN COMPLETADA"
             : completedStatus === "rejected"
               ? "REVISIÓN RECHAZADA"
-              : completedStatus === "reference"
-                ? "REGISTRO RECIBIDO"
-                : completedStatus === "awaiting-id-check"
-                  ? "VALIDACIÓN DE IDENTIFICACIÓN"
-                  : "AUTORIZACIÓN EN PROCESO" }}
+              : "AUTORIZACIÓN EN PROCESO" }}
         </p>
         <h1>
           {{ completedStatus === "entered"
             ? "Tu ingreso fue registrado"
             : completedStatus === "rejected"
               ? "Acude con recepción"
-              : completedStatus === "reference"
-                ? "Tu código de referencia"
-                : completedStatus === "awaiting-id-check"
-                  ? "Recepción verificará tu identificación"
-                  : completedStatus === "awaiting-entry-checklist"
-                    ? "Completa la revisión de equipo"
-                    : "Esperando autorización de entrada" }}
+              : completedStatus === "awaiting-entry-checklist"
+                ? "Completa la revisión de equipo"
+                : "Esperando autorización de entrada" }}
         </h1>
         <span class="visitor-kiosk-success-accent" aria-hidden="true"></span>
         <div class="visitor-kiosk-folio">
           <span>FOLIO DE VISITANTE</span>
           <strong>{{ completed.folio }}</strong>
         </div>
-        <p v-if="completedStatus !== 'reference'" class="visitor-kiosk-success-name">{{ completed.visitorName }}</p>
+        <p class="visitor-kiosk-success-name">{{ completed.visitorName }}</p>
         <p class="visitor-kiosk-intro">
           {{ completedStatus === "entered"
             ? "Recepción completó el checklist de entrada y registró tu ingreso en la bitácora."
             : completedStatus === "rejected"
               ? "Recepción no autorizó el registro. Solicita asistencia antes de ingresar."
-              : completedStatus === "reference"
-                ? "Presenta este folio a recepción para continuar con la autorización de entrada."
-                : completedStatus === "awaiting-id-check"
-                  ? "Tu llegada está registrada. Recepción debe confirmar primero que recibió tu identificación para resguardo."
-                  : completedStatus === "awaiting-entry-checklist"
-                    ? "Recepción autorizó tu entrada. El checklist de equipo debe completarse antes de registrar el ingreso."
-                    : completedStatus === "awaiting-entry-authorization"
-                      ? "La declaración de resguardo ya fue revisada. Espera la decisión de recepción sobre tu entrada."
-                      : carriesItems
-                        ? "Tu llegada quedó anotada. Espera mientras recepción revisa el checklist de equipos y autoriza el ingreso."
-                        : "Tu llegada quedó anotada. Espera mientras recepción revisa y autoriza el ingreso." }}
+              : completedStatus === "awaiting-entry-checklist"
+                ? "Recepción autorizó tu entrada. El checklist de equipo debe completarse antes de registrar el ingreso."
+                : carriesItems
+                  ? "Tu llegada quedó anotada. Espera mientras recepción revisa el checklist de equipos y autoriza el ingreso."
+                  : "Tu llegada quedó anotada. Espera mientras recepción revisa y autoriza el ingreso." }}
         </p>
         <div v-if="waitingMessage" class="visitor-kiosk-waiting" role="status">
           <span class="visitor-kiosk-waiting-indicator" aria-hidden="true"></span>
