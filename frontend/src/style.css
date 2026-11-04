@@ -1885,23 +1885,57 @@ input:focus-visible {
 }
 
 .equipment-delete-button {
-  padding: 6px 9px;
-  border: 1px solid #6d293a;
-  border-radius: 5px;
-  background: rgb(173 31 54 / 13%);
-  color: #f294a2;
-  font-size: 0.65rem;
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid #8a3448;
+  border-radius: 7px;
+  background: linear-gradient(145deg, rgb(173 31 54 / 19%), rgb(112 28 44 / 24%));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+  color: #ffb2bd;
+  font: inherit;
+  font-size: 0.67rem;
+  font-weight: 650;
+  line-height: 1;
   cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.equipment-delete-button svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .equipment-delete-button:hover:not(:disabled) {
-  border-color: #a94358;
-  background: rgb(173 31 54 / 24%);
+  transform: translateY(-1px);
+  border-color: #d05b70;
+  background: linear-gradient(145deg, #a9364e, #7d243a);
+  box-shadow: 0 4px 12px rgb(122 28 48 / 28%), inset 0 1px 0 rgb(255 255 255 / 12%);
+  color: #fff;
+}
+
+.equipment-delete-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / 18%);
+}
+
+.equipment-delete-button:focus-visible {
+  outline: 2px solid #f28a9a;
+  outline-offset: 2px;
 }
 
 .equipment-delete-button:disabled {
   cursor: wait;
-  opacity: 0.6;
+  opacity: 0.58;
 }
 
 .equipment-open-button:hover,
@@ -8449,15 +8483,21 @@ input:focus-visible {
 }
 
 .dashboard-app[data-theme="light"] .equipment-delete-button {
-  border-color: #e2b9c1;
-  background: #fff3f4;
-  color: #a33245;
+  border-color: #e5b7c0;
+  background: linear-gradient(145deg, #fff7f8, #ffedf0);
+  box-shadow: 0 1px 2px rgb(113 34 49 / 5%);
+  color: #9c2c40;
 }
 
 .dashboard-app[data-theme="light"] .equipment-delete-button:hover:not(:disabled) {
-  border-color: #ce8793;
-  background: #ffe8eb;
-  color: #842637;
+  border-color: #bd4d61;
+  background: linear-gradient(145deg, #b83c52, #932c43);
+  box-shadow: 0 4px 12px rgb(154 42 61 / 20%);
+  color: #fff;
+}
+
+.dashboard-app[data-theme="light"] .equipment-delete-button:focus-visible {
+  outline-color: #bc3d53;
 }
 
 .dashboard-app[data-theme="light"] .button-secondary:hover,

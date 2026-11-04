@@ -560,7 +560,12 @@ async function deleteDeclaration(declaration: EquipmentDeclaration) {
                   :disabled="deletingDeclarationId !== null"
                   :aria-label="`Eliminar declaración de ${declaration.personName}`"
                   @click="deleteDeclaration(declaration)"
-                >{{ deletingDeclarationId === declaration.id ? "Eliminando…" : "Eliminar" }}</button>
+                >
+                  <svg v-if="deletingDeclarationId !== declaration.id" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14m-7-3h4l1 3H9l1-3Z" />
+                  </svg>
+                  <span>{{ deletingDeclarationId === declaration.id ? "Eliminando…" : "Eliminar" }}</span>
+                </button>
               </td>
             </tr>
             <tr v-if="loading">
