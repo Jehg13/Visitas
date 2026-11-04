@@ -3440,9 +3440,21 @@ const server = Bun.serve({
             { status: 401 },
           );
         }
+        const sectionAccess = await listUserSectionAccess(user.login, user.isAdmin);
+        if (sectionAccess.length === 0) {
+          return Response.json(
+            { error: "Tu cuenta está activa, pero no tiene acceso asignado a la aplicación. Solicita acceso a Administración." },
+            {
+              status: 403,
+              headers: {
+                "Set-Cookie": `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookieAttribute}`,
+                "Cache-Control": "no-store",
+              },
+            },
+          );
+        }
         const token = createSessionToken(user);
         const accounts = user.isAdmin ? await listAccessAccounts() : [];
-        const sectionAccess = await listUserSectionAccess(user.login, user.isAdmin);
         return Response.json(
           { user: publicUser(user, sectionAccess), accounts },
           {
@@ -3472,6 +3484,17 @@ const server = Bun.serve({
           });
         }
         const sectionAccess = await listUserSectionAccess(user.login, user.isAdmin);
+        if (sectionAccess.length === 0) {
+          return Response.json(
+            { user: null, accounts: [] },
+            {
+              headers: {
+                "Set-Cookie": `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookieAttribute}`,
+                "Cache-Control": "no-store",
+              },
+            },
+          );
+        }
         return Response.json({
           user: publicUser(user, sectionAccess),
           accounts: user.isAdmin ? await listAccessAccounts() : [],
