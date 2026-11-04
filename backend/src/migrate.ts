@@ -214,25 +214,20 @@ async function migrate() {
       if (initialAdminLogin.length > 255) {
         throw new Error("INITIAL_ADMIN_LOGIN must be 255 characters or fewer.");
       }
-      const [initialAdminMigration] = await connection.execute<RowDataPacket[]>(
-        "SELECT migration_key FROM app_migrations WHERE migration_key = 'initial-admin-section-access-v1' LIMIT 1",
+      const [externalAdmins] = await getExternalUsersPool().execute<RowDataPacket[]>(
+        "SELECT login FROM seg_users WHERE login = ? AND active IN ('Y', '1') LIMIT 1",
+        [initialAdminLogin],
       );
-      if (initialAdminMigration.length === 0) {
-        const [externalAdmins] = await getExternalUsersPool().execute<RowDataPacket[]>(
-          "SELECT login FROM seg_users WHERE login = ? AND active IN ('Y', '1') LIMIT 1",
-          [initialAdminLogin],
-        );
-        if (externalAdmins.length === 0) {
-          throw new Error("INITIAL_ADMIN_LOGIN must match an active account in seg_users.");
-        }
-        await connection.execute(
-          "INSERT IGNORE INTO accesos_secciones (login, seccion) VALUES (?, 'administrador')",
-          [initialAdminLogin],
-        );
-        await connection.execute(
-          "INSERT INTO app_migrations (migration_key) VALUES ('initial-admin-section-access-v1')",
-        );
+      if (externalAdmins.length === 0) {
+        throw new Error("INITIAL_ADMIN_LOGIN must match an active account in seg_users.");
       }
+      await connection.execute(
+        "INSERT IGNORE INTO accesos_secciones (login, seccion) VALUES (?, 'administrador')",
+        [initialAdminLogin],
+      );
+      await connection.execute(
+        "INSERT IGNORE INTO app_migrations (migration_key) VALUES ('initial-admin-section-access-v1')",
+      );
     }
     const [visitorBackfill] = await connection.execute<RowDataPacket[]>(
       "SELECT migration_key FROM app_migrations WHERE migration_key = 'visitor-partners-backfill-v1' LIMIT 1",

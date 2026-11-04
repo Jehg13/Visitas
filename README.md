@@ -27,7 +27,8 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
    guardarse en el archivo local `backend\.env`, que no se sube al repositorio.
    Para conceder el permiso inicial de administrador, define
    `INITIAL_ADMIN_LOGIN` con un login activo de `seg_users` antes de ejecutar la
-   migración; la asignación se realiza una sola vez en `accesos_secciones`.
+   migración. Cada ejecución de la migración garantiza ese permiso sin crear
+   asignaciones duplicadas en `accesos_secciones`.
 
 3. Inicia MySQL:
 
@@ -74,9 +75,10 @@ El inicio de sesión y los listados de cuentas leen únicamente la tabla externa
 el login o correo y solo se autentican cuentas activas (`active` igual a `Y` o
 `1`) con contraseña Argon2id. La sección Accesos muestra las cuentas de
 `seg_users` y administra los permisos propios de esta aplicación en la tabla
-local `accesos_secciones`; no altera los datos de usuario externos. El permiso de
-Administrador debe asignarse a una cuenta real desde `accesos_secciones` antes
-de poder administrar los permisos desde la interfaz. La recuperación de
+local `accesos_secciones`; no altera los datos de usuario externos. La cuenta
+indicada en `INITIAL_ADMIN_LOGIN` recibe el permiso de Administrador al ejecutar
+la migración; después, la sección Accesos permite administrar otros permisos.
+La recuperación de
 contraseña actualiza `seg_users.pswd`, por lo que el usuario MySQL externo
 requiere permiso de lectura y actualización sobre esa tabla. El permiso
 `anfitriones` se concede al registrar una cuenta real como anfitrión.
