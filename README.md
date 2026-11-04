@@ -75,15 +75,17 @@ El inicio de sesión y los listados de cuentas leen únicamente la tabla externa
 el login o correo y solo se autentican cuentas activas (`active` igual a `Y` o
 `1`) con contraseña Argon2id. La sección Accesos muestra las cuentas de
 `seg_users` y administra los permisos propios de esta aplicación en la tabla
-local `accesos_secciones`; no altera los datos de usuario externos. La cuenta
-indicada en `INITIAL_ADMIN_LOGIN` recibe el permiso de Administrador al ejecutar
-la migración; después, la sección Accesos permite administrar otros permisos.
-La recuperación de
+local `accesos_secciones`; no altera los datos de usuario externos. Cualquier
+cuenta activa cuyo rol externo sea `Programador` obtiene acceso de Administrador
+automáticamente. También se puede definir `INITIAL_ADMIN_LOGIN` para dar ese
+acceso inicial a una cuenta específica. La sección Accesos permite administrar
+los permisos de las demás cuentas. La recuperación de
 contraseña actualiza `seg_users.pswd`, por lo que el usuario MySQL externo
 requiere permiso de lectura y actualización sobre esa tabla. El permiso
 `anfitriones` se concede al registrar una cuenta real como anfitrión.
 
-El Programador conserva acceso completo. Recepción solo tiene las vistas
+Las cuentas activas con rol `Programador` conservan acceso completo.
+Recepción solo tiene las vistas
 Agenda de citas y Bitácora diaria; en la Agenda puede consultar todas las citas y
 ver sus QR, pero no crearlas, cancelarlas, eliminarlas ni enviarlas. El rol
 Anfitrión tiene acceso a Agenda y a todos los módulos de Externos: contratistas,
@@ -294,7 +296,7 @@ docker-compose.yml     Servicio local de base de datos
 - `visitor_kiosk_registrations`, `visitor_kiosk_items`, `visitor_kiosk_inspections` y sus tablas auxiliares: autorregistro público, artículos declarados, checklists de entrada y salida y auditoría de recepción.
 - `equipment_declarations` y `equipment_declaration_items`: declaración de un solo uso, asociada con una empresa y, cuando existe, con su cita, visitante o registro de personal externo. Cada fila conserva si el artículo es equipo o herramienta.
 - `equipment_inspections` y `equipment_inspection_items`: verificaciones separadas de Entrada y Salida, con el inspector, tipo de artículo, cantidades/características revisadas, resultados y observaciones de incidencias.
-- `accesos_secciones`: permisos de aplicación locales e independientes por usuario (`administrador`, `recepcion`, `anfitriones`); son la fuente de autorización y no alteran la tabla externa `seg_users`. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
+- `accesos_secciones`: permisos de aplicación locales e independientes por usuario (`administrador`, `recepcion`, `anfitriones`); no alteran la tabla externa `seg_users`. El rol externo `Programador` también concede acceso de Administrador automáticamente. Desde la sección Accesos solo se administran Administrador o Recepción; Anfitriones se concede desde su propio flujo.
 - `password_reset_tokens`, `auth_login_failures` y `auth_recovery_limits`: enlaces de recuperación de un solo uso, bloqueos progresivos de inicio de sesión y límites anti-spam. Los tokens se almacenan como hash.
 - `visits`: tabla original de la aplicación, se conserva.
 
