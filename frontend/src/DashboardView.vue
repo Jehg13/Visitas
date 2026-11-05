@@ -35,6 +35,10 @@ const AccessSection = defineAsyncComponent(() => import("./sections/AccessSectio
 type AccessRoleDraft = "administrador" | "recepcion" | "";
 const otherAppointmentVisitor = "__otro__";
 
+function isProgrammerRole(role: string | null) {
+  return role?.trim().toLocaleLowerCase("es") === "programador";
+}
+
 const emit = defineEmits<{ logout: [] }>();
 const route = useRoute();
 const router = useRouter();
@@ -599,15 +603,28 @@ async function saveAccessAccount() {
     if (account.login === currentUser.value.login) {
       const updatedAccount = result.accounts.find(({ login }) => login === account.login);
       if (updatedAccount) {
+        const isAdmin =
+          updatedAccount.sectionAccess.includes("administrador") ||
+          isProgrammerRole(updatedAccount.role);
+        const isHost = hosts.value.some(
+          (host) => host.login.toLocaleLowerCase() === account.login.toLocaleLowerCase(),
+        );
+        const sectionAccess = [
+          ...updatedAccount.sectionAccess,
+          ...(isHost && !updatedAccount.sectionAccess.includes("anfitriones")
+            ? ["anfitriones" as const]
+            : []),
+        ];
         authStore.user = {
           ...currentUser.value,
-          isAdmin: updatedAccount.sectionAccess.includes("administrador"),
-          sectionAccess: updatedAccount.sectionAccess,
+          role: updatedAccount.role,
+          isAdmin,
+          sectionAccess,
         };
         if (!authStore.user.isAdmin) {
-          const nextSection = updatedAccount.sectionAccess.includes("recepcion")
+          const nextSection = sectionAccess.includes("recepcion")
             ? "Bitácora diaria"
-            : updatedAccount.sectionAccess.includes("anfitriones")
+            : sectionAccess.includes("anfitriones")
               ? "Agenda de citas"
               : "";
           const nextPath = dashboardSectionPaths[nextSection as keyof typeof dashboardSectionPaths];
