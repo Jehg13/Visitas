@@ -34,6 +34,10 @@ const dummyPasswordHash = Bun.password.hash(crypto.randomUUID(), {
   algorithm: "argon2id",
 });
 
+function hasProgrammerRole(role: string | null) {
+  return role?.trim().toLocaleLowerCase("es") === "programador";
+}
+
 export async function getActiveUser(login: string): Promise<AuthenticatedUser | null> {
   const [rows] = await getExternalUsersPool().execute<UserIdentityRow[]>(
     `SELECT login, pswd, name, email, active, role
@@ -54,7 +58,7 @@ export async function getActiveUser(login: string): Promise<AuthenticatedUser | 
     name: user.name,
     email: user.email,
     role: user.role,
-    isAdmin: sectionRows.length > 0,
+    isAdmin: sectionRows.length > 0 || hasProgrammerRole(user.role),
     sessionKey: user.pswd,
   };
 }
@@ -100,7 +104,7 @@ export async function authenticateUser(
     name: user.name,
     email: user.email,
     role: user.role,
-    isAdmin: sectionRows.length > 0,
+    isAdmin: sectionRows.length > 0 || hasProgrammerRole(user.role),
     sessionKey: user.pswd,
   };
 }
