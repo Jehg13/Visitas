@@ -1966,18 +1966,6 @@
   color: var(--ds-danger-text);
 }
 
-.dashboard-app .daily-log-export-message {
-  align-self: flex-end;
-  margin: -5px 0 0;
-  color: var(--ds-text-muted);
-  font-size: 0.75rem;
-}
-
-.dashboard-app .daily-log-export-button svg {
-  width: 16px;
-  height: 16px;
-}
-
 @media (max-width: 600px) {
   .public-equipment-card {
     padding: 20px 16px;
@@ -2014,9 +2002,6 @@
     gap: 7px;
   }
 
-  .dashboard-app .daily-log-export-message {
-    align-self: stretch;
-  }
 }
 
 .dashboard-app .sidebar {
@@ -5399,6 +5384,70 @@
 
 .equipment-disposition-options {
   min-width: 0;
+}
+
+.dashboard-app .topbar {
+  z-index: 80;
+}
+
+.dashboard-app .account-dropdown {
+  z-index: 90;
+}
+
+.dashboard-app .dashboard-main-home {
+  height: auto;
+  min-height: calc(100svh - var(--dashboard-header-height));
+}
+
+.dashboard-app .home-navigation-link {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--ds-blue) 35%, var(--ds-border));
+  border-radius: 8px;
+  background: linear-gradient(
+    115deg,
+    color-mix(in srgb, var(--ds-blue) 10%, var(--ds-surface)),
+    var(--ds-surface),
+    color-mix(in srgb, var(--ds-red) 7%, var(--ds-surface))
+  );
+  color: var(--ds-blue);
+  font-size: 0.68rem;
+  font-weight: 700;
+  transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+
+.dashboard-app .home-navigation-link:hover {
+  border-color: color-mix(in srgb, var(--ds-red) 48%, var(--ds-border));
+  background: color-mix(in srgb, var(--ds-red) 9%, var(--ds-surface));
+  color: var(--ds-red);
+}
+
+.dashboard-app .home-agenda-link {
+  flex: 0 0 auto;
+}
+
+.dashboard-app[data-theme="light"] .account-menu-button {
+  color: #173c64;
+}
+
+.dashboard-app[data-theme="light"] .avatar {
+  border-color: #c8dced;
+  background: linear-gradient(145deg, #eff7ff, #dcecff);
+  color: #176ea8;
+  box-shadow: inset 0 1px 4px rgb(34 91 151 / 8%);
+}
+
+.dashboard-app[data-theme="light"] .account-chevron {
+  color: #52749b;
+}
+
+@media (max-width: 760px) {
+  .dashboard-app .dashboard-main-home .agenda-panel .panel-title {
+    flex-wrap: wrap;
+  }
 }
 
 .equipment-disposition-options .equipment-checked-toggle {

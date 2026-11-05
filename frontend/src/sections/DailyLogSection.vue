@@ -126,8 +126,6 @@ const recentTotal = ref(0);
 const recentPages = ref(1);
 const loading = ref(false);
 const saving = ref(false);
-const exporting = ref(false);
-const exportMessage = ref("");
 const error = ref("");
 const quickActionError = ref("");
 const quickActionNotice = ref("");
@@ -197,7 +195,7 @@ const dailyLogHelpSections = [
     title: "Buscar y consultar movimientos",
     steps: [
       "Elige las fechas Desde y Hasta para consultar un periodo. Usa la búsqueda para localizar por persona, empresa o folio, o filtra por tipo de movimiento.",
-      "Pulsa una fila o un movimiento de Actividad reciente para abrir el detalle. Usa Historial para consultar los últimos 30 días y Exportar CSV para descargar los resultados del periodo y filtros seleccionados.",
+      "Pulsa una fila o un movimiento de Actividad reciente para abrir el detalle. Usa Historial para consultar los últimos 30 días y los filtros para localizar movimientos del periodo.",
       "La tabla muestra siete movimientos por página. Los indicadores superiores resumen los movimientos del periodo, las personas que figuran dentro, las llegadas pendientes y los retiros. Revisa los datos antes de registrar cada movimiento para mantener un historial confiable.",
     ],
   },
@@ -436,77 +434,6 @@ function requestUrl() {
     query.append("host", hostFilter.value);
   }
   return `/api/daily-log?${query.toString()}`;
-}
-
-function csvCell(value: string | number | null) {
-  const text = value === null ? "" : String(value);
-  const safeText = /^[\u0000-\u0020]*[=+\-@]/.test(text) ? `'${text}` : text;
-  return `"${safeText.replace(/"/g, '""')}"`;
-}
-
-async function exportLog() {
-  if (exporting.value) return;
-  if (!fromDate.value || !toDate.value || fromDate.value > toDate.value) {
-    notifyUser("Selecciona un rango de fechas válido para exportar.");
-    return;
-  }
-  exporting.value = true;
-  exportMessage.value = "";
-  try {
-    const exportUrl = new URL(requestUrl(), window.location.origin);
-    exportUrl.searchParams.set("page", "1");
-    exportUrl.searchParams.set("pageSize", "100");
-    const firstResponse = await fetch(exportUrl);
-    const firstResult = await firstResponse.json() as LogResponse;
-    if (!firstResponse.ok) throw new Error(firstResult.error ?? "No se pudo exportar la bitácora.");
-    if (!Array.isArray(firstResult.entries) || !Number.isSafeInteger(firstResult.pages) || !firstResult.pages) {
-      throw new Error("El servidor devolvió datos incompletos para exportar la bitácora.");
-    }
-
-    const exportEntries = [...firstResult.entries];
-    for (let exportPage = 2; exportPage <= firstResult.pages; exportPage += 1) {
-      exportUrl.searchParams.set("page", String(exportPage));
-      const response = await fetch(exportUrl);
-      const result = await response.json() as LogResponse;
-      if (!response.ok) throw new Error(result.error ?? `No se pudo cargar la página ${exportPage} de la bitácora.`);
-      if (!Array.isArray(result.entries)) {
-        throw new Error(`El servidor devolvió datos incompletos en la página ${exportPage}.`);
-      }
-      exportEntries.push(...result.entries);
-    }
-    if (exportEntries.length === 0) {
-      notifyUser("No hay movimientos en el rango y filtros seleccionados.", "info");
-      return;
-    }
-
-    const columns: Array<keyof LogEntry> = [
-      "date", "time", "event", "person", "company", "host", "category", "details",
-      ...(props.isAdmin ? ["actorName" as const] : []),
-    ];
-    const headings = [
-      "Fecha", "Hora", "Movimiento", "Persona", "Empresa", "Anfitrión", "Categoría", "Detalles",
-      ...(props.isAdmin ? ["Registró / autorizó"] : []),
-    ];
-    const csvRows = [
-      headings.map(csvCell).join(","),
-      ...exportEntries.map((entry) => columns.map((column) => csvCell(entry[column])).join(",")),
-    ];
-    const blob = new Blob(["\uFEFF", csvRows.join("\r\n")], { type: "text/csv;charset=utf-8" });
-    const downloadUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = downloadUrl;
-    link.download = `bitacora-${fromDate.value}-${toDate.value}.csv`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(downloadUrl);
-    notifyUser(`Se exportaron ${exportEntries.length} movimientos.`, "success", "Exportación completada");
-  } catch (cause) {
-    console.error("Failed to export daily log:", cause);
-    notifyUser(cause instanceof Error ? cause.message : "No se pudo exportar la bitácora.");
-  } finally {
-    exporting.value = false;
-  }
 }
 
 async function loadEntries() {
@@ -1291,10 +1218,6 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8" /><path d="M3 3v5h5m4-1v5l3 2" /></svg>
           Historial
         </button>
-        <button class="daily-log-secondary-button daily-log-export-button" type="button" :disabled="exporting" @click="exportLog">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v4h14v-4" /></svg>
-          {{ exporting ? "Exportando..." : "Exportar CSV" }}
-        </button>
         <button class="daily-log-primary-button" type="button" @click="openCreateDialog">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           Registrar movimiento
@@ -1305,10 +1228,6 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
         </button>
       </div>
     </header>
-    <p v-if="exportMessage" class="daily-log-export-message" :role="exportMessage.startsWith('Se exportaron') ? 'status' : 'alert'">
-      {{ exportMessage }}
-    </p>
-
     <div class="daily-log-summary" aria-label="Resumen de movimientos">
       <article class="daily-log-stat daily-log-stat-events">
         <span class="daily-log-stat-icon">

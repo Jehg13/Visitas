@@ -30,6 +30,12 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
    migración. Cada ejecución de la migración garantiza ese permiso sin crear
    asignaciones duplicadas en `accesos_secciones`.
 
+   Para desarrollo local con Vue/Vite, `CORS_ALLOWED_ORIGINS` puede permitir
+   los puertos variables de `localhost` y `127.0.0.1` con
+   `http://localhost:*,http://127.0.0.1:*`. Estos patrones solo se aceptan fuera
+   de producción, porque Vite cambia de puerto cuando el predeterminado está
+   ocupado. En producción configura únicamente el origen HTTPS exacto.
+
 3. Inicia MySQL:
 
    ```powershell
@@ -247,7 +253,8 @@ respaldos antes de cualquier cambio de esquema.
   en `/api/events` y `/api/visitor-kiosk/events` a través de cualquier proxy TLS externo.
   El bus actual es local al proceso y requiere una sola réplica API.
 - Al mantener frontend y API en el mismo origen, CORS no se necesita. No habilites
-  `Access-Control-Allow-Origin: *` para esta API; no hay una allowlist CORS configurada.
+  `Access-Control-Allow-Origin: *`; en producción configura solo el origen HTTPS
+  exacto en `CORS_ALLOWED_ORIGINS`.
 - Ejecuta Bun con `NODE_ENV=production` para que las cookies de sesión incluyan `Secure`, y
   configura `PUBLIC_APP_URL` con la URL HTTPS pública del frontend para los enlaces enviados
   por correo.

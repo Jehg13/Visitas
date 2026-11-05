@@ -282,14 +282,12 @@ async function loadDashboardData() {
   dashboardLoading.value = true;
   dashboardError.value = "";
   try {
-    const [historyResponse, todayResponse, statsResponse, equipmentResponse, appointmentHistoryResponse] = await Promise.all([
+    const [historyResponse, todayResponse, statsResponse] = await Promise.all([
       fetch(`/api/daily-log?from=${fromDate}&to=${toDate}&page=1&pageSize=6`),
       fetch(`/api/daily-log?from=${today}&to=${today}&page=1&pageSize=1`),
       fetch(`/api/daily-log/stats?from=${fromDate}&to=${toDate}`),
-      fetch("/api/equipment/declarations?page=1"),
-      fetch("/api/appointments/history"),
     ]);
-    const [historyResult, todayResult, statsResult, equipmentResult, appointmentHistoryResult] = await Promise.all([
+    const [historyResult, todayResult, statsResult] = await Promise.all([
       historyResponse.json() as Promise<{
         entries?: LogEntry[];
         error?: string;
@@ -299,8 +297,6 @@ async function loadDashboardData() {
         error?: string;
       }>,
       statsResponse.json() as Promise<{ stats?: DailyActivity[]; error?: string }>,
-      equipmentResponse.json() as Promise<{ total?: number; error?: string }>,
-      appointmentHistoryResponse.json() as Promise<{ history?: AppointmentHistoryItem[]; error?: string }>,
     ]);
 
     if (requestVersion !== dashboardRequestVersion) return;
@@ -316,17 +312,6 @@ async function loadDashboardData() {
     if (!Array.isArray(statsResult.stats)) {
       throw new Error("El resumen de movimientos tiene un formato inesperado.");
     }
-    if (!equipmentResponse.ok) throw new Error(equipmentResult.error ?? "No se pudo cargar el total de declaraciones de equipo.");
-    if (typeof equipmentResult.total !== "number" || !Number.isSafeInteger(equipmentResult.total)) {
-      throw new Error("El total de declaraciones de equipo tiene un formato inesperado.");
-    }
-    if (!appointmentHistoryResponse.ok) {
-      throw new Error(appointmentHistoryResult.error ?? "No se pudo cargar el historial de citas.");
-    }
-    if (!Array.isArray(appointmentHistoryResult.history)) {
-      throw new Error("El historial de citas tiene un formato inesperado.");
-    }
-
     recentEntries.value = historyResult.entries;
     dashboardSummary.value = {
       insideNow: todayResult.summary.insideNow ?? 0,
@@ -337,8 +322,41 @@ async function loadDashboardData() {
       const date = addDateOffset(fromDate, index);
       return byDate.get(date) ?? { date, arrivals: 0, entries: 0, exits: 0, observations: 0 };
     });
-    equipmentDeclarationCount.value = equipmentResult.total;
-    appointmentHistory.value = appointmentHistoryResult.history;
+
+    const auxiliaryResults = await Promise.allSettled([
+      fetch("/api/equipment/declarations?page=1").then(async (response) => {
+        const result = await response.json() as { total?: number; error?: string };
+        if (!response.ok) throw new Error(result.error ?? "No se pudo cargar el total de declaraciones de equipo.");
+        if (typeof result.total !== "number" || !Number.isSafeInteger(result.total)) {
+          throw new Error("El total de declaraciones de equipo tiene un formato inesperado.");
+        }
+        return result.total;
+      }),
+      fetch("/api/appointments/history").then(async (response) => {
+        const result = await response.json() as { history?: AppointmentHistoryItem[]; error?: string };
+        if (!response.ok) throw new Error(result.error ?? "No se pudo cargar el historial de citas.");
+        if (!Array.isArray(result.history)) {
+          throw new Error("El historial de citas tiene un formato inesperado.");
+        }
+        return result.history;
+      }),
+    ]);
+
+    if (requestVersion !== dashboardRequestVersion) return;
+    const auxiliaryErrors: string[] = [];
+    if (auxiliaryResults[0].status === "fulfilled") {
+      equipmentDeclarationCount.value = auxiliaryResults[0].value;
+    } else {
+      console.error("No se pudo cargar el total de declaraciones de equipo:", auxiliaryResults[0].reason);
+      auxiliaryErrors.push("No se pudo actualizar el total de declaraciones de equipo.");
+    }
+    if (auxiliaryResults[1].status === "fulfilled") {
+      appointmentHistory.value = auxiliaryResults[1].value;
+    } else {
+      console.error("No se pudo cargar el historial de citas:", auxiliaryResults[1].reason);
+      auxiliaryErrors.push("No se pudo actualizar el historial de citas.");
+    }
+    dashboardError.value = auxiliaryErrors.join(" ");
   } catch (error) {
     console.error("No se pudo cargar el panel de control:", error);
     if (requestVersion === dashboardRequestVersion) {
@@ -444,7 +462,7 @@ onBeforeUnmount(() => {
             <p>Distribución · {{ historyRangeLabel }}</p>
           </div>
         </div>
-        <button class="history-link" type="button" @click="openHistoryLog">Ver bitácora</button>
+        <button class="history-link home-navigation-link" type="button" @click="openHistoryLog">Ver bitácora</button>
       </header>
       <div class="home-donut-layout">
         <div class="home-donut-wrap">
@@ -534,6 +552,11 @@ onBeforeUnmount(() => {
           <h2 id="agenda-title">
             {{ selectedAgendaDate === today ? "Agenda de citas de hoy" : `Agenda · ${selectedAgendaDateLabel}` }}
           </h2>
+          <button
+            class="history-link home-navigation-link home-agenda-link"
+            type="button"
+            @click="emit('openAppointments')"
+          >Ver agenda</button>
         </div>
         <div class="panel-actions">
           <label class="date-selector date-filter home-agenda-date">

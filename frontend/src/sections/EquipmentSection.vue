@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { confirmUser, notifyUser } from "../notifications";
 
-const props = defineProps<{ theme: "dark" | "light"; isAdmin: boolean }>();
+const props = defineProps<{ theme: "dark" | "light"; isAdmin: boolean; isHost: boolean }>();
 
 type PartnerOption = { id: number; name: string };
 type StaffOption = { id: number; businessPartnerId: number; fullName: string; companyName: string };
@@ -142,6 +142,10 @@ const checkedInspectionItems = computed(() =>
 
 function setNotice(message: string, title = "Operación completada") {
   notifyUser(message, "success", title);
+}
+
+function canDeleteDeclaration(declaration: EquipmentDeclaration) {
+  return props.isAdmin || (props.isHost && declaration.status === "Pendiente");
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -464,7 +468,7 @@ async function revokeLink(declarationId: number) {
 }
 
 async function deleteDeclaration(declaration: EquipmentDeclaration) {
-  if (!props.isAdmin || deletingDeclarationId.value !== null) return;
+  if (!canDeleteDeclaration(declaration) || deletingDeclarationId.value !== null) return;
   const confirmed = await confirmUser(
     `¿Eliminar la declaración de ${declaration.personName} de forma permanente? También se eliminarán sus artículos y verificaciones.`,
     "Eliminar declaración",
@@ -554,7 +558,7 @@ async function deleteDeclaration(declaration: EquipmentDeclaration) {
               <td class="equipment-history-actions">
                 <button class="equipment-open-button" type="button" @click="openDetails(declaration.id)">Abrir</button>
                 <button
-                  v-if="props.isAdmin"
+                  v-if="canDeleteDeclaration(declaration)"
                   class="equipment-delete-button"
                   type="button"
                   :disabled="deletingDeclarationId !== null"

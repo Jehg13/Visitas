@@ -1,6 +1,14 @@
 import pool from "./db";
 import { getExternalUsersPool } from "./external-users-db";
 import { authenticateUser, getActiveUser, type AuthenticatedUser } from "./auth";
+import {
+  addCorsHeaders,
+  createCorsPreflightResponse,
+  isSupportedLocalOriginPattern,
+  isAllowedRequestOrigin,
+  resolveCorsOrigin,
+} from "./cors";
+import { sessionCookieAttributes } from "./session-cookie";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
@@ -20,7 +28,24 @@ const appDateTimeFormatter = new Intl.DateTimeFormat("en-CA", {
 });
 const sessionLifetimeMs = 8 * 60 * 60 * 1000;
 const sessionCookieName = "visitas_session";
-const secureCookieAttribute = Bun.env.NODE_ENV === "production" ? "; Secure" : "";
+const corsAllowedOrigins = new Set(
+  (Bun.env.CORS_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+for (const origin of corsAllowedOrigins) {
+  if (isSupportedLocalOriginPattern(origin)) {
+    if (Bun.env.NODE_ENV === "production") {
+      throw new Error("Localhost CORS origin patterns are only allowed outside production.");
+    }
+    continue;
+  }
+  const parsedOrigin = new URL(origin);
+  if (parsedOrigin.origin !== origin) {
+    throw new Error("CORS_ALLOWED_ORIGINS must contain exact origins without paths.");
+  }
+}
 const sectionAccessValues = ["recepcion", "anfitriones", "administrador"] as const;
 const managedAccessValues = ["recepcion", "administrador"] as const;
 type SectionAccess = (typeof sectionAccessValues)[number];
@@ -595,6 +620,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function normalizePartnerType(value: unknown) {
+  return typeof value === "string"
+    ? value.normalize("NFKD").replace(/\p{Diacritic}/gu, "").replace(/[\s\p{Cf}]/gu, "").toLowerCase()
+    : "";
+}
+
 function hasUnsafeControlCharacters(value: string, allowLineBreaks = false) {
   return allowLineBreaks
     ? /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value)
@@ -612,6 +643,18 @@ function escapeEmailHtml(value: string): string {
     };
     return entities[character]!;
   });
+}
+
+function equipmentDeclarationUrl(request: Request, token: string): string {
+  const configuredAppUrl = Bun.env.PUBLIC_APP_URL?.trim();
+  const requestOrigin = request.headers.get("origin")?.trim();
+  const appUrl =
+    configuredAppUrl || requestOrigin || new URL(request.url).origin;
+  const parsedUrl = new URL(appUrl);
+  if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+    throw new Error("Unsupported application URL scheme for equipment declaration.");
+  }
+  return `${parsedUrl.origin}/#equipo=${encodeURIComponent(token)}`;
 }
 
 function parseBusinessPartner(value: unknown): BusinessPartnerInput | null {
@@ -2165,7 +2208,7 @@ async function listDepartmentHosts() {
       accessRoles: [
         ...(sections.has("administrador") ? ["Administrador"] : []),
         ...(sections.has("recepcion") ? ["Recepción"] : []),
-        ...(sections.has("anfitriones") ? ["Anfitriones"] : []),
+        "Anfitriones",
       ],
     };
   });
@@ -2339,10 +2382,21 @@ async function listAccessAccounts() {
 async function listUserSectionAccess(login: string, isAdmin: boolean): Promise<SectionAccess[]> {
   if (isAdmin) return [...sectionAccessValues];
   const [rows] = await pool.execute<UserSectionAccessRow[]>(
-    "SELECT seccion FROM accesos_secciones WHERE login = ?",
+    `SELECT seccion
+     FROM accesos_secciones
+     WHERE login = ? AND seccion IN ('recepcion', 'administrador')`,
     [login],
   );
-  return rows.map((row) => row.seccion);
+  const sections = rows.map((row) => row.seccion);
+  const [hostRows] = await pool.execute<RowDataPacket[]>(
+    `SELECT 1
+     FROM department_hosts
+     WHERE login COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+     LIMIT 1`,
+    [login],
+  );
+  if (hostRows.length > 0) sections.push("anfitriones");
+  return [...new Set(sections)];
 }
 
 async function hasSectionAccess(user: AuthenticatedUser, section: SectionAccess) {
@@ -2449,9 +2503,6 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
     }
 
     if (request.method === "DELETE") {
-      if (!user.isAdmin) {
-        return Response.json({ error: "Solo Administración puede eliminar declaraciones de equipo." }, { status: 403 });
-      }
       if (declarationId === null || action !== null) {
         return Response.json({ error: "Indica la declaración que deseas eliminar." }, { status: 400 });
       }
@@ -2459,12 +2510,19 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       try {
         await connection.beginTransaction();
         const [declarations] = await connection.execute<RowDataPacket[]>(
-          "SELECT id FROM equipment_declarations WHERE id = ? LIMIT 1 FOR UPDATE",
+          "SELECT id, status FROM equipment_declarations WHERE id = ? LIMIT 1 FOR UPDATE",
           [declarationId],
         );
         if (!declarations[0]) {
           await connection.rollback();
           return Response.json({ error: "No se encontró la declaración." }, { status: 404 });
+        }
+        if (!user.isAdmin && declarations[0].status !== "Pendiente") {
+          await connection.rollback();
+          return Response.json(
+            { error: "Solo se pueden eliminar declaraciones pendientes." },
+            { status: 409 },
+          );
         }
         await connection.execute(
           `DELETE ii FROM equipment_inspection_items ii
@@ -2497,7 +2555,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
     if (request.method === "GET" && declarationId === null) {
       const search = (url.searchParams.get("q") ?? "").trim();
       const page = Number(url.searchParams.get("page") ?? 1);
-      const pageSize = 7;
+      const pageSize = 5;
       if (search.length > 180 || !Number.isSafeInteger(page) || page < 1) {
         return Response.json({ error: "La búsqueda o página solicitada no es válida." }, { status: 400 });
       }
@@ -2639,6 +2697,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       }
 
       const token = randomBytes(32).toString("base64url");
+      const link = equipmentDeclarationUrl(request, token);
       const tokenHash = hashToken(token);
       const connection = await pool.getConnection();
       try {
@@ -2660,7 +2719,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         );
         await connection.commit();
         return Response.json(
-          { id: result.insertId, personName, token, expiresInDays: 30 },
+          { id: result.insertId, personName, token, url: link, expiresInDays: 30 },
           { status: 201 },
         );
       } catch (error) {
@@ -2792,6 +2851,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         return Response.json({ message: "Enlace revocado." });
       }
       const token = randomBytes(32).toString("base64url");
+      const link = equipmentDeclarationUrl(request, token);
       await pool.execute(
         `UPDATE equipment_declarations
          SET token_hash = ?, token_expires_at = DATE_ADD(NOW(), INTERVAL 30 DAY),
@@ -2801,6 +2861,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       );
       return Response.json({
         token,
+        url: link,
         expiresInDays: 30,
       });
     }
@@ -3001,26 +3062,62 @@ const server = Bun.serve({
   port,
   async fetch(request, server) {
     const url = new URL(request.url);
+    const requestOrigin = request.headers.get("origin");
+    const allowLocalhostWildcard = Bun.env.NODE_ENV !== "production";
+    const corsOrigin = resolveCorsOrigin(
+      requestOrigin,
+      url,
+      corsAllowedOrigins,
+      allowLocalhostWildcard,
+    );
+
+    if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
+      return createCorsPreflightResponse(request, corsOrigin);
+    }
+
+    if (
+      !["GET", "HEAD"].includes(request.method) &&
+      !isAllowedRequestOrigin(
+        requestOrigin,
+        url,
+        corsAllowedOrigins,
+        allowLocalhostWildcard,
+      )
+    ) {
+      return Response.json(
+        { error: "El origen de la solicitud no está permitido." },
+        { status: 403 },
+      );
+    }
 
     if (
       url.pathname.startsWith("/api/") &&
       !isPublicApiRequest(request, url) &&
       !(await getRequestUser(request))
     ) {
-      return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+      return addCorsHeaders(
+        Response.json({ error: "Inicia sesión para continuar." }, { status: 401 }),
+        corsOrigin,
+      );
     }
 
     if (request.method === "GET" && url.pathname === "/api/events") {
       if (!(await getRequestUser(request))) {
-        return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        return addCorsHeaders(
+          Response.json({ error: "Inicia sesión para continuar." }, { status: 401 }),
+          corsOrigin,
+        );
       }
-      return createRealtimeResponse();
+      return addCorsHeaders(createRealtimeResponse(), corsOrigin);
     }
 
     if (request.method === "GET" && url.pathname === "/api/visitor-kiosk/events") {
       const requestKey = url.searchParams.get("key") ?? "";
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestKey)) {
-        return Response.json({ error: "La conexión de estado no es válida." }, { status: 400 });
+        return addCorsHeaders(
+          Response.json({ error: "La conexión de estado no es válida." }, { status: 400 }),
+          corsOrigin,
+        );
       }
       try {
         const [rows] = await pool.execute<RowDataPacket[]>(
@@ -3028,12 +3125,18 @@ const server = Bun.serve({
           [requestKey],
         );
         if (!rows[0]) {
-          return Response.json({ error: "No se encontró el registro." }, { status: 404 });
+          return addCorsHeaders(
+            Response.json({ error: "No se encontró el registro." }, { status: 404 }),
+            corsOrigin,
+          );
         }
-        return createRealtimeResponse(requestKey);
+        return addCorsHeaders(createRealtimeResponse(requestKey), corsOrigin);
       } catch (error) {
         console.error("Failed to connect visitor kiosk to live updates:", error);
-        return Response.json({ error: "No se pudo conectar con las actualizaciones del registro." }, { status: 500 });
+        return addCorsHeaders(
+          Response.json({ error: "No se pudo conectar con las actualizaciones del registro." }, { status: 500 }),
+          corsOrigin,
+        );
       }
     }
 
@@ -3447,7 +3550,7 @@ const server = Bun.serve({
             {
               status: 403,
               headers: {
-                "Set-Cookie": `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookieAttribute}`,
+                "Set-Cookie": `${sessionCookieName}=; Max-Age=0${sessionCookieAttributes(request, Bun.env.NODE_ENV === "production")}`,
                 "Cache-Control": "no-store",
               },
             },
@@ -3459,7 +3562,7 @@ const server = Bun.serve({
           { user: publicUser(user, sectionAccess), accounts },
           {
             headers: {
-              "Set-Cookie": `${sessionCookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${sessionLifetimeMs / 1000}${secureCookieAttribute}`,
+              "Set-Cookie": `${sessionCookieName}=${token}; Max-Age=${sessionLifetimeMs / 1000}${sessionCookieAttributes(request, Bun.env.NODE_ENV === "production")}`,
               "Cache-Control": "no-store",
             },
           },
@@ -3489,7 +3592,7 @@ const server = Bun.serve({
             { user: null, accounts: [] },
             {
               headers: {
-                "Set-Cookie": `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookieAttribute}`,
+                "Set-Cookie": `${sessionCookieName}=; Max-Age=0${sessionCookieAttributes(request, Bun.env.NODE_ENV === "production")}`,
                 "Cache-Control": "no-store",
               },
             },
@@ -3516,7 +3619,7 @@ const server = Bun.serve({
       return new Response(null, {
         status: 204,
         headers: {
-          "Set-Cookie": `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookieAttribute}`,
+          "Set-Cookie": `${sessionCookieName}=; Max-Age=0${sessionCookieAttributes(request, Bun.env.NODE_ENV === "production")}`,
         },
       });
     }
@@ -3535,51 +3638,6 @@ const server = Bun.serve({
         console.error("Failed to load host account options:", error);
         return Response.json(
           { error: "No se pudieron cargar las cuentas disponibles para anfitriones." },
-          { status: 500 },
-        );
-      }
-    }
-
-    const hostAccessPath = url.pathname.match(/^\/api\/host-access\/(.+)$/);
-    if (request.method === "POST" && hostAccessPath) {
-      try {
-        const user = await getRequestUser(request);
-        if (!user) {
-          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
-        }
-        if (!user.isAdmin) {
-          return Response.json({ error: "Solo Programación puede asignar anfitriones." }, { status: 403 });
-        }
-
-        let login: string;
-        try {
-          login = decodeURIComponent(hostAccessPath[1]);
-        } catch {
-          return Response.json({ error: "El usuario seleccionado no es válido." }, { status: 400 });
-        }
-        if (!login || login.length > 255) {
-          return Response.json({ error: "El usuario seleccionado no es válido." }, { status: 400 });
-        }
-        const [matches] = await getExternalUsersPool().execute<AccessLoginRow[]>(
-          "SELECT login FROM seg_users WHERE login = ? AND active IN ('Y', '1') LIMIT 1",
-          [login],
-        );
-        if (matches.length === 0) {
-          return Response.json({ error: "El login debe pertenecer a una cuenta externa activa." }, { status: 404 });
-        }
-
-        const accountLogin = matches[0].login;
-        await pool.execute(
-          "INSERT IGNORE INTO accesos_secciones (login, seccion) VALUES (?, 'anfitriones')",
-          [accountLogin],
-        );
-        return Response.json({
-          sectionAccess: await listUserSectionAccess(accountLogin, false),
-        });
-      } catch (error) {
-        console.error("Failed to grant host section access:", error);
-        return Response.json(
-          { error: "No se pudo asignar el acceso a Anfitriones." },
           { status: 500 },
         );
       }
@@ -3974,7 +4032,7 @@ const server = Bun.serve({
           const page = Number(url.searchParams.get("page") ?? 1);
           const pageSize = Number(url.searchParams.get("pageSize") ?? 7);
           const recentPage = Number(url.searchParams.get("recentPage") ?? 1);
-          const recentPageSize = 7;
+          const recentPageSize = Number(url.searchParams.get("recentPageSize") ?? 7);
           const daySpan =
             (Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) /
             86_400_000;
@@ -3992,6 +4050,7 @@ const server = Bun.serve({
             !Number.isSafeInteger(page) || page < 1 ||
             !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
             !Number.isSafeInteger(recentPage) || recentPage < 1 ||
+            !Number.isSafeInteger(recentPageSize) || recentPageSize < 1 || recentPageSize > 100 ||
             !Number.isSafeInteger((recentPage - 1) * recentPageSize)
           ) {
             return Response.json(
@@ -4259,15 +4318,20 @@ const server = Bun.serve({
             );
           }
         }
-        const subjectKey = externalStaffId !== null
-          ? `external:${externalStaffId}`
-          : visitorId !== null
-            ? `visitor:${visitorId}`
-            : input.appointmentId !== null && businessPartnerId !== null
-              ? `external-name:${businessPartnerId}:${personName.trim().toLocaleLowerCase()}`
-            : input.appointmentId !== null
-              ? `appointment:${input.appointmentId}`
-              : `name:${personName.trim().toLocaleLowerCase()}`;
+        let subjectCondition: string;
+        const subjectParameters: Array<string | number> = [];
+        if (externalStaffId !== null) {
+          subjectCondition = `(external_staff_id = ? OR
+            (external_staff_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))))`;
+          subjectParameters.push(externalStaffId, personName);
+        } else if (visitorId !== null) {
+          subjectCondition = `(visitor_record_id = ? OR
+            (visitor_record_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))))`;
+          subjectParameters.push(visitorId, personName);
+        } else {
+          subjectCondition = `LOWER(TRIM(person_name)) = LOWER(TRIM(?))`;
+          subjectParameters.push(personName);
+        }
         const [duplicateRows] = await pool.execute<RowDataPacket[]>(
           `SELECT id
            FROM daily_log_entries
@@ -4303,22 +4367,16 @@ const server = Bun.serve({
           input.appointmentId === null &&
           externalStaffId === null &&
           visitorId === null;
-        const movementTypes = "('Llegada', 'Ingreso', 'Retiro')";
         const [latestMovementRows] = await pool.execute<RowDataPacket[]>(
-          `WITH movements AS (
-             SELECT d.event_type, d.entry_date, d.entry_time,
-                    ${dailyLogSubjectKey} AS subject_key
-             FROM daily_log_entries d
-             ${dailyLogJoins}
-             WHERE d.event_type IN ${movementTypes}
-               AND d.appointment_id <=> ?
-           )
-           SELECT event_type, DATE_FORMAT(entry_date, '%Y-%m-%d') AS movement_date
-           FROM movements
-           WHERE subject_key = ?
+          `SELECT event_type,
+                  DATE_FORMAT(entry_date, '%Y-%m-%d') AS movement_date
+           FROM daily_log_entries
+           WHERE appointment_id <=> ?
+             AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
+             AND ${subjectCondition}
            ORDER BY entry_date DESC, entry_time DESC, id DESC
            LIMIT 1`,
-          [input.appointmentId, subjectKey],
+          [input.appointmentId, ...subjectParameters],
         );
         const latestMovementRow = latestMovementRows[0];
         if (
@@ -4392,65 +4450,59 @@ const server = Bun.serve({
           input.appointmentId !== null &&
           (input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro")
         ) {
-          let employeeStatus: RowDataPacket | undefined;
+          let totalEmployees = 0;
+          let insideCount = 0;
+          let retiredCount = 0;
           if (businessPartnerId !== null) {
-            const [employeeStatusRows] = await pool.execute<RowDataPacket[]>(
-                `SELECT COUNT(*) AS employee_count,
-                        SUM(latest.event_type = 'Ingreso') AS inside_count,
-                        SUM(latest.event_type = 'Retiro') AS retired_count
-                 FROM external_staff staff
-                 LEFT JOIN daily_log_entries latest ON latest.id = (
-                   SELECT movement.id
-                   FROM daily_log_entries movement
-                   WHERE movement.appointment_id = ?
-                     AND (
-                       movement.external_staff_id = staff.id
-                       OR (
-                         movement.external_staff_id IS NULL
-                         AND LOWER(TRIM(movement.person_name)) = LOWER(TRIM(staff.full_name))
-                       )
-                     )
-                     AND movement.event_type IN ('Llegada', 'Ingreso', 'Retiro')
-                   ORDER BY movement.entry_date DESC, movement.entry_time DESC, movement.id DESC
-                   LIMIT 1
-                 )
-                 WHERE staff.business_partner_id = ?`,
-                [input.appointmentId, businessPartnerId],
-              );
-            employeeStatus = employeeStatusRows[0];
+            const [staffRows] = await pool.execute<RowDataPacket[]>(
+              `SELECT id, full_name
+               FROM external_staff
+               WHERE business_partner_id = ?`,
+              [businessPartnerId],
+            );
+            const [movementRows] = await pool.execute<RowDataPacket[]>(
+              `SELECT external_staff_id, person_name, event_type
+               FROM daily_log_entries
+               WHERE appointment_id = ?
+                 AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
+               ORDER BY entry_date DESC, entry_time DESC, id DESC`,
+              [input.appointmentId],
+            );
+            const latestByStaff = new Map<number, string>();
+            for (const movement of movementRows) {
+              const movementStaffId = movement.external_staff_id === null
+                ? null
+                : Number(movement.external_staff_id);
+              const staff = movementStaffId === null
+                ? staffRows.find(
+                    (row) =>
+                      String(row.full_name).trim().toLocaleLowerCase() ===
+                      String(movement.person_name).trim().toLocaleLowerCase(),
+                  )
+                : staffRows.find((row) => Number(row.id) === movementStaffId);
+              if (staff && !latestByStaff.has(Number(staff.id))) {
+                latestByStaff.set(Number(staff.id), String(movement.event_type));
+              }
+            }
+            totalEmployees = staffRows.length;
+            insideCount = [...latestByStaff.values()].filter(
+              (event) => event === "Ingreso",
+            ).length;
+            retiredCount = [...latestByStaff.values()].filter(
+              (event) => event === "Retiro",
+            ).length;
           }
           let appointmentStatus: "Dentro" | "En proceso" | "Retirado";
-          const totalEmployees = Number(employeeStatus?.employee_count ?? 0);
           if (totalEmployees > 0) {
-            const insideCount = Number(employeeStatus?.inside_count ?? 0);
-            const retiredCount = Number(employeeStatus?.retired_count ?? 0);
             appointmentStatus = insideCount > 0
               ? "Dentro"
               : retiredCount === totalEmployees
                 ? "Retirado"
                 : "En proceso";
           } else {
-            const [latestAppointmentEvents] = await pool.execute<RowDataPacket[]>(
-              `WITH ranked_movements AS (
-                 SELECT d.event_type,
-                        ROW_NUMBER() OVER (
-                          PARTITION BY ${dailyLogSubjectKey}
-                          ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
-                        ) AS movement_rank
-                 FROM daily_log_entries d
-                 ${dailyLogJoins}
-                 WHERE d.appointment_id = ?
-                   AND d.event_type IN ('Llegada', 'Ingreso', 'Retiro')
-               )
-               SELECT event_type
-               FROM ranked_movements
-               WHERE movement_rank = 1`,
-              [input.appointmentId],
-            );
-            const latestEvents = latestAppointmentEvents.map((row) => row.event_type);
-            appointmentStatus = latestEvents.includes("Ingreso")
+            appointmentStatus = input.event === "Ingreso"
               ? "Dentro"
-              : latestEvents.includes("Llegada")
+              : input.event === "Llegada"
                 ? "En proceso"
                 : "Retirado";
           }
@@ -4515,7 +4567,8 @@ const server = Bun.serve({
         if (appointment.status === "Cancelada" || appointment.status === "Retirado") {
           return Response.json({ error: "No se puede enviar el pase de una cita cancelada o finalizada." }, { status: 409 });
         }
-        const isContractor = appointment.partner_type === "Contratista";
+        const isAppointmentContractor =
+          normalizePartnerType(appointment.partner_type) === "contratista";
         let requestBody: unknown = null;
         try {
           requestBody = await request.json();
@@ -4534,25 +4587,41 @@ const server = Bun.serve({
         ) {
           return Response.json({ error: "El empleado seleccionado no es válido." }, { status: 400 });
         }
-        if (requestedEmployeeId !== null && !isContractor) {
-          return Response.json({ error: "El envío por empleado solo está disponible para contratistas." }, { status: 400 });
-        }
-
         let recipientEmail = appointment.visitor_email.trim();
         let recipientName = appointment.visitor_name;
         let recipientExternalStaffId: number | null = null;
-        let equipmentLinkRecipient = isContractor && requestedEmployeeId === null;
+        let equipmentLinkRecipient =
+          isAppointmentContractor && requestedEmployeeId === null;
         if (typeof requestedEmployeeId === "number") {
           const [staffRows] = await pool.execute<RowDataPacket[]>(
-            `SELECT id, full_name, email
-             FROM external_staff
-             WHERE id = ? AND business_partner_id = ?
+            `SELECT staff.id, staff.full_name, staff.email, partner.partner_type
+             FROM external_staff AS staff
+             INNER JOIN business_partners AS partner
+               ON partner.id = staff.business_partner_id
+             WHERE staff.id = ?
+               AND (
+                 staff.business_partner_id = ?
+                 OR LOWER(TRIM(partner.name)) = LOWER(TRIM(?))
+               )
+             ORDER BY (staff.business_partner_id = ?) DESC
              LIMIT 1`,
-            [requestedEmployeeId, appointment.business_partner_id],
+            [
+              requestedEmployeeId,
+              appointment.business_partner_id,
+              appointment.company_name,
+              appointment.business_partner_id,
+            ],
           );
           const staff = staffRows[0];
           if (!staff) {
             return Response.json({ error: "El empleado no pertenece a la empresa de esta cita." }, { status: 404 });
+          }
+          const staffCompanyType = normalizePartnerType(staff.partner_type);
+          if (staffCompanyType !== "contratista") {
+            return Response.json({
+              code: "EMPLOYEE_COMPANY_NOT_CONTRACTOR",
+              error: `No se puede enviar el pase: ${staff.full_name} está vinculado a una empresa registrada como "${staff.partner_type}", no como contratista. Revisa el tipo de la empresa en Empresas y visitantes.`,
+            }, { status: 400 });
           }
           const staffEmail = typeof staff.email === "string" ? staff.email.trim() : "";
           if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(staffEmail)) {
@@ -4775,7 +4844,7 @@ const server = Bun.serve({
                               <td class="email-reminder-copy" valign="middle" style="padding:18px 18px 18px 0;">
                                 <p class="email-reminder-title" style="margin:0 0 7px;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;">Declara el equipo y las herramientas que llevarás</p>
                                 <p class="email-reminder-text" style="margin:0 0 12px;font-size:13px;line-height:20px;color:#c6d4e5;">Usa el enlace de un solo uso antes de tu visita. Al enviar el formulario quedará desactivado; solo podrás ingresar los artículos que registres aquí y que recepción verifique.</p>
-                                <a href="${safeEquipmentDeclarationLink}" style="display:inline-block;padding:10px 15px;border-radius:6px;background-color:#1760a4;color:#ffffff;text-decoration:none;font-size:13px;line-height:18px;font-weight:bold;">Declarar equipo y herramientas</a>
+                                <a class="email-reminder-button" href="${safeEquipmentDeclarationLink}" style="display:inline-block;padding:10px 15px;border-radius:6px;background-color:#1760a4;color:#ffffff;text-decoration:none;font-size:13px;line-height:18px;font-weight:bold;overflow-wrap:anywhere;word-break:break-word;">Declarar equipo y herramientas</a>
                               </td>
                               <td style="width:12px;background-color:#ef1f32;font-size:0;line-height:0;">&nbsp;</td>
                             </tr>
@@ -4811,6 +4880,7 @@ const server = Bun.serve({
                   .email-header-title { padding-left:12px !important; font-size:11px !important; line-height:16px !important; letter-spacing:1px !important; }
                   .email-header-decoration { display:none !important; width:0 !important; }
                   .email-hero-copy { padding:22px 17px 24px !important; }
+                  .email-hero-main { display:block !important; width:100% !important; }
                   .email-hero-title { font-size:27px !important; line-height:32px !important; }
                   .email-hero-greeting { font-size:14px !important; line-height:21px !important; }
                   .email-hero-aside { display:none !important; }
@@ -4826,8 +4896,9 @@ const server = Bun.serve({
                   .email-reminder-copy { padding:15px 14px !important; }
                   .email-reminder-title { font-size:13px !important; line-height:19px !important; }
                   .email-reminder-text { font-size:12px !important; line-height:18px !important; }
+                  .email-reminder-button { display:block !important; box-sizing:border-box !important; width:100% !important; text-align:center !important; }
                   .email-footer { padding:20px 12px 16px !important; }
-                  .email-footer-title { width:auto !important; padding:0 9px !important; font-size:9px !important; letter-spacing:1px !important; white-space:nowrap !important; }
+                  .email-footer-title { width:auto !important; padding:0 9px !important; font-size:9px !important; letter-spacing:1px !important; }
                 }
               </style>
             </head>
@@ -4836,7 +4907,7 @@ const server = Bun.serve({
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#030a10;">
                 <tr>
                   <td class="email-outer" align="center" style="padding:20px 10px;">
-                    <table role="presentation" class="email-shell" width="700" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:700px;background-color:#030a10;border:1px solid #14283a;">
+                    <table role="presentation" class="email-shell" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:700px;table-layout:fixed;background-color:#030a10;border:1px solid #14283a;">
                       <tr>
                         <td style="height:5px;background-color:#ef1f32;font-size:0;line-height:0;">&nbsp;</td>
                       </tr>
@@ -4859,13 +4930,13 @@ const server = Bun.serve({
                       </tr>
                       <tr>
                         <td class="email-gutter" style="padding:0 20px;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#06234a;border:1px solid #123d70;">
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;table-layout:fixed;background-color:#06234a;border:1px solid #123d70;">
                             <tr>
-                              <td class="email-hero-copy" valign="middle" style="padding:30px 30px 32px;border-left:5px solid #ef1f32;">
+                              <td class="email-hero-copy email-hero-main" valign="middle" style="padding:30px 30px 32px;border-left:5px solid #ef1f32;">
                                 <p style="display:inline-block;margin:0 0 12px;padding:8px 16px;background-color:#ef1f32;border-radius:20px;font-size:11px;line-height:15px;font-weight:bold;letter-spacing:1.3px;color:#ffffff;">PASE DIGITAL&nbsp;&nbsp; #${appointment.id}</p>
                                 <h1 class="email-hero-title" style="margin:0 0 14px;font-size:34px;line-height:39px;font-weight:700;color:#ffffff;">Tu visita está lista</h1>
                                 <span style="display:block;width:92px;height:4px;margin:0 0 18px;background-color:#ef1f32;font-size:0;line-height:0;">&nbsp;</span>
-                                <p class="email-hero-greeting" style="margin:0;font-size:16px;line-height:24px;color:#e2e9f3;">Hola <strong style="color:#ffffff;">${safeVisitorName}</strong>, aquí tienes tu pase de acceso a CyMEZ.</p>
+                                <p class="email-hero-greeting" style="margin:0;font-size:16px;line-height:24px;color:#e2e9f3;overflow-wrap:anywhere;word-break:break-word;">Hola <strong style="color:#ffffff;overflow-wrap:anywhere;word-break:break-word;">${safeVisitorName}</strong>, aquí tienes tu pase de acceso a CyMEZ.</p>
                               </td>
                               <td class="email-hero-aside" align="center" valign="middle" style="width:190px;padding:18px 20px;">
                                 <p style="margin:0 0 5px;font-size:15px;line-height:21px;letter-spacing:2px;color:#d7e4f2;">TU VISITA ES</p>
@@ -4878,7 +4949,7 @@ const server = Bun.serve({
                       </tr>
                       <tr>
                         <td class="email-gutter" style="padding:24px 20px 0;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#06111b;border:1px solid #1b3043;border-radius:12px;">
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;table-layout:fixed;background-color:#06111b;border:1px solid #1b3043;border-radius:12px;">
                             <tr>
                               <td class="email-info-heading" colspan="2" style="padding:20px 22px 14px;font-size:14px;line-height:20px;font-weight:bold;letter-spacing:.7px;color:#f4f7fb;">
                                 INFORMACIÓN DE TU VISITA
@@ -4891,7 +4962,7 @@ const server = Bun.serve({
                                   <tr>
                                     <td class="email-info-cell email-info-cell-first" width="50%" valign="top" style="padding:10px 12px 14px 0;border-bottom:1px solid #233547;">
                                       <p style="margin:0 0 7px;font-size:10px;line-height:14px;font-weight:bold;letter-spacing:1px;color:#91a5bd;">FECHA</p>
-                                      <p style="margin:0;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;">${safeVisitDate}</p>
+                                      <p style="margin:0;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;overflow-wrap:anywhere;word-break:break-word;">${safeVisitDate}</p>
                                     </td>
                                     <td class="email-info-cell email-info-cell-first" width="50%" valign="top" style="padding:10px 0 14px 12px;border-bottom:1px solid #233547;border-left:1px solid #233547;">
                                       <p style="margin:0 0 7px;font-size:10px;line-height:14px;font-weight:bold;letter-spacing:1px;color:#91a5bd;">HORA</p>
@@ -4901,11 +4972,11 @@ const server = Bun.serve({
                                   <tr>
                                     <td class="email-info-cell" width="50%" valign="top" style="padding:14px 12px 4px 0;">
                                       <p style="margin:0 0 7px;font-size:10px;line-height:14px;font-weight:bold;letter-spacing:1px;color:#91a5bd;">EMPRESA</p>
-                                      <p style="margin:0;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;">${safeCompanyName}</p>
+                                      <p style="margin:0;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;overflow-wrap:anywhere;word-break:break-word;">${safeCompanyName}</p>
                                     </td>
                                     <td class="email-info-cell" width="50%" valign="top" style="padding:14px 0 4px 12px;border-left:1px solid #233547;">
                                       <p style="margin:0 0 7px;font-size:10px;line-height:14px;font-weight:bold;letter-spacing:1px;color:#91a5bd;">TE RECIBE</p>
-                                      <p style="margin:0;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;">${safeHostName}</p>
+                                      <p style="margin:0;font-size:14px;line-height:20px;font-weight:bold;color:#f4f7fb;overflow-wrap:anywhere;word-break:break-word;">${safeHostName}</p>
                                     </td>
                                   </tr>
                                 </table>
@@ -6292,7 +6363,7 @@ const server = Bun.serve({
     ) {
       publishRealtimeUpdate();
     }
-    return response;
+    return addCorsHeaders(response, corsOrigin);
   },
 });
 

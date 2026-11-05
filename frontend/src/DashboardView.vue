@@ -19,7 +19,6 @@ import type {
   Host,
   HostAccountOption,
   AuthenticatedUser,
-  SectionAccess,
   SystemAccessRole,
 } from "./stores/types";
 
@@ -171,13 +170,14 @@ const isHost = computed(
 if (isHost.value) appointmentFilter.value = "all";
 const currentRoleLabel = computed(() =>
   currentUser.value.isAdmin
-    ? "Programador"
+    ? "Administrador"
     : isReception.value
       ? "Recepción"
       : "Anfitrión",
 );
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
+const accountMenuRef = ref<HTMLElement | null>(null);
 const appointmentDialogOpen = ref(false);
 const editingAppointmentId = ref<number | null>(null);
 const qrDialogOpen = ref(false);
@@ -285,7 +285,7 @@ watch(accessAccounts, (accounts) => {
       accessRoles: [
         ...(sections.includes("administrador") ? ["Administrador" as const] : []),
         ...(sections.includes("recepcion") ? ["Recepción" as const] : []),
-        ...(sections.includes("anfitriones") ? ["Anfitriones" as const] : []),
+        "Anfitriones" as const,
       ],
     };
   });
@@ -411,7 +411,20 @@ function startRealtimeFallback() {
   }, 3000);
 }
 
+function closeAccountMenuOnOutsideClick(event: MouseEvent) {
+  const target = event.target;
+  if (target instanceof Node && !accountMenuRef.value?.contains(target)) {
+    privateMenuOpen.value = false;
+  }
+}
+
+function closeAccountMenuOnEscape(event: KeyboardEvent) {
+  if (event.key === "Escape") privateMenuOpen.value = false;
+}
+
 onMounted(() => {
+  document.addEventListener("click", closeAccountMenuOnOutsideClick);
+  document.addEventListener("keydown", closeAccountMenuOnEscape);
   if (currentUser.value.isAdmin || isReception.value) void loadDepartments();
   if (currentUser.value.isAdmin || isReception.value || isHost.value) {
     void loadBusinessDirectory();
@@ -434,6 +447,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener("click", closeAccountMenuOnOutsideClick);
+  document.removeEventListener("keydown", closeAccountMenuOnEscape);
   realtimeEvents?.close();
   realtimeEvents = null;
   stopRealtimeFallback();
@@ -1011,7 +1026,7 @@ async function createAppointmentQr(appointment: Appointment, staff?: ExternalSta
   }), {
     errorCorrectionLevel: "M",
     margin: 2,
-    width: 320,
+    width: 600,
     color: { dark: "#10243a", light: "#ffffff" },
   });
 }
@@ -1382,51 +1397,6 @@ async function submitHost() {
     return;
   }
 
-  let hostSectionAccess: SectionAccess[] = selectedAccount
-    ? [
-      ...(accessAccounts.value.find((account) => account.login === login)?.sectionAccess ?? []),
-      "anfitriones",
-    ]
-    : [];
-  if (selectedAccount) {
-    hostSaving.value = true;
-    try {
-      const response = await fetch(`/api/host-access/${encodeURIComponent(login)}`, {
-        method: "POST",
-      });
-      const result = await response.json() as {
-        sectionAccess?: SectionAccess[];
-        error?: string;
-      };
-      if (!response.ok) {
-        showToast(result.error ?? "No se pudo asignar el acceso a Anfitriones.");
-        return;
-      }
-      if (
-        !Array.isArray(result.sectionAccess) ||
-        !result.sectionAccess.every(
-          (section) => section === "recepcion" || section === "anfitriones",
-        )
-      ) {
-        console.error("La API devolvió permisos de anfitrión con formato inválido.");
-        showToast("Se guardó el permiso, pero no se pudo actualizar el registro.");
-        return;
-      }
-      hostSectionAccess = result.sectionAccess;
-      accessAccounts.value = accessAccounts.value.map((account) =>
-        account.login === login
-          ? { ...account, sectionAccess: hostSectionAccess }
-          : account,
-      );
-    } catch (error) {
-      console.error("Failed to assign host section access:", error);
-      showToast("No se pudo conectar con el servidor para asignar el acceso a Anfitriones.");
-      return;
-    } finally {
-      hostSaving.value = false;
-    }
-  }
-
   hostSaving.value = true;
   try {
     const hostId = editingHostId.value;
@@ -1602,7 +1572,110 @@ async function submitAppointment() {
   }
 }
 
-function downloadAppointmentQr(
+function escapeSvgText(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function wrapPassName(value: string, maxLength = 25) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+
+  for (const word of words) {
+    if (word.length > maxLength) {
+      if (line) lines.push(line);
+      line = "";
+      for (let index = 0; index < word.length; index += maxLength) {
+        lines.push(word.slice(index, index + maxLength));
+      }
+      continue;
+    }
+    if (line && `${line} ${word}`.length > maxLength) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : ["VISITANTE"];
+}
+
+function createPrintablePassSvg(
+  name: string,
+  referenceCode: string,
+  qrDataUrl: string,
+  logoDataUrl: string,
+) {
+  const width = 768;
+  const nameLines = wrapPassName(name, 34);
+  const nameBandY = 405;
+  const nameBandHeight = Math.max(112, nameLines.length * 42 + 26);
+  const referenceTitleY = nameBandY + nameBandHeight + 42;
+  const referencePillY = referenceTitleY + 21;
+  const qrTop = referencePillY + 105;
+  const qrSize = 500;
+  const qrFrameSize = qrSize + 44;
+  const footerY = qrTop + qrFrameSize + 46;
+  const height = Math.max(1376, footerY + 112);
+  const longestNameLine = Math.max(...nameLines.map((line) => line.length));
+  const nameFontSize =
+    nameLines.length > 1 || longestNameLine > 24 ? 30 : 36;
+  const nameBandCenterY = nameBandY + nameBandHeight / 2;
+  const nameStartY =
+    nameBandCenterY - ((nameLines.length - 1) * 37) / 2 + nameFontSize * 0.34;
+  const nameText = nameLines
+    .map((line, index) =>
+      `<text x="458" y="${nameStartY + index * 37}" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="${nameFontSize}" font-weight="800" fill="#ffffff">${escapeSvgText(line)}</text>`,
+    )
+    .join("");
+  const safeReference = escapeSvgText(referenceCode || "SIN REFERENCIA");
+  const qrInset = 22;
+  const qrFrameX = (width - qrFrameSize) / 2;
+  const qrImageSize = qrSize;
+  const logoWidth = 250;
+  const logoHeight = 308;
+  const logoX = (width - logoWidth) / 2;
+  const logoY = 42;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <defs>
+      <clipPath id="pass-card-clip"><rect x="3" y="3" width="${width - 6}" height="${height - 6}" rx="48"/></clipPath>
+    </defs>
+    <g clip-path="url(#pass-card-clip)">
+    <rect width="100%" height="100%" fill="#ffffff"/>
+    <path d="M0 0h${width * .32}L0 ${height * .27}z" fill="#071a36"/>
+    <path d="M${width * .27} 0h${width * .09}L0 ${height * .34}v-${height * .08}z" fill="#e21b2d"/>
+    <path d="M0 ${height * .29}L${width * .29} 0h${width * .04}L0 ${height * .34}z" fill="#d8dde5"/>
+    <path d="M768 ${height * .72}V${height}H492z" fill="#071a36"/>
+    <path d="M768 ${height * .68}v${height * .07}L553 ${height}h-61z" fill="#e21b2d"/>
+    <path d="M768 ${height * .66}v${height * .02}L520 ${height}h-28z" fill="#d8dde5"/>
+    <image x="${logoX}" y="${logoY}" width="${logoWidth}" height="${logoHeight}" href="${logoDataUrl}" preserveAspectRatio="xMidYMid meet"/>
+    <rect x="42" y="${nameBandY}" width="684" height="${nameBandHeight}" rx="52" fill="#071a36" stroke="#e21b2d" stroke-width="8"/>
+    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" transform="translate(80 ${nameBandCenterY - 36}) scale(3)" fill="#ffffff"/>
+    <path d="M170 ${nameBandY + 17}v${nameBandHeight - 34}" stroke="#ffffff" stroke-width="3" opacity=".8"/>
+    ${nameText}
+    <path d="M30 ${referenceTitleY}h130m448 0h130" stroke="#e21b2d" stroke-width="5"/>
+    <rect x="174" y="${referenceTitleY - 25}" width="420" height="48" rx="24" fill="#ffffff" stroke="#7b111b" stroke-width="3"/>
+    <text x="384" y="${referenceTitleY + 7}" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="25" font-weight="800" letter-spacing="1" fill="#071a36">CÓDIGO DE REFERENCIA</text>
+    <rect x="202" y="${referencePillY}" width="364" height="58" rx="29" fill="#d20d1b"/>
+    <text x="384" y="${referencePillY + 40}" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="32" font-weight="800" letter-spacing="2" fill="#ffffff">${safeReference}</text>
+    <rect x="${qrFrameX}" y="${qrTop}" width="${qrFrameSize}" height="${qrFrameSize}" rx="44" fill="#ffffff" stroke="#071a36" stroke-width="7"/>
+    <rect x="${qrFrameX + 8}" y="${qrTop + 8}" width="${qrFrameSize - 16}" height="${qrFrameSize - 16}" rx="38" fill="none" stroke="#e21b2d" stroke-width="6"/>
+    <image x="${(width - qrImageSize) / 2}" y="${qrTop + qrInset}" width="${qrImageSize}" height="${qrImageSize}" href="${qrDataUrl}" preserveAspectRatio="xMidYMid meet"/>
+    <text x="384" y="${footerY + 14}" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="17" font-weight="800" letter-spacing="4.5" fill="#071a36">ESCANEA EL CÓDIGO QR</text>
+    <text x="384" y="${footerY + 50}" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="17" font-weight="800" letter-spacing="4.5" fill="#071a36">PARA REGISTRAR TU VISITA</text>
+    </g>
+    <rect x="3" y="3" width="${width - 6}" height="${height - 6}" rx="48" fill="none" stroke="#071a36" stroke-width="6"/>
+  </svg>`;
+}
+
+async function downloadAppointmentQr(
   appointment: Appointment,
   dataUrl = qrDataUrl.value,
   staff = qrExternalStaff.value,
@@ -1611,12 +1684,67 @@ function downloadAppointmentQr(
     showToast("El QR aún no está listo para descargarse.");
     return;
   }
-  const link = document.createElement("a");
-  link.href = dataUrl;
-  link.download = staff
-    ? `visitas-cita-${appointment.id}-empleado-${staff.id}.png`
-    : `visitas-cita-${appointment.id}.png`;
-  link.click();
+  const personName = staff?.fullName ?? appointment.visitor;
+  try {
+    const logoResponse = await fetch("/images/cymez-pass-logo.png");
+    if (!logoResponse.ok) {
+    throw new Error(`No se pudo cargar el logo del pase (${logoResponse.status}).`);
+    }
+    const logoBlob = await logoResponse.blob();
+    const logoDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("No se pudo leer el logo del pase."));
+    };
+    reader.onerror = () =>
+      reject(new Error("No se pudo leer el logo del pase."));
+    reader.readAsDataURL(logoBlob);
+    });
+    const svg = createPrintablePassSvg(
+    personName,
+    appointment.referenceCode,
+    dataUrl,
+    logoDataUrl,
+    );
+    const svgUrl = URL.createObjectURL(
+    new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
+    );
+    let downloadUrl: string | null = null;
+    try {
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("No se pudo preparar la plantilla del pase."));
+      image.src = svgUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("No se pudo preparar la descarga PNG.");
+    context.drawImage(image, 0, 0);
+    const png = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("No se pudo convertir el pase a PNG."));
+      }, "image/png");
+    });
+    downloadUrl = URL.createObjectURL(png);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = `pase-visita-${personName.trim().replace(/[^a-zA-Z0-9]+/g, "-")}.png`;
+    link.click();
+    window.setTimeout(() => {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    }, 1000);
+    } finally {
+    URL.revokeObjectURL(svgUrl);
+    }
+  } catch (error) {
+    console.error("Failed to create printable appointment QR:", error);
+    showToast("No se pudo preparar el PNG del pase.");
+  }
 }
 
 async function deleteAppointment(appointment: Appointment) {
@@ -2110,7 +2238,7 @@ async function removeBusinessPartner(id: number) {
         <span class="brand-product">CONTROL DE<br />VISITANTES</span>
       </div>
 
-      <div class="topbar-account">
+      <div ref="accountMenuRef" class="topbar-account">
         <div class="topbar-identity">
           <span class="topbar-shield"><svg class="icon"><use href="#i-shield" /></svg></span>
           <span><strong>CYMEZ RECEP</strong><small>CONTROL DE VISITANTES</small></span>
@@ -2134,7 +2262,7 @@ async function removeBusinessPartner(id: number) {
             <span class="avatar"><svg class="icon"><use href="#i-user" /></svg></span>
             <span class="account-dropdown-identity">
               <strong>{{ currentUser.name || currentUser.login }}</strong>
-              <small>{{ currentRoleLabel }} · Acceso corporativo</small>
+              <small>{{ currentRoleLabel }}</small>
             </span>
           </div>
           <span class="theme-toggle-label">Apariencia</span>
@@ -2230,7 +2358,7 @@ async function removeBusinessPartner(id: number) {
 
       <div class="sidebar-footer">
         <svg class="icon"><use href="#i-shield" /></svg>
-        <span>{{ currentRoleLabel.toLocaleUpperCase("es-MX") }}<br /><small>Acceso corporativo</small></span>
+        <span>{{ currentRoleLabel.toLocaleUpperCase("es-MX") }}</span>
       </div>
     </aside>
 
@@ -2395,6 +2523,7 @@ async function removeBusinessPartner(id: number) {
         v-else-if="activeSection === 'Equipo y herramientas'"
         :theme="dashboardTheme"
         :is-admin="currentUser.isAdmin"
+        :is-host="isHost"
       />
 
       <DailyLogSection

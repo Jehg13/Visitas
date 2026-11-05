@@ -1,5 +1,6 @@
 x-backend-environment: &backend-environment
   NODE_ENV: production
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://recep.cymezapi.com}
   DB_HOST: ${DB_HOST:?Set DB_HOST in .env.production}
   DB_PORT: ${DB_PORT:-3306}
   DB_NAME: ${DB_NAME:?Set DB_NAME in .env.production}
