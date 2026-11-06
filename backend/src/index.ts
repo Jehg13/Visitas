@@ -2466,19 +2466,49 @@ async function canReadExternalModules(user: AuthenticatedUser) {
     (await hasHostOnlyAccess(user));
 }
 
+function hostNamesForUser(user: AuthenticatedUser) {
+  return [...new Set([user.name?.trim(), user.login]
+    .filter((name): name is string => Boolean(name))
+    .map((name) => name.trim().toLocaleLowerCase()))];
+}
+
+function equipmentDeclarationVisibility(user: AuthenticatedUser, hostOnlyAccess: boolean) {
+  if (!hostOnlyAccess) return { condition: "1 = 1", parameters: [] as string[] };
+  const hostNames = hostNamesForUser(user);
+  return {
+    condition: `((d.created_by = ? AND EXISTS (
+      SELECT 1 FROM business_partners owned_partner
+      WHERE owned_partner.id = d.business_partner_id
+        AND owned_partner.created_by_login = ?
+    )) OR EXISTS (
+      SELECT 1 FROM appointments scoped_appointment
+      WHERE scoped_appointment.id = d.appointment_id
+        AND (scoped_appointment.created_by_login = ?
+          OR LOWER(TRIM(scoped_appointment.host_name)) IN (${hostNames.map(() => "?").join(", ")}))
+    ))`,
+    parameters: [user.login, user.login, user.login, ...hostNames],
+  };
+}
+
 async function handleEquipmentRequest(request: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/equipment/options" && request.method === "GET") {
     try {
       const user = await getRequestUser(request);
       if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
-      if (!(await canManageExternalModules(user))) {
+      const hostOnlyAccess = await hasHostOnlyAccess(user);
+      if (!user.isAdmin && !hostOnlyAccess) {
         return Response.json({ error: "No tienes permiso para el módulo de equipo." }, { status: 403 });
       }
+      const hostNames = hostOnlyAccess ? hostNamesForUser(user) : [];
+      const partnerOwnerCondition = hostOnlyAccess ? "AND created_by_login = ?" : "";
+      const partnerOwnerParameters = hostOnlyAccess ? [user.login] : [];
       const [partners] = await pool.query<RowDataPacket[]>(
         `SELECT id, name, partner_type FROM business_partners
          WHERE is_active = TRUE
            AND partner_type = 'Contratista'
+           ${partnerOwnerCondition}
          ORDER BY name`,
+        partnerOwnerParameters,
       );
       const [staff] = await pool.query<RowDataPacket[]>(
         `SELECT s.id, s.business_partner_id, s.full_name, p.name AS company_name
@@ -2486,7 +2516,9 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          INNER JOIN business_partners p ON p.id = s.business_partner_id
          WHERE p.is_active = TRUE
            AND p.partner_type = 'Contratista'
+           ${hostOnlyAccess ? "AND p.created_by_login = ?" : ""}
          ORDER BY s.full_name`,
+        partnerOwnerParameters,
       );
       const [appointments] = await pool.query<RowDataPacket[]>(
         `SELECT a.id, a.business_partner_id, a.visitor_record_id, a.visitor_name,
@@ -2496,10 +2528,15 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          FROM appointments a
          INNER JOIN business_partners p ON p.id = a.business_partner_id
          WHERE p.partner_type = 'Contratista'
+           ${hostOnlyAccess ? "AND p.created_by_login = ?" : ""}
            AND a.status NOT IN ('Cancelada', 'Retirado')
            AND a.visit_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+           ${hostOnlyAccess
+             ? `AND (a.created_by_login = ? OR LOWER(TRIM(a.host_name)) IN (${hostNames.map(() => "?").join(", ")}))`
+             : ""}
          ORDER BY a.visit_date DESC, a.visit_time DESC
          LIMIT 200`,
+        hostOnlyAccess ? [user.login, user.login, ...hostNames] : [],
       );
       return Response.json({
         partners: partners.map((row) => ({
@@ -2537,6 +2574,8 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
   try {
     const user = await getRequestUser(request);
     if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+    const hostOnlyAccess = await hasHostOnlyAccess(user);
+    const declarationVisibility = equipmentDeclarationVisibility(user, hostOnlyAccess);
     const receptionistChecklistAccess = !user.isAdmin &&
       await hasSectionAccess(user, "recepcion") &&
       (
@@ -2564,8 +2603,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       try {
         await connection.beginTransaction();
         const [declarations] = await connection.execute<RowDataPacket[]>(
-          "SELECT id, status FROM equipment_declarations WHERE id = ? LIMIT 1 FOR UPDATE",
-          [declarationId],
+          `SELECT d.id, d.status FROM equipment_declarations d
+           WHERE d.id = ? AND ${declarationVisibility.condition}
+           LIMIT 1 FOR UPDATE`,
+          [declarationId, ...declarationVisibility.parameters],
         );
         if (!declarations[0]) {
           await connection.rollback();
@@ -2620,8 +2661,9 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          INNER JOIN business_partners p
            ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
          WHERE p.partner_type = 'Contratista'
+           AND ${declarationVisibility.condition}
            AND (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)`,
-        [search, term, term],
+        [...declarationVisibility.parameters, search, term, term],
       );
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT d.id, d.person_name, d.status, d.created_by,
@@ -2643,10 +2685,11 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
            ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
          LEFT JOIN appointments a ON a.id = d.appointment_id
          WHERE p.partner_type = 'Contratista'
+           AND ${declarationVisibility.condition}
            AND (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)
          ORDER BY d.created_at DESC
          LIMIT ? OFFSET ?`,
-        [search, term, term, pageSize, (page - 1) * pageSize],
+        [...declarationVisibility.parameters, search, term, term, pageSize, (page - 1) * pageSize],
       );
       return Response.json({
         total: Number(countRows[0].total),
@@ -2704,9 +2747,11 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         );
       }
 
+      const partnerOwnerCondition = hostOnlyAccess ? "AND created_by_login = ?" : "";
       const [partnerRows] = await pool.execute<RowDataPacket[]>(
-        "SELECT id, partner_type FROM business_partners WHERE id = ? AND is_active = TRUE LIMIT 1",
-        [businessPartnerId],
+        `SELECT id, partner_type FROM business_partners
+         WHERE id = ? AND is_active = TRUE ${partnerOwnerCondition} LIMIT 1`,
+        hostOnlyAccess ? [businessPartnerId, user.login] : [businessPartnerId],
       );
       if (partnerRows.length === 0) {
         return Response.json({ error: "La empresa no existe o está inactiva." }, { status: 400 });
@@ -2730,12 +2775,18 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       }
 
       if (appointmentId !== null) {
+        const appointmentHostNames = hostOnlyAccess ? hostNamesForUser(user) : [];
         const [appointmentRows] = await pool.execute<RowDataPacket[]>(
           `SELECT visitor_name, visitor_record_id FROM appointments
            WHERE id = ? AND business_partner_id = ?
              AND status NOT IN ('Cancelada', 'Retirado')
+             ${hostOnlyAccess
+               ? `AND (created_by_login = ? OR LOWER(TRIM(host_name)) IN (${appointmentHostNames.map(() => "?").join(", ")}))`
+               : ""}
            LIMIT 1`,
-          [appointmentId, businessPartnerId],
+          hostOnlyAccess
+            ? [appointmentId, businessPartnerId, user.login, ...appointmentHostNames]
+            : [appointmentId, businessPartnerId],
         );
         if (appointmentRows.length === 0) {
           return Response.json({ error: "La cita no existe o no corresponde a la empresa seleccionada." }, { status: 400 });
@@ -2803,8 +2854,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          INNER JOIN business_partners p
            ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
          LEFT JOIN appointments a ON a.id = d.appointment_id
-         WHERE d.id = ? AND p.partner_type = 'Contratista' LIMIT 1`,
-        [declarationId],
+         WHERE d.id = ? AND p.partner_type = 'Contratista'
+           AND ${declarationVisibility.condition}
+         LIMIT 1`,
+        [declarationId, ...declarationVisibility.parameters],
       );
       const declaration = declarationRows[0];
       if (!declaration) return Response.json({ error: "No se encontró la declaración." }, { status: 404 });
@@ -2900,8 +2953,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
 
     if (request.method === "POST" && declarationId !== null && (action === "link" || action === "revoke")) {
       const [rows] = await pool.execute<RowDataPacket[]>(
-        "SELECT id, status FROM equipment_declarations WHERE id = ? LIMIT 1",
-        [declarationId],
+        `SELECT d.id, d.status FROM equipment_declarations d
+         WHERE d.id = ? AND ${declarationVisibility.condition}
+         LIMIT 1`,
+        [declarationId, ...declarationVisibility.parameters],
       );
       const declaration = rows[0];
       if (!declaration) return Response.json({ error: "No se encontró la declaración." }, { status: 404 });
@@ -2955,8 +3010,9 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                   a.status AS appointment_status
            FROM equipment_declarations d
            LEFT JOIN appointments a ON a.id = d.appointment_id
-           WHERE d.id = ? LIMIT 1 FOR UPDATE`,
-          [declarationId],
+           WHERE d.id = ? AND ${declarationVisibility.condition}
+           LIMIT 1 FOR UPDATE`,
+          [declarationId, ...declarationVisibility.parameters],
         );
         if (!declarations[0]) {
           await connection.rollback();
