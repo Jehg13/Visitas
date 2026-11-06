@@ -4569,7 +4569,11 @@ const server = Bun.serve({
             );
           }
         }
-        if (input.event === "Retiro" && input.appointmentId !== null) {
+        if (
+          input.event === "Retiro" &&
+          input.appointmentId !== null &&
+          latestMovement === "Ingreso"
+        ) {
           const [equipmentDeclarations] = await pool.execute<RowDataPacket[]>(
             `SELECT ei.status AS exit_inspection_status
              FROM equipment_declarations ed
@@ -5045,27 +5049,28 @@ const server = Bun.serve({
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>Tu pase de visita CyMEZ</title>
               <style>
-                @media only screen and (max-width: 620px) {
+                @media only screen and (max-width: 760px) {
                   .email-shell { width:100% !important; max-width:100% !important; }
-                  .email-outer { padding:10px 8px !important; }
-                  .email-gutter { padding-left:12px !important; padding-right:12px !important; }
-                  .email-header { padding-top:14px !important; padding-bottom:14px !important; }
-                  .email-logo-cell { width:74px !important; }
-                  .email-logo { width:64px !important; }
-                  .email-header-title { padding-left:12px !important; font-size:11px !important; line-height:16px !important; letter-spacing:1px !important; }
+                  .email-outer { padding:8px 4px !important; }
+                  .email-gutter { padding-left:8px !important; padding-right:8px !important; }
+                  .email-header { padding-top:12px !important; padding-bottom:12px !important; }
+                  .email-logo-cell { width:70px !important; }
+                  .email-logo { width:58px !important; }
+                  .email-header-title { padding-left:10px !important; font-size:11px !important; line-height:16px !important; letter-spacing:.8px !important; }
                   .email-header-decoration { display:none !important; width:0 !important; }
-                  .email-hero-copy { padding:22px 17px 24px !important; }
-                  .email-hero-main { display:block !important; width:auto !important; max-width:100% !important; box-sizing:border-box !important; }
-                  .email-hero-title { font-size:27px !important; line-height:32px !important; }
+                  .email-hero-copy { padding:20px 16px 21px !important; }
+                  .email-hero-main { display:block !important; width:100% !important; max-width:100% !important; box-sizing:border-box !important; }
+                  .email-hero-title { font-size:25px !important; line-height:30px !important; }
                   .email-hero-greeting { font-size:14px !important; line-height:21px !important; }
                   .email-hero-aside { display:none !important; }
                   .email-info-heading { padding:16px 16px 12px !important; font-size:12px !important; }
-                  .email-info-column, .email-qr-column { display:block !important; width:auto !important; max-width:100% !important; padding:0 14px 14px !important; box-sizing:border-box !important; }
-                  .email-info-cell { display:block !important; width:auto !important; max-width:100% !important; padding:10px 0 !important; border-left:0 !important; box-sizing:border-box !important; }
+                  .email-info-column, .email-qr-column { display:block !important; width:100% !important; max-width:100% !important; padding:0 14px 14px !important; box-sizing:border-box !important; }
+                  .email-info-table { width:100% !important; max-width:100% !important; table-layout:fixed !important; }
+                  .email-info-cell { display:block !important; width:100% !important; max-width:100% !important; min-width:0 !important; padding:10px 0 !important; border-left:0 !important; box-sizing:border-box !important; }
                   .email-info-cell-first { border-bottom:1px solid #233547 !important; }
                   .email-qr-column { padding-top:4px !important; }
-                  .email-qr-card { width:100% !important; max-width:290px !important; margin:0 auto !important; }
-                  .email-qr-cell { padding:12px 10px 8px !important; }
+                  .email-qr-card { width:100% !important; max-width:340px !important; margin:0 auto !important; }
+                  .email-qr-cell { padding:12px 12px 8px !important; }
                   .email-qr-image { width:220px !important; max-width:100% !important; }
                   .email-reminder-icon { display:none !important; width:0 !important; padding:0 !important; }
                   .email-reminder-copy { padding:15px 14px !important; }
@@ -5133,7 +5138,7 @@ const server = Bun.serve({
                             </tr>
                             <tr>
                               <td class="email-info-column" width="62%" valign="top" style="padding:0 8px 20px 22px;">
-                                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                                <table role="presentation" class="email-info-table" width="100%" cellspacing="0" cellpadding="0" border="0">
                                   <tr>
                                     <td class="email-info-cell email-info-cell-first" width="50%" valign="top" style="padding:10px 12px 14px 0;border-bottom:1px solid #233547;">
                                       <p style="margin:0 0 7px;font-size:10px;line-height:14px;font-weight:bold;letter-spacing:1px;color:#91a5bd;">FECHA</p>
