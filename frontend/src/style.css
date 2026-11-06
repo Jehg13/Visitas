@@ -4033,7 +4033,7 @@ input:focus-visible {
 
 @media (orientation: landscape) and (min-width: 768px) and (any-pointer: coarse) {
   .login-page.is-tablet-visitor-landing {
-    --tablet-landing-offset: clamp(14px, 3vh, 30px);
+    --tablet-landing-offset: max(clamp(26px, 5vh, 48px), env(safe-area-inset-top));
     position: relative;
     display: block;
     width: 100%;
@@ -11373,107 +11373,6 @@ input:focus-visible {
   }
 }
 
-@media (orientation: landscape) and (min-width: 681px) and (any-pointer: coarse) {
-  .visitor-kiosk {
-    padding: clamp(10px, 2vh, 20px) clamp(18px, 3vw, 40px);
-  }
-
-  .visitor-kiosk-header {
-    min-height: clamp(48px, 8vh, 64px);
-  }
-
-  .visitor-kiosk-welcome {
-    width: 100%;
-    height: clamp(400px, calc(100dvh - 104px), 620px);
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .visitor-kiosk-welcome-main {
-    min-height: 0;
-    flex: 1 1 0;
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 0.8fr);
-    gap: clamp(8px, 2vw, 24px);
-    padding: clamp(16px, 3.2vw, 44px);
-  }
-
-  .visitor-kiosk-welcome-copy {
-    min-width: 0;
-  }
-
-  .visitor-kiosk-welcome-copy .visitor-kiosk-eyebrow {
-    gap: clamp(8px, 1.4vw, 14px);
-    font-size: clamp(0.58rem, 1vw, 0.72rem);
-    letter-spacing: clamp(0.12em, 0.22vw, 0.2em);
-  }
-
-  .visitor-kiosk-welcome-mark {
-    width: clamp(42px, 5vw, 60px);
-    height: clamp(38px, 4.4vw, 54px);
-    flex-basis: clamp(42px, 5vw, 60px);
-  }
-
-  .visitor-kiosk-welcome h1 {
-    margin: clamp(12px, 2vh, 20px) 0 clamp(10px, 1.8vh, 16px);
-    font-size: clamp(1.8rem, 4.2vw, 3.35rem);
-  }
-
-  .visitor-kiosk-welcome-accent {
-    width: clamp(78px, 10vw, 120px);
-    height: 4px;
-    margin-bottom: clamp(10px, 1.8vh, 18px);
-  }
-
-  .visitor-kiosk-intro {
-    font-size: clamp(0.9rem, 1.45vw, 1.08rem);
-    line-height: 1.5;
-  }
-
-  .visitor-kiosk-welcome .visitor-kiosk-primary {
-    min-height: clamp(46px, 7vh, 56px);
-    gap: 8px;
-    padding-inline: clamp(14px, 2vw, 24px);
-    font-size: clamp(0.82rem, 1.25vw, 0.98rem);
-  }
-
-  .visitor-kiosk-welcome-visual {
-    min-width: 0;
-    min-height: 0;
-    height: 100%;
-  }
-
-  .visitor-kiosk-tablet {
-    width: min(130%, clamp(230px, 32vw, 420px));
-    height: min(100%, clamp(210px, 44vh, 360px));
-    transform: translateY(clamp(10px, 4vh, 34px));
-  }
-
-  .visitor-kiosk-features {
-    min-height: clamp(76px, 12vh, 102px);
-    margin-top: 0;
-    padding: 8px clamp(12px, 3vw, 40px);
-  }
-
-  .visitor-kiosk-features > div {
-    gap: clamp(6px, 1vw, 12px);
-    padding: 6px clamp(4px, 0.8vw, 10px);
-  }
-
-  .visitor-kiosk-features svg {
-    width: clamp(25px, 3vw, 36px);
-    height: clamp(25px, 3vw, 36px);
-    flex-basis: clamp(25px, 3vw, 36px);
-  }
-
-  .visitor-kiosk-features strong {
-    font-size: clamp(0.7rem, 1.2vw, 0.9rem);
-  }
-
-  .visitor-kiosk-features small {
-    font-size: clamp(0.62rem, 1vw, 0.78rem);
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .visitor-kiosk *,
