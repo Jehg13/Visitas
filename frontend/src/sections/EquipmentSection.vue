@@ -612,7 +612,7 @@ async function deleteDeclaration(declaration: EquipmentDeclaration) {
     <Teleport to="body">
       <div
         v-if="createOpen"
-        class="dashboard-app modal-backdrop equipment-create-backdrop"
+        class="dashboard-app dashboard-modal-backdrop modal-backdrop equipment-create-backdrop"
         :data-theme="props.theme"
         @click.self="createOpen = false"
       >

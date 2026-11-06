@@ -3184,15 +3184,9 @@
   box-shadow: inset 3px 0 0 var(--ds-blue), 0 0 18px rgb(0 112 255 / 10%);
 }
 
-.dashboard-app.equipment-create-backdrop {
-  background: rgb(2 8 17 / 42%);
-  backdrop-filter: blur(3px);
-}
-
 .dashboard-app .dashboard-main :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
 .dashboard-app.dashboard-modal-backdrop :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
-.dashboard-app.equipment-detail-backdrop .equipment-detail-dialog,
-.dashboard-app.equipment-create-backdrop .equipment-dialog {
+.dashboard-app.equipment-detail-backdrop .equipment-detail-dialog {
   border-color: color-mix(in srgb, var(--ds-blue) 50%, var(--ds-border));
   background:
     radial-gradient(ellipse at 100% 0%, rgb(0 105 245 / 16%), transparent 42%),
@@ -3480,8 +3474,7 @@
 
 .dashboard-app[data-theme="light"] .dashboard-main :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
 .dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
-.dashboard-app.equipment-detail-backdrop[data-theme="light"] .equipment-detail-dialog,
-.dashboard-app.equipment-create-backdrop[data-theme="light"] .equipment-dialog {
+.dashboard-app.equipment-detail-backdrop[data-theme="light"] .equipment-detail-dialog {
   background:
     radial-gradient(ellipse at 100% 0%, rgb(8 120 249 / 6%), transparent 42%),
     linear-gradient(145deg, #fff, #f5f9fe);
