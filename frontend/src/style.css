@@ -36,6 +36,42 @@ html {
   overflow-x: clip;
 }
 
+.orientation-lock {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at 50% 35%, rgb(21 62 108 / 38%), transparent 58%),
+    var(--navy-950);
+  text-align: center;
+}
+
+.orientation-lock__card {
+  width: min(100%, 380px);
+}
+
+.orientation-lock__icon {
+  width: 68px;
+  height: 68px;
+  color: #58a8ff;
+}
+
+.orientation-lock h1 {
+  margin: 22px 0 8px;
+  color: var(--text);
+  font-size: 1.4rem;
+}
+
+.orientation-lock p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
 body {
   overflow-x: hidden;
   min-width: 260px;
