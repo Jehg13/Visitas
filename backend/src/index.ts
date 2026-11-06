@@ -2785,10 +2785,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       if (
         receptionistChecklistAccess &&
         (declaration.appointment_id === null ||
-          declaration.visit_date !== getAppDateTime().date)
+          !["En proceso", "Dentro"].includes(String(declaration.appointment_status)))
       ) {
         return Response.json(
-          { error: "Recepción solo puede consultar el checklist de una cita de hoy." },
+          { error: "Recepción solo puede consultar el checklist de una cita en proceso." },
           { status: 403 },
         );
       }
@@ -2943,13 +2943,12 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         if (
           receptionistChecklistAccess &&
           (declarations[0].appointment_id === null ||
-            declarations[0].visit_date !== getAppDateTime().date ||
             (phase === "Entrada" && declarations[0].appointment_status !== "En proceso") ||
             (phase === "Salida" && declarations[0].appointment_status !== "Dentro"))
         ) {
           await connection.rollback();
           return Response.json(
-            { error: "Recepción solo puede completar el checklist durante la etapa correspondiente de una cita de hoy." },
+            { error: "Recepción solo puede completar el checklist durante la etapa correspondiente de una cita en proceso." },
             { status: 409 },
           );
         }
