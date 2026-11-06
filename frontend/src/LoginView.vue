@@ -322,7 +322,7 @@ async function resetPassword() {
     <section class="tablet-visitor-landing" aria-label="Registro de visitas sin cita">
       <img
         class="tablet-visitor-landing-background"
-        src="/images/visitor-tablet-landing-v2.webp"
+        src="/images/visitor-tablet-landing-v3.webp"
         alt="CyMEZ Recep Visitantes"
         fetchpriority="high"
         decoding="async"
