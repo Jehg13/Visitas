@@ -1320,6 +1320,10 @@ input:focus-visible {
   text-align: center;
 }
 
+.appointment-qr-backdrop {
+  z-index: 1000;
+}
+
 .qr-dialog .dialog-icon {
   margin: 0 auto;
 }
@@ -4029,6 +4033,7 @@ input:focus-visible {
 
 @media (orientation: landscape) and (min-width: 768px) and (any-pointer: coarse) {
   .login-page.is-tablet-visitor-landing {
+    --tablet-landing-offset: clamp(14px, 3vh, 30px);
     position: relative;
     display: block;
     width: 100%;
@@ -4061,12 +4066,13 @@ input:focus-visible {
     height: 100%;
     object-fit: cover;
     object-position: center;
+    transform: scale(1.08) translateY(var(--tablet-landing-offset));
     pointer-events: none;
   }
 
   .tablet-visitor-landing-button {
     position: absolute;
-    top: 65.5%;
+    top: calc(65.5% + var(--tablet-landing-offset));
     left: 50%;
     display: grid;
     width: min(68vw, 980px);
@@ -4161,7 +4167,7 @@ input:focus-visible {
 
   .tablet-visitor-landing-footer {
     position: absolute;
-    bottom: 12%;
+    bottom: calc(12% - var(--tablet-landing-offset));
     left: 50%;
     display: flex;
     width: min(84vw, 1050px);

@@ -2683,46 +2683,53 @@ async function removeBusinessPartner(id: number) {
       </section>
     </div>
 
-    <div v-if="qrDialogOpen" class="modal-backdrop" @click.self="qrDialogOpen = false">
-      <section class="dialog qr-dialog" role="dialog" aria-modal="true" aria-labelledby="qr-dialog-title">
-        <button class="dialog-close" type="button" aria-label="Cerrar" @click="qrDialogOpen = false"><svg class="icon"><use href="#i-close" /></svg></button>
-        <span class="dialog-icon"><svg class="icon"><use href="#i-qr" /></svg></span>
-        <h2 id="qr-dialog-title">Ver código QR</h2>
-        <p class="dialog-description">
-          Pase de visita para <strong>{{ qrExternalStaff?.fullName ?? qrAppointment?.visitor }}</strong>
-        </p>
-        <div class="qr-preview">
-          <span v-if="qrGenerating" class="qr-loading">Generando código...</span>
-          <img
-            v-else-if="qrDataUrl"
-            :src="qrDataUrl"
-            :alt="`Código QR de la cita de ${qrExternalStaff?.fullName ?? qrAppointment?.visitor}`"
-          />
-        </div>
-        <p v-if="qrAppointment" class="qr-appointment-details">
-          {{ qrAppointment.company }}<br />
-          {{ qrAppointment.date }} · {{ qrAppointment.time }} · Anfitrión: {{ qrAppointment.host }}<br />
-          Código de referencia: <strong>{{ qrAppointment.referenceCode }}</strong>
-          <template v-if="qrExternalStaff"><br />Empleado: {{ qrExternalStaff.fullName }}</template>
-        </p>
-        <div v-if="!isReception" class="qr-dialog-actions">
-          <button
-            class="button-primary dialog-submit"
-            type="button"
-            :disabled="qrGenerating || !qrDataUrl || !qrAppointment"
-            @click="qrAppointment && downloadAppointmentQr(qrAppointment)"
-          >
-            Descargar PNG
-          </button>
-        </div>
-        <p class="qr-placeholder-note">
-          {{ isReception
-            ? "Recepción puede consultar el pase."
-            : "Descarga el código y compártelo manualmente con las personas de la empresa." }}
-        </p>
-        <button class="button-secondary dialog-submit" type="button" @click="qrDialogOpen = false">Cerrar</button>
-      </section>
-    </div>
+    <Teleport to="body">
+      <div
+        v-if="qrDialogOpen"
+        class="dashboard-app modal-backdrop appointment-qr-backdrop"
+        :data-theme="dashboardTheme"
+        @click.self="qrDialogOpen = false"
+      >
+        <section class="dialog qr-dialog" role="dialog" aria-modal="true" aria-labelledby="qr-dialog-title">
+          <button class="dialog-close" type="button" aria-label="Cerrar" @click="qrDialogOpen = false"><svg class="icon"><use href="#i-close" /></svg></button>
+          <span class="dialog-icon"><svg class="icon"><use href="#i-qr" /></svg></span>
+          <h2 id="qr-dialog-title">Ver código QR</h2>
+          <p class="dialog-description">
+            Pase de visita para <strong>{{ qrExternalStaff?.fullName ?? qrAppointment?.visitor }}</strong>
+          </p>
+          <div class="qr-preview">
+            <span v-if="qrGenerating" class="qr-loading">Generando código...</span>
+            <img
+              v-else-if="qrDataUrl"
+              :src="qrDataUrl"
+              :alt="`Código QR de la cita de ${qrExternalStaff?.fullName ?? qrAppointment?.visitor}`"
+            />
+          </div>
+          <p v-if="qrAppointment" class="qr-appointment-details">
+            {{ qrAppointment.company }}<br />
+            {{ qrAppointment.date }} · {{ qrAppointment.time }} · Anfitrión: {{ qrAppointment.host }}<br />
+            Código de referencia: <strong>{{ qrAppointment.referenceCode }}</strong>
+            <template v-if="qrExternalStaff"><br />Empleado: {{ qrExternalStaff.fullName }}</template>
+          </p>
+          <div v-if="!isReception" class="qr-dialog-actions">
+            <button
+              class="button-primary dialog-submit"
+              type="button"
+              :disabled="qrGenerating || !qrDataUrl || !qrAppointment"
+              @click="qrAppointment && downloadAppointmentQr(qrAppointment)"
+            >
+              Descargar PNG
+            </button>
+          </div>
+          <p class="qr-placeholder-note">
+            {{ isReception
+              ? "Recepción puede consultar el pase."
+              : "Descarga el código y compártelo manualmente con las personas de la empresa." }}
+          </p>
+          <button class="button-secondary dialog-submit" type="button" @click="qrDialogOpen = false">Cerrar</button>
+        </section>
+      </div>
+    </Teleport>
 
     <div
       v-if="businessPartnerDialogOpen"
