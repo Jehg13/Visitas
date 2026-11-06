@@ -781,6 +781,7 @@ type VisitorKioskRegistrationInput = {
   carriesItems: boolean;
   items: VisitorKioskItemInput[];
   identificationTypes: (typeof visitorIdentificationTypes)[number][];
+  identificationHeldForSafekeeping: boolean;
 };
 
 type VisitorKioskInspectionInput = {
@@ -803,6 +804,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     carriesItems,
     items,
     identificationTypes,
+    identificationHeldForSafekeeping,
   } = value;
   if (
     typeof visitorName !== "string" || !visitorName.trim() || visitorName.trim().length > 180 ||
@@ -812,6 +814,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     typeof visitReason !== "string" || !visitReason.trim() || visitReason.trim().length > 500 ||
     hasUnsafeControlCharacters(visitReason) ||
     typeof carriesItems !== "boolean" ||
+    typeof identificationHeldForSafekeeping !== "boolean" ||
     !Array.isArray(items) || items.length > 50 ||
     (!carriesItems && items.length !== 0) ||
     (carriesItems && items.length === 0) ||
@@ -868,6 +871,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     carriesItems,
     items: parsedItems,
     identificationTypes: identificationTypes as (typeof visitorIdentificationTypes)[number][],
+    identificationHeldForSafekeeping,
   };
 }
 
@@ -964,7 +968,8 @@ async function handleVisitorKioskRequest(
     }
     try {
       const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT r.authorization_status,
+        `SELECT r.folio, v.full_name AS visitor_name,
+                r.authorization_status,
                 (
                   EXISTS (
                     SELECT 1 FROM visitor_kiosk_inspections i
@@ -991,12 +996,15 @@ async function handleVisitorKioskRequest(
                     )
                 ) AS entered
          FROM visitor_kiosk_registrations r
+         INNER JOIN general_visitors v ON v.id = r.visitor_record_id
          WHERE r.idempotency_key = ?
          LIMIT 1`,
         [requestKey],
       );
       if (!rows[0]) return Response.json({ error: "No se encontró el registro." }, { status: 404 });
       return Response.json({
+        folio: rows[0].folio,
+        visitorName: rows[0].visitor_name,
         authorizationStatus: rows[0].authorization_status,
         entryChecklistComplete: Boolean(rows[0].entry_checklist_complete),
         entered: Boolean(rows[0].entered),
@@ -1178,7 +1186,10 @@ async function handleVisitorKioskRequest(
          VALUES (?, 'Registrado', NULL, 'Autorregistro', ?)`,
         [
           registrationResult.insertId,
-          `Tipo(s) de identificación presentada(s): ${input.identificationTypes.join(", ")}.`,
+          `Tipo(s) de identificación presentada(s): ${input.identificationTypes.join(", ")}. ` +
+            (input.identificationHeldForSafekeeping
+              ? "Identificación entregada a recepción para resguardo."
+              : "Identificación presentada para verificación, sin resguardo."),
         ],
       );
       await connection.commit();
@@ -1447,7 +1458,7 @@ async function handleVisitorKioskRequest(
       if (!user.isAdmin && registration.created_date !== getAppDateTime().date) {
         await connection.rollback();
         return Response.json(
-          { error: "Los autorregistros de días anteriores son de solo lectura para Recepción. Solicita apoyo a Administración." },
+          { error: "Los autorregistros de días anteriores son de solo lectura." },
           { status: 403 },
         );
       }
@@ -2164,6 +2175,20 @@ async function getDailyLogSummary(fromDate: string, toDate: string) {
     insideNow: Number(insideRows[0]?.inside_count ?? 0),
     pendingArrivals: Number(pendingRows[0]?.pending_count ?? 0),
     exits: Number(countRows[0]?.exit_count ?? 0),
+  };
+}
+
+async function getDailyLogDateRange() {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT DATE_FORMAT(MIN(entry_date), '%Y-%m-%d') AS first_date,
+            DATE_FORMAT(MAX(entry_date), '%Y-%m-%d') AS last_date
+     FROM daily_log_entries`,
+  );
+  const firstDate = rows[0]?.first_date;
+  const lastDate = rows[0]?.last_date;
+  return {
+     firstDate: firstDate == null ? null : String(firstDate),
+     lastDate: lastDate == null ? null : String(lastDate),
   };
 }
 
@@ -4044,7 +4069,7 @@ const server = Bun.serve({
           !isValidDateString(toDate) ||
           fromDate > toDate ||
           !Number.isInteger(daySpan) ||
-          daySpan > 365
+          daySpan > 3_300_000
         ) {
           return Response.json({ error: "Revisa el rango de fechas solicitado." }, { status: 400 });
         }
@@ -4097,7 +4122,7 @@ const server = Bun.serve({
             !isValidDateString(toDate) ||
             fromDate > toDate ||
             !Number.isInteger(daySpan) ||
-            daySpan > 365 ||
+            daySpan > 3_300_000 ||
             search.length > 180 ||
             hostFilters.some((host) => host.length === 0 || host.length > 180) ||
             hostFilters.length > 100 ||
@@ -4114,7 +4139,7 @@ const server = Bun.serve({
               { status: 400 },
             );
           }
-          const [{ entries, total, hosts }, recentResult, summary] = await Promise.all([
+          const [{ entries, total, hosts }, recentResult, summary, historyRange] = await Promise.all([
             listDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, page, pageSize, user.isAdmin,
             ),
@@ -4123,6 +4148,7 @@ const server = Bun.serve({
               recentPage, recentPageSize,
             ),
             getDailyLogSummary(fromDate, toDate),
+            getDailyLogDateRange(),
           ]);
           return Response.json({
             entries,
@@ -4131,6 +4157,7 @@ const server = Bun.serve({
             recentPage,
             recentPages: Math.max(1, Math.ceil(recentResult.total / recentPageSize)),
             summary,
+            historyRange,
             hosts,
             total,
             page,
@@ -4143,11 +4170,22 @@ const server = Bun.serve({
             return Response.json({ error: "Indica el movimiento que deseas eliminar." }, { status: 400 });
           }
           const [entriesToDelete] = await pool.execute<RowDataPacket[]>(
-            "SELECT appointment_id FROM daily_log_entries WHERE id = ? LIMIT 1",
+            `SELECT appointment_id,
+                    DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
+             FROM daily_log_entries WHERE id = ? LIMIT 1`,
             [entryId],
           );
           if (!entriesToDelete[0]) {
             return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+          }
+          if (
+            !user.isAdmin &&
+            String(entriesToDelete[0].entry_date) < getAppDateTime().date
+          ) {
+            return Response.json(
+              { error: "Los movimientos de días anteriores son de solo lectura." },
+              { status: 403 },
+            );
           }
           const linkedAppointmentId =
             entriesToDelete[0].appointment_id === null
@@ -4224,7 +4262,7 @@ const server = Bun.serve({
           }
           if (String(sourceEntries[0].entry_date) !== currentBusinessDate) {
             return Response.json(
-              { error: "Los movimientos de días anteriores son de solo lectura para Recepción. Solicita apoyo a Administración." },
+              { error: "Los movimientos de días anteriores son de solo lectura." },
               { status: 403 },
             );
           }
@@ -4249,9 +4287,13 @@ const server = Bun.serve({
           if (!appointment) {
             return Response.json({ error: "La cita vinculada ya no existe." }, { status: 404 });
           }
-          if (!user.isAdmin && isMovementEvent && appointment.visit_date !== currentBusinessDate) {
+          if (
+            !user.isAdmin &&
+            isMovementEvent &&
+            appointment.visit_date !== currentBusinessDate
+          ) {
             return Response.json(
-              { error: "Recepción solo puede registrar movimientos de citas del día actual. Solicita apoyo a Administración." },
+              { error: "Las citas de días anteriores no admiten nuevos movimientos desde la bitácora." },
               { status: 403 },
             );
           }
