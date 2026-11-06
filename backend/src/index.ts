@@ -814,7 +814,8 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     typeof visitReason !== "string" || !visitReason.trim() || visitReason.trim().length > 500 ||
     hasUnsafeControlCharacters(visitReason) ||
     typeof carriesItems !== "boolean" ||
-    typeof identificationHeldForSafekeeping !== "boolean" ||
+    (identificationHeldForSafekeeping !== undefined &&
+      typeof identificationHeldForSafekeeping !== "boolean") ||
     !Array.isArray(items) || items.length > 50 ||
     (!carriesItems && items.length !== 0) ||
     (carriesItems && items.length === 0) ||
@@ -871,7 +872,7 @@ function parseVisitorKioskRegistration(value: unknown): VisitorKioskRegistration
     carriesItems,
     items: parsedItems,
     identificationTypes: identificationTypes as (typeof visitorIdentificationTypes)[number][],
-    identificationHeldForSafekeeping,
+    identificationHeldForSafekeeping: identificationHeldForSafekeeping === true,
   };
 }
 
@@ -1186,10 +1187,10 @@ async function handleVisitorKioskRequest(
          VALUES (?, 'Registrado', NULL, 'Autorregistro', ?)`,
         [
           registrationResult.insertId,
-          `Tipo(s) de identificación presentada(s): ${input.identificationTypes.join(", ")}. ` +
+          `Tipo(s) de identificación presentada(s): ${input.identificationTypes.join(", ")}.` +
             (input.identificationHeldForSafekeeping
-              ? "Identificación entregada a recepción para resguardo."
-              : "Identificación presentada para verificación, sin resguardo."),
+              ? " Identificación entregada a recepción para resguardo."
+              : ""),
         ],
       );
       await connection.commit();
