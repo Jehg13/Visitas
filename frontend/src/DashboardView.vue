@@ -2579,7 +2579,13 @@ async function removeBusinessPartner(id: number) {
       </div>
     </section>
 
-    <div v-if="appointmentDialogOpen" class="modal-backdrop" @click.self="appointmentDialogOpen = false">
+    <Teleport to="body">
+    <div
+      v-if="appointmentDialogOpen"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
+      @click.self="appointmentDialogOpen = false"
+    >
       <section class="dialog appointment-dialog" role="dialog" aria-modal="true" aria-labelledby="appointment-dialog-title">
         <button class="dialog-close" type="button" aria-label="Cerrar" @click="appointmentDialogOpen = false"><svg class="icon"><use href="#i-close" /></svg></button>
         <span class="dialog-icon"><svg class="icon"><use href="#i-calendar" /></svg></span>
@@ -2683,10 +2689,9 @@ async function removeBusinessPartner(id: number) {
       </section>
     </div>
 
-    <Teleport to="body">
       <div
         v-if="qrDialogOpen"
-        class="dashboard-app modal-backdrop appointment-qr-backdrop"
+        class="dashboard-app dashboard-modal-backdrop modal-backdrop appointment-qr-backdrop"
         :data-theme="dashboardTheme"
         @click.self="qrDialogOpen = false"
       >
@@ -2729,11 +2734,10 @@ async function removeBusinessPartner(id: number) {
           <button class="button-secondary dialog-submit" type="button" @click="qrDialogOpen = false">Cerrar</button>
         </section>
       </div>
-    </Teleport>
-
     <div
       v-if="businessPartnerDialogOpen"
-      class="modal-backdrop"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
       @click.self="businessPartnerDialogOpen = false"
     >
       <section
@@ -2825,7 +2829,8 @@ async function removeBusinessPartner(id: number) {
 
     <div
       v-if="editingAccessAccount"
-      class="modal-backdrop"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
       @click.self="editingAccessAccount = null"
     >
       <section
@@ -2885,7 +2890,8 @@ async function removeBusinessPartner(id: number) {
 
     <div
       v-if="hostDialogOpen"
-      class="modal-backdrop"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
       @click.self="hostDialogOpen = false"
     >
       <section
@@ -2995,7 +3001,8 @@ async function removeBusinessPartner(id: number) {
 
     <div
       v-if="departmentDialogOpen"
-      class="modal-backdrop"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
       @click.self="departmentDialogOpen = false"
     >
       <section
@@ -3026,7 +3033,8 @@ async function removeBusinessPartner(id: number) {
 
     <div
       v-if="externalStaffDialogOpen"
-      class="modal-backdrop"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
       @click.self="externalStaffDialogOpen = false"
     >
       <section
@@ -3118,5 +3126,6 @@ async function removeBusinessPartner(id: number) {
       </section>
     </div>
 
+    </Teleport>
   </main>
 </template>

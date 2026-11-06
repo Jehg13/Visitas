@@ -1744,7 +1744,13 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
       </aside>
     </div>
 
-    <div v-if="dialogOpen" class="modal-backdrop" @click.self="!saving && (dialogOpen = false)">
+    <Teleport to="body">
+      <div
+        v-if="dialogOpen"
+        class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+        :data-theme="theme"
+        @click.self="!saving && (dialogOpen = false)"
+      >
       <section class="dialog daily-log-dialog" role="dialog" aria-modal="true" aria-labelledby="daily-log-dialog-title">
         <button class="dialog-close" type="button" aria-label="Cerrar" :disabled="saving" @click="dialogOpen = false">
           <svg class="icon"><use href="#i-close" /></svg>
@@ -1795,7 +1801,8 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           </button>
         </form>
       </section>
-    </div>
+      </div>
+    </Teleport>
     <SectionHelpDialog
       v-if="helpOpen"
       title="Ayuda de la bitácora diaria"

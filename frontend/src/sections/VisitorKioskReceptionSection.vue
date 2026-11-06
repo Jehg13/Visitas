@@ -511,7 +511,13 @@ async function completeChecklist(registration: KioskRegistration) {
     </div>
   </Teleport>
 
-  <div v-if="inspectionPhase && inspectionRegistration" class="modal-backdrop visitor-kiosk-checklist-backdrop" @click.self="savingRegistrationId === null && closeChecklist()">
+  <Teleport to="body">
+  <div
+    v-if="inspectionPhase && inspectionRegistration"
+    class="dashboard-app dashboard-modal-backdrop modal-backdrop visitor-kiosk-checklist-backdrop"
+    :data-theme="props.theme"
+    @click.self="savingRegistrationId === null && closeChecklist()"
+  >
     <section class="dialog workspace-dialog visitor-kiosk-detail visitor-kiosk-checklist-dialog" role="dialog" aria-modal="true" aria-labelledby="visitor-kiosk-checklist-title">
       <button class="dialog-close" type="button" aria-label="Cerrar" :disabled="savingRegistrationId !== null" @click="closeChecklist">
         <svg class="icon"><use href="#i-close" /></svg>
@@ -636,4 +642,5 @@ async function completeChecklist(registration: KioskRegistration) {
       </form>
     </section>
   </div>
+  </Teleport>
 </template>

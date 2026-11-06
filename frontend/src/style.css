@@ -7554,6 +7554,8 @@ input:focus-visible {
 
 .modal-backdrop {
   padding: 24px;
+  overflow-y: auto;
+  place-items: safe center;
   background: rgb(2 8 17 / 78%);
   backdrop-filter: blur(9px) saturate(115%);
   animation: modal-backdrop-in 180ms ease-out both;
@@ -8285,7 +8287,7 @@ input:focus-visible {
 
 @media (max-width: 600px) {
   .modal-backdrop {
-    align-items: end;
+    align-items: safe end;
     padding: 12px 10px max(10px, env(safe-area-inset-bottom));
   }
 
@@ -11016,14 +11018,16 @@ input:focus-visible {
   color: var(--kiosk-muted);
 }
 
-.dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop {
+.dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop,
+.dashboard-app.modal-backdrop.visitor-kiosk-checklist-backdrop {
   inset: var(--dashboard-header-height, 62px) 0 0;
   align-items: center;
   overflow-y: auto;
   padding: 14px;
 }
 
-.dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop .dialog.visitor-kiosk-checklist-dialog {
+.dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop .dialog.visitor-kiosk-checklist-dialog,
+.dashboard-app.modal-backdrop.visitor-kiosk-checklist-backdrop .dialog.visitor-kiosk-checklist-dialog {
   width: min(1000px, calc(100vw - 36px));
   max-height: calc(100dvh - var(--dashboard-header-height, 62px) - 28px);
   margin: auto;
@@ -11041,11 +11045,13 @@ input:focus-visible {
 }
 
 @media (max-width: 760px) {
-  .dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop {
+  .dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop,
+  .dashboard-app.modal-backdrop.visitor-kiosk-checklist-backdrop {
     padding: 10px;
   }
 
-  .dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop .dialog.visitor-kiosk-checklist-dialog {
+  .dashboard-app .modal-backdrop.visitor-kiosk-checklist-backdrop .dialog.visitor-kiosk-checklist-dialog,
+  .dashboard-app.modal-backdrop.visitor-kiosk-checklist-backdrop .dialog.visitor-kiosk-checklist-dialog {
     width: min(100%, 680px);
     max-height: calc(100dvh - var(--dashboard-header-height, 62px) - 20px);
     padding: 18px;

@@ -44,7 +44,8 @@
   box-shadow: 0 0 0 2px rgb(207 64 81 / 16%);
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(input, select, textarea):user-invalid {
+.dashboard-app[data-theme="light"] .dashboard-main :is(input, select, textarea):user-invalid,
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(input, select, textarea):user-invalid {
   border-color: #b32639;
   box-shadow: 0 0 0 2px rgb(179 38 57 / 12%);
 }
@@ -3189,6 +3190,7 @@
 }
 
 .dashboard-app .dashboard-main :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
+.dashboard-app.dashboard-modal-backdrop :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
 .dashboard-app.equipment-detail-backdrop .equipment-detail-dialog,
 .dashboard-app.equipment-create-backdrop .equipment-dialog {
   border-color: color-mix(in srgb, var(--ds-blue) 50%, var(--ds-border));
@@ -3198,7 +3200,8 @@
   box-shadow: 0 24px 70px rgb(0 0 0 / 55%), 0 0 28px rgb(0 105 255 / 12%);
 }
 
-.dashboard-app .dashboard-main :is(.workspace-dialog, .dialog) :is(h2, h3) {
+.dashboard-app .dashboard-main :is(.workspace-dialog, .dialog) :is(h2, h3),
+.dashboard-app.dashboard-modal-backdrop :is(.workspace-dialog, .dialog) :is(h2, h3) {
   color: var(--ds-text);
 }
 
@@ -3380,44 +3383,51 @@
   background: #eff7ff;
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(.button-primary, .daily-log-primary-button, .workspace-submit, .equipment-open-button) {
+.dashboard-app[data-theme="light"] .dashboard-main :is(.button-primary, .daily-log-primary-button, .workspace-submit, .equipment-open-button),
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(.button-primary, .daily-log-primary-button, .workspace-submit, .equipment-open-button) {
   border-color: #0878f9;
   background: linear-gradient(135deg, #1689ff, #0569ed);
   color: #fff;
   box-shadow: 0 5px 14px rgb(8 120 249 / 22%), inset 0 1px 0 rgb(255 255 255 / 28%);
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(.button-primary, .daily-log-primary-button, .workspace-submit, .equipment-open-button):hover:not(:disabled) {
+.dashboard-app[data-theme="light"] .dashboard-main :is(.button-primary, .daily-log-primary-button, .workspace-submit, .equipment-open-button):hover:not(:disabled),
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(.button-primary, .daily-log-primary-button, .workspace-submit, .equipment-open-button):hover:not(:disabled) {
   border-color: #3ca0ff;
   background: linear-gradient(135deg, #3299ff, #0874f2);
   color: #fff;
   box-shadow: 0 7px 18px rgb(8 120 249 / 26%);
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(.button-secondary, .daily-log-secondary-button, .agenda-filter-button, .calendar-nav-button, .pagination-button, .qr-button) {
+.dashboard-app[data-theme="light"] .dashboard-main :is(.button-secondary, .daily-log-secondary-button, .agenda-filter-button, .calendar-nav-button, .pagination-button, .qr-button),
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(.button-secondary, .daily-log-secondary-button, .agenda-filter-button, .calendar-nav-button, .pagination-button, .qr-button) {
   border-color: #c8dcf3;
   background: linear-gradient(180deg, #fff, #f5f9fe);
   color: #235786;
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(.button-secondary, .daily-log-secondary-button, .agenda-filter-button, .calendar-nav-button, .pagination-button, .qr-button):hover:not(:disabled) {
+.dashboard-app[data-theme="light"] .dashboard-main :is(.button-secondary, .daily-log-secondary-button, .agenda-filter-button, .calendar-nav-button, .pagination-button, .qr-button):hover:not(:disabled),
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(.button-secondary, .daily-log-secondary-button, .agenda-filter-button, .calendar-nav-button, .pagination-button, .qr-button):hover:not(:disabled) {
   border-color: #91bde9;
   background: #edf6ff;
   color: #075ec6;
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) {
+.dashboard-app[data-theme="light"] .dashboard-main :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea),
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) {
   border-color: #d0e0f1;
   background-color: #fff;
   color: #183c67;
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(input, select, textarea)::placeholder {
+.dashboard-app[data-theme="light"] .dashboard-main :is(input, select, textarea)::placeholder,
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(input, select, textarea)::placeholder {
   color: #8299b2;
   opacity: 1;
 }
 
-.dashboard-app[data-theme="light"] .dashboard-main :is(input, select, textarea):focus-visible {
+.dashboard-app[data-theme="light"] .dashboard-main :is(input, select, textarea):focus-visible,
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(input, select, textarea):focus-visible {
   border-color: #1689ff;
   box-shadow: 0 0 0 3px rgb(8 120 249 / 12%);
 }
@@ -3469,6 +3479,7 @@
 }
 
 .dashboard-app[data-theme="light"] .dashboard-main :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
+.dashboard-app.dashboard-modal-backdrop[data-theme="light"] :is(.workspace-dialog, .dialog, .equipment-detail-dialog),
 .dashboard-app.equipment-detail-backdrop[data-theme="light"] .equipment-detail-dialog,
 .dashboard-app.equipment-create-backdrop[data-theme="light"] .equipment-dialog {
   background:
@@ -5191,13 +5202,15 @@
     grid-column: 1 / -1;
   }
 
-  .dashboard-app .modal-backdrop {
+  .dashboard-app .modal-backdrop,
+  .dashboard-app.modal-backdrop {
     align-items: start;
     overflow-y: auto;
     padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
   }
 
-  .dashboard-app .modal-backdrop .dialog {
+  .dashboard-app .modal-backdrop .dialog,
+  .dashboard-app.modal-backdrop .dialog {
     width: min(620px, calc(100vw - 24px));
     max-width: 100%;
     max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
