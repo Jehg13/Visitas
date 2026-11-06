@@ -1765,14 +1765,14 @@ async function downloadAppointmentQr(
 }
 
 async function deleteAppointment(appointment: Appointment) {
-  if (appointment.status !== "Cancelada") {
+  if (!currentUser.value.isAdmin && appointment.status !== "Cancelada") {
     showToast("Para eliminar una cita, primero debes cancelarla.");
     return;
   }
   if (
     deletingAppointmentId.value !== null ||
     !await confirmUser(
-      `¿Quitar de la agenda la cita cancelada de ${appointment.visitor}? Se conservará en el historial.`,
+      `¿Quitar de la agenda la cita${appointment.status === "Cancelada" ? " cancelada" : ""} de ${appointment.visitor}? Se conservará en el historial.`,
       "Eliminar cita",
       "Confirmar eliminación",
       "warning",
@@ -2563,6 +2563,7 @@ async function removeBusinessPartner(id: number) {
         :appointments="appointments"
         :summary-items="summaryItems"
         :can-manage-appointments="currentUser.isAdmin || isHost"
+        :is-admin="currentUser.isAdmin"
         @create-appointment="openHomeAppointmentDialog"
         @edit-appointment="openAppointmentDialog"
         @cancel-appointment="cancelAppointment"

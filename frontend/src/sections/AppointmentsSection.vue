@@ -248,8 +248,8 @@ const emit = defineEmits<{
                     class="workspace-remove agenda-delete-action"
                     type="button"
                     :aria-label="`Eliminar cita de ${appointment.visitor}`"
-                    :title="appointment.status === 'Cancelada' ? 'Eliminar cita cancelada' : 'Primero cancela la cita para poder eliminarla'"
-                    :disabled="appointment.status !== 'Cancelada'"
+                    :title="isAdmin || appointment.status === 'Cancelada' ? 'Eliminar cita' : 'Primero cancela la cita para poder eliminarla'"
+                    :disabled="!isAdmin && appointment.status !== 'Cancelada'"
                     @click="emit('delete', appointment)"
                   >Eliminar</button>
                 </div>

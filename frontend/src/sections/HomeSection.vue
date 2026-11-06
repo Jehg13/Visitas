@@ -71,6 +71,7 @@ const props = defineProps<{
   appointments: Appointment[];
   summaryItems: SummaryItem[];
   canManageAppointments: boolean;
+  isAdmin: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -628,8 +629,8 @@ onBeforeUnmount(() => {
                     class="workspace-remove agenda-delete-action"
                     type="button"
                     :aria-label="`Eliminar cita de ${appointment.visitor}`"
-                    :title="appointment.status === 'Cancelada' ? 'Eliminar cita cancelada' : 'Primero cancela la cita para poder eliminarla'"
-                    :disabled="appointment.status !== 'Cancelada'"
+                    :title="isAdmin || appointment.status === 'Cancelada' ? 'Eliminar cita' : 'Primero cancela la cita para poder eliminarla'"
+                    :disabled="!isAdmin && appointment.status !== 'Cancelada'"
                     @click="emit('deleteAppointment', appointment)"
                   >Eliminar</button>
                 </div>

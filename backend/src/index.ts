@@ -5545,7 +5545,7 @@ const server = Bun.serve({
               await connection.rollback();
               return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
             }
-            if (appointmentRow.status !== "Cancelada") {
+            if (!user.isAdmin && appointmentRow.status !== "Cancelada") {
               await connection.rollback();
               return Response.json(
                 { error: "Para eliminar una cita, primero debes cancelarla." },
@@ -5559,7 +5559,9 @@ const server = Bun.serve({
               "Eliminada",
               user,
               snapshot,
-              "Cita eliminada después de cancelarse.",
+              appointmentRow.status === "Cancelada"
+                ? "Cita eliminada después de cancelarse."
+                : "Cita eliminada directamente por un administrador.",
             );
             await connection.execute(
               "UPDATE appointments SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL",
