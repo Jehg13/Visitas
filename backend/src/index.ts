@@ -5055,13 +5055,13 @@ const server = Bun.serve({
                   .email-header-title { padding-left:12px !important; font-size:11px !important; line-height:16px !important; letter-spacing:1px !important; }
                   .email-header-decoration { display:none !important; width:0 !important; }
                   .email-hero-copy { padding:22px 17px 24px !important; }
-                  .email-hero-main { display:block !important; width:100% !important; }
+                  .email-hero-main { display:block !important; width:auto !important; max-width:100% !important; box-sizing:border-box !important; }
                   .email-hero-title { font-size:27px !important; line-height:32px !important; }
                   .email-hero-greeting { font-size:14px !important; line-height:21px !important; }
                   .email-hero-aside { display:none !important; }
                   .email-info-heading { padding:16px 16px 12px !important; font-size:12px !important; }
-                  .email-info-column, .email-qr-column { display:block !important; width:100% !important; padding:0 14px 14px !important; }
-                  .email-info-cell { display:block !important; width:100% !important; padding:10px 0 !important; border-left:0 !important; }
+                  .email-info-column, .email-qr-column { display:block !important; width:auto !important; max-width:100% !important; padding:0 14px 14px !important; box-sizing:border-box !important; }
+                  .email-info-cell { display:block !important; width:auto !important; max-width:100% !important; padding:10px 0 !important; border-left:0 !important; box-sizing:border-box !important; }
                   .email-info-cell-first { border-bottom:1px solid #233547 !important; }
                   .email-qr-column { padding-top:4px !important; }
                   .email-qr-card { width:100% !important; max-width:290px !important; margin:0 auto !important; }
@@ -5071,7 +5071,7 @@ const server = Bun.serve({
                   .email-reminder-copy { padding:15px 14px !important; }
                   .email-reminder-title { font-size:13px !important; line-height:19px !important; }
                   .email-reminder-text { font-size:12px !important; line-height:18px !important; }
-                  .email-reminder-button { display:block !important; box-sizing:border-box !important; width:100% !important; text-align:center !important; }
+                  .email-reminder-button { display:block !important; box-sizing:border-box !important; width:100% !important; max-width:100% !important; text-align:center !important; }
                   .email-footer { padding:20px 12px 16px !important; }
                   .email-footer-title { width:auto !important; padding:0 9px !important; font-size:9px !important; letter-spacing:1px !important; }
                 }
@@ -5111,7 +5111,7 @@ const server = Bun.serve({
                                 <p style="display:inline-block;margin:0 0 12px;padding:8px 16px;background-color:#ef1f32;border-radius:20px;font-size:11px;line-height:15px;font-weight:bold;letter-spacing:1.3px;color:#ffffff;">PASE DIGITAL&nbsp;&nbsp; #${appointment.id}</p>
                                 <h1 class="email-hero-title" style="margin:0 0 14px;font-size:34px;line-height:39px;font-weight:700;color:#ffffff;">Tu visita está lista</h1>
                                 <span style="display:block;width:92px;height:4px;margin:0 0 18px;background-color:#ef1f32;font-size:0;line-height:0;">&nbsp;</span>
-                                <p class="email-hero-greeting" style="margin:0;font-size:16px;line-height:24px;color:#e2e9f3;overflow-wrap:anywhere;word-break:break-word;">Hola <strong style="color:#ffffff;overflow-wrap:anywhere;word-break:break-word;">${safeVisitorName}</strong>, aquí tienes tu pase de acceso a CyMEZ.</p>
+                                <p class="email-hero-greeting" style="margin:0;font-size:16px;line-height:24px;color:#e2e9f3;overflow-wrap:anywhere;word-break:break-word;">Hola <strong style="color:#ffffff;overflow-wrap:anywhere;word-break:break-word;white-space:normal;">${safeVisitorName}</strong>, aquí tienes tu pase de acceso a CyMEZ.</p>
                               </td>
                               <td class="email-hero-aside" align="center" valign="middle" style="width:190px;padding:18px 20px;">
                                 <p style="margin:0 0 5px;font-size:15px;line-height:21px;letter-spacing:2px;color:#d7e4f2;">TU VISITA ES</p>

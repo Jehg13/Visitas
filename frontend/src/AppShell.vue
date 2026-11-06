@@ -22,7 +22,7 @@ const route = useRoute();
 const router = useRouter();
 const visitorKioskRoute = computed(() => route.path === "/registro");
 const routeHashParameters = computed(() => new URLSearchParams(route.hash.slice(1)));
-const publicEquipmentToken = computed(() => routeHashParameters.value.get("equipo"));
+const hasPublicEquipmentToken = computed(() => routeHashParameters.value.has("equipo"));
 const passwordResetToken = ref(
   routeHashParameters.value.get("restablecer") ?? "",
 );
@@ -38,8 +38,13 @@ watch(
       path === "/registro" ||
       new URLSearchParams(hash.slice(1)).has("equipo") ||
       new URLSearchParams(hash.slice(1)).has("restablecer");
+    const equipmentDeclarationRoute = new URLSearchParams(hash.slice(1)).has("equipo");
 
-    if (currentUser && (publicRoute || (path !== "/" && !dashboardSectionForPath(path)))) {
+    if (
+      currentUser &&
+      ((publicRoute && !equipmentDeclarationRoute) ||
+        (path !== "/" && !dashboardSectionForPath(path)))
+    ) {
       void router.replace("/");
       return;
     }
@@ -57,7 +62,7 @@ const pageMetadata = computed(() => {
       description: "Registra manualmente tu visita a las instalaciones de CyMEZ y declara el equipo que ingresas.",
     };
   }
-  if (publicEquipmentToken.value) {
+  if (hasPublicEquipmentToken.value) {
     return {
       title: "Declaración de equipo | CyMEZ Recep",
       description: "Completa la declaración de equipo y herramientas para tu visita a las instalaciones de CyMEZ.",
@@ -86,7 +91,7 @@ watch(pageMetadata, (metadata) => {
   const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
   if (description) description.content = metadata.description;
   const robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
-  if (robots) robots.content = user.value || publicEquipmentToken.value || passwordResetToken.value
+  if (robots)   robots.content = user.value || hasPublicEquipmentToken.value || passwordResetToken.value
     ? "noindex, nofollow"
     : "index, follow";
 }, { immediate: true });
@@ -131,7 +136,7 @@ onBeforeUnmount(() => {
 
 <template>
   <PublicVisitorKiosk v-if="visitorKioskRoute" />
-  <PublicEquipmentDeclaration v-else-if="publicEquipmentToken" />
+  <PublicEquipmentDeclaration v-else-if="hasPublicEquipmentToken" />
   <LoginView
     v-else-if="passwordResetToken"
     :password-reset-token="passwordResetToken"
