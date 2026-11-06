@@ -1210,7 +1210,7 @@ input:focus-visible {
 
 .modal-backdrop {
   position: fixed;
-  z-index: 60;
+  z-index: 1100;
   inset: 0;
   display: grid;
   place-items: center;
@@ -1321,7 +1321,7 @@ input:focus-visible {
 }
 
 .appointment-qr-backdrop {
-  z-index: 1000;
+  z-index: 1100;
 }
 
 .qr-dialog .dialog-icon {
