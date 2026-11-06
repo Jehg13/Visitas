@@ -5064,11 +5064,11 @@ const server = Bun.serve({
                   .email-hero-greeting { font-size:14px !important; line-height:21px !important; }
                   .email-hero-aside { display:none !important; }
                   .email-info-heading { padding:16px 16px 12px !important; font-size:12px !important; }
-                  .email-info-column, .email-qr-column { display:block !important; width:100% !important; max-width:100% !important; padding:0 14px 14px !important; box-sizing:border-box !important; }
+                  .email-info-column, .email-qr-column { display:block !important; width:100% !important; max-width:100% !important; min-width:100% !important; padding:0 14px 14px !important; box-sizing:border-box !important; }
                   .email-info-table { width:100% !important; max-width:100% !important; table-layout:fixed !important; }
-                  .email-info-cell { display:block !important; width:100% !important; max-width:100% !important; min-width:0 !important; padding:10px 0 !important; border-left:0 !important; box-sizing:border-box !important; }
+                  .email-info-cell { display:block !important; width:100% !important; max-width:100% !important; min-width:100% !important; padding:10px 0 !important; border-left:0 !important; box-sizing:border-box !important; }
                   .email-info-cell-first { border-bottom:1px solid #233547 !important; }
-                  .email-qr-column { padding-top:4px !important; }
+                  .email-qr-column { padding-top:4px !important; text-align:center !important; }
                   .email-qr-card { width:100% !important; max-width:340px !important; margin:0 auto !important; }
                   .email-qr-cell { padding:12px 12px 8px !important; }
                   .email-qr-image { width:220px !important; max-width:100% !important; }
@@ -5137,7 +5137,7 @@ const server = Bun.serve({
                               </td>
                             </tr>
                             <tr>
-                              <td class="email-info-column" width="62%" valign="top" style="padding:0 8px 20px 22px;">
+                              <td class="email-info-column" valign="top" style="width:62%;padding:0 8px 20px 22px;">
                                 <table role="presentation" class="email-info-table" width="100%" cellspacing="0" cellpadding="0" border="0">
                                   <tr>
                                     <td class="email-info-cell email-info-cell-first" width="50%" valign="top" style="padding:10px 12px 14px 0;border-bottom:1px solid #233547;">
@@ -5161,7 +5161,7 @@ const server = Bun.serve({
                                   </tr>
                                 </table>
                               </td>
-                              <td class="email-qr-column" width="38%" align="center" valign="top" style="padding:0 18px 18px 10px;">
+                              <td class="email-qr-column" align="center" valign="top" style="width:38%;padding:0 18px 18px 10px;">
                                 <table role="presentation" class="email-qr-card" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #174a7a;border-radius:12px;">
                                   <tr>
                                     <td class="email-qr-cell" align="center" style="padding:14px 12px 8px;">
