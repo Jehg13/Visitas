@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
@@ -8,6 +8,11 @@ import type { AccessAccount, AuthenticatedUser } from "./stores/types";
 const props = defineProps<{
   passwordResetToken?: string;
 }>();
+
+const tabletLandingQuery = window.matchMedia(
+  "(orientation: landscape) and (min-width: 768px) and (any-pointer: coarse)",
+);
+const tabletLanding = ref(tabletLandingQuery.matches && !props.passwordResetToken);
 
 const emit = defineEmits<{
   passwordResetComplete: [];
@@ -42,6 +47,21 @@ const passwordsDoNotMatch = computed(() =>
   recoveryConfirmation.value.length > 0 &&
   recoveryPassword.value !== recoveryConfirmation.value,
 );
+
+function updateTabletLanding() {
+  tabletLanding.value = tabletLandingQuery.matches && !props.passwordResetToken;
+}
+
+onMounted(() => {
+  tabletLandingQuery.addEventListener("change", updateTabletLanding);
+  updateTabletLanding();
+});
+
+onBeforeUnmount(() => {
+  tabletLandingQuery.removeEventListener("change", updateTabletLanding);
+});
+
+watch(() => props.passwordResetToken, updateTabletLanding);
 
 watch(
   () => props.passwordResetToken,
@@ -176,8 +196,8 @@ async function resetPassword() {
 </script>
 
 <template>
-  <main class="login-page">
-    <section class="image-panel" aria-label="CyMEZ Recep Visitantes">
+  <main class="login-page" :class="{ 'is-tablet-visitor-landing': tabletLanding }">
+    <section class="image-panel" aria-label="CyMEZ Recep Visitantes" :inert="tabletLanding">
       <img
         class="brand-image"
         src="/images/cymez-recep-logo-v2.webp"
@@ -187,7 +207,7 @@ async function resetPassword() {
       />
     </section>
 
-    <section class="login-panel" aria-labelledby="welcome-title">
+    <section class="login-panel" aria-labelledby="welcome-title" :inert="tabletLanding">
       <div class="panel-pattern" aria-hidden="true"></div>
       <div class="login-content">
         <header class="welcome-heading">
@@ -297,6 +317,35 @@ async function resetPassword() {
           </RouterLink>
         </div>
       </div>
+    </section>
+
+    <section class="tablet-visitor-landing" aria-label="Registro de visitas sin cita">
+      <img
+        class="tablet-visitor-landing-background"
+        src="/images/visitor-tablet-landing.webp"
+        alt="CyMEZ Recep Visitantes"
+        fetchpriority="high"
+        decoding="async"
+      />
+      <RouterLink class="tablet-visitor-landing-button" to="/registro">
+        <span class="tablet-visitor-landing-icon" aria-hidden="true">
+          <img src="/images/visitor-exit-icon.webp" alt="" width="777" height="768" />
+        </span>
+        <span class="tablet-visitor-landing-copy">
+          <strong>Visitas sin cita</strong>
+          <small>Registra tu visita aquí</small>
+        </span>
+        <span class="tablet-visitor-landing-arrow" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none">
+            <path d="m12 6 10 10-10 10" />
+          </svg>
+        </span>
+      </RouterLink>
+      <footer class="tablet-visitor-landing-footer">
+        <span></span>
+        <p>CyMEZ RECEP <i aria-hidden="true"></i> CONTROL DE VISITAS</p>
+        <span></span>
+      </footer>
     </section>
 
     <div

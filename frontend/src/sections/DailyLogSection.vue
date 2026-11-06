@@ -1738,6 +1738,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             ? null
             : selectedManualVisitorRecordId ?? selectedEntry?.visitorRecordId ?? null"
           :is-admin="isAdmin"
+          :theme="theme"
           @movement-saved="loadEntries"
         />
       </aside>

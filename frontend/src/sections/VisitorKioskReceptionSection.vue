@@ -62,6 +62,7 @@ type InspectionDraftItem = {
 const props = defineProps<{
   selectedVisitorRecordId: number | null;
   isAdmin: boolean;
+  theme: "dark" | "light";
 }>();
 const emit = defineEmits<{
   movementSaved: [];
@@ -419,89 +420,96 @@ async function completeChecklist(registration: KioskRegistration) {
     <button type="button" @click="loadRegistrations()">Reintentar</button>
   </p>
 
-  <div v-if="registrationDetails" class="modal-backdrop" @click.self="registrationDetails = null">
-    <section class="dialog workspace-dialog visitor-kiosk-detail" role="dialog" aria-modal="true" aria-labelledby="visitor-kiosk-detail-title">
-      <button class="dialog-close" type="button" aria-label="Cerrar" @click="registrationDetails = null">
-        <svg class="icon"><use href="#i-close" /></svg>
-      </button>
-      <span class="dialog-icon"><svg class="icon"><use href="#i-tool" /></svg></span>
-      <h2 id="visitor-kiosk-detail-title">Equipo y herramientas · {{ registrationDetails.folio }}</h2>
-      <p class="dialog-description">{{ registrationDetails.visitorName }} · {{ registrationDetails.companyName }}</p>
-      <div class="daily-log-table-scroll">
-        <table class="workspace-table">
-          <thead><tr><th>Tipo</th><th>Descripción</th><th>Cantidad</th><th>Marca / modelo / serie / color</th></tr></thead>
-          <tbody>
-            <tr v-for="(item, index) in paginatedRegistrationItems" :key="`${index}-${item.description}`">
-              <td>{{ item.type }}</td>
-              <td>{{ item.description }}</td>
-              <td>{{ item.quantity }}</td>
-              <td>{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <nav
-        v-if="registrationDetails.items.length > registrationItemsPageSize"
-        class="directory-pagination"
-        aria-label="Paginación de artículos del registro"
-      >
-        <span>
-          Mostrando {{ (registrationItemsPage - 1) * registrationItemsPageSize + 1 }}–{{
-            Math.min(registrationItemsPage * registrationItemsPageSize, registrationDetails.items.length)
-          }} de {{ registrationDetails.items.length }} artículos
-        </span>
-        <div>
-          <button
-            class="pagination-button"
-            type="button"
-            :disabled="registrationItemsPage <= 1"
-            @click="registrationItemsPage--"
-          >Anterior</button>
-          <span class="pagination-current" aria-live="polite">{{ registrationItemsPage }} / {{ registrationItemsPages }}</span>
-          <button
-            class="pagination-button"
-            type="button"
-            :disabled="registrationItemsPage >= registrationItemsPages"
-            @click="registrationItemsPage++"
-          >Siguiente</button>
+  <Teleport to="body">
+    <div
+      v-if="registrationDetails"
+      class="dashboard-app modal-backdrop visitor-kiosk-detail-backdrop"
+      :data-theme="props.theme"
+      @click.self="registrationDetails = null"
+    >
+      <section class="dialog workspace-dialog visitor-kiosk-detail" role="dialog" aria-modal="true" aria-labelledby="visitor-kiosk-detail-title">
+        <button class="dialog-close" type="button" aria-label="Cerrar" @click="registrationDetails = null">
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+        <span class="dialog-icon"><svg class="icon"><use href="#i-tool" /></svg></span>
+        <h2 id="visitor-kiosk-detail-title">Equipo y herramientas · {{ registrationDetails.folio }}</h2>
+        <p class="dialog-description">{{ registrationDetails.visitorName }} · {{ registrationDetails.companyName }}</p>
+        <div class="daily-log-table-scroll">
+          <table class="workspace-table">
+            <thead><tr><th>Tipo</th><th>Descripción</th><th>Cantidad</th><th>Marca / modelo / serie / color</th></tr></thead>
+            <tbody>
+              <tr v-for="(item, index) in paginatedRegistrationItems" :key="`${index}-${item.description}`">
+                <td>{{ item.type }}</td>
+                <td>{{ item.description }}</td>
+                <td>{{ item.quantity }}</td>
+                <td>{{ [item.brand, item.model, item.serialNumber, item.color].filter(Boolean).join(" · ") || "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-      </nav>
-      <h3>Checklists de entrada y salida</h3>
-      <p v-if="registrationDetails.inspections.length === 0" class="dialog-description">
-        Aún no se han completado revisiones de artículos.
-      </p>
-      <ul v-else class="visitor-kiosk-audit-list">
-        <li v-for="inspection in registrationDetails.inspections" :key="inspection.id">
-          <strong>Checklist de {{ inspection.phase.toLowerCase() }}</strong>
-          <span>{{ inspection.inspectorName }} · {{ inspection.completedAt }}</span>
-          <small v-if="inspection.items.length === 0">Sin artículos; revisión confirmada.</small>
-          <ul v-else class="visitor-kiosk-inspection-results">
-            <li v-for="(item, index) in inspection.items" :key="`${inspection.id}-${index}`">
-              <strong>{{ item.description }}</strong>
-              <span>{{ item.result }}<template v-if="item.notes"> · {{ item.notes }}</template></span>
-              <small v-if="item.keepAtReception" class="equipment-retention-status">
-                Mantener en recepción
-              </small>
-              <small
-                v-if="inspection.phase === 'Salida' && itemKeptAtReception(registrationDetails, item.itemId ?? 0)"
-                class="equipment-retention-status"
-              >
-                {{ item.returnedToVisitor ? "Devuelto al visitante" : "Permanece en recepción" }}
-              </small>
-            </li>
-          </ul>
-        </li>
-      </ul>
-      <h3>Historial de acciones</h3>
-      <ul class="visitor-kiosk-audit-list">
-        <li v-for="(event, index) in registrationDetails.audit" :key="`${event.created_at}-${index}`">
-          <strong>{{ event.action }}</strong>
-          <span>{{ event.actor_name }} · {{ event.created_at }}</span>
-          <small v-if="event.details">{{ event.details }}</small>
-        </li>
-      </ul>
-    </section>
-  </div>
+        <nav
+          v-if="registrationDetails.items.length > registrationItemsPageSize"
+          class="directory-pagination"
+          aria-label="Paginación de artículos del registro"
+        >
+          <span>
+            Mostrando {{ (registrationItemsPage - 1) * registrationItemsPageSize + 1 }}–{{
+              Math.min(registrationItemsPage * registrationItemsPageSize, registrationDetails.items.length)
+            }} de {{ registrationDetails.items.length }} artículos
+          </span>
+          <div>
+            <button
+              class="pagination-button"
+              type="button"
+              :disabled="registrationItemsPage <= 1"
+              @click="registrationItemsPage--"
+            >Anterior</button>
+            <span class="pagination-current" aria-live="polite">{{ registrationItemsPage }} / {{ registrationItemsPages }}</span>
+            <button
+              class="pagination-button"
+              type="button"
+              :disabled="registrationItemsPage >= registrationItemsPages"
+              @click="registrationItemsPage++"
+            >Siguiente</button>
+          </div>
+        </nav>
+        <h3>Checklists de entrada y salida</h3>
+        <p v-if="registrationDetails.inspections.length === 0" class="dialog-description">
+          Aún no se han completado revisiones de artículos.
+        </p>
+        <ul v-else class="visitor-kiosk-audit-list">
+          <li v-for="inspection in registrationDetails.inspections" :key="inspection.id">
+            <strong>Checklist de {{ inspection.phase.toLowerCase() }}</strong>
+            <span>{{ inspection.inspectorName }} · {{ inspection.completedAt }}</span>
+            <small v-if="inspection.items.length === 0">Sin artículos; revisión confirmada.</small>
+            <ul v-else class="visitor-kiosk-inspection-results">
+              <li v-for="(item, index) in inspection.items" :key="`${inspection.id}-${index}`">
+                <strong>{{ item.description }}</strong>
+                <span>{{ item.result }}<template v-if="item.notes"> · {{ item.notes }}</template></span>
+                <small v-if="item.keepAtReception" class="equipment-retention-status">
+                  Mantener en recepción
+                </small>
+                <small
+                  v-if="inspection.phase === 'Salida' && itemKeptAtReception(registrationDetails, item.itemId ?? 0)"
+                  class="equipment-retention-status"
+                >
+                  {{ item.returnedToVisitor ? "Devuelto al visitante" : "Permanece en recepción" }}
+                </small>
+              </li>
+            </ul>
+          </li>
+        </ul>
+        <h3>Historial de acciones</h3>
+        <ul class="visitor-kiosk-audit-list">
+          <li v-for="(event, index) in registrationDetails.audit" :key="`${event.created_at}-${index}`">
+            <strong>{{ event.action }}</strong>
+            <span>{{ event.actor_name }} · {{ event.created_at }}</span>
+            <small v-if="event.details">{{ event.details }}</small>
+          </li>
+        </ul>
+      </section>
+    </div>
+  </Teleport>
 
   <div v-if="inspectionPhase && inspectionRegistration" class="modal-backdrop visitor-kiosk-checklist-backdrop" @click.self="savingRegistrationId === null && closeChecklist()">
     <section class="dialog workspace-dialog visitor-kiosk-detail visitor-kiosk-checklist-dialog" role="dialog" aria-modal="true" aria-labelledby="visitor-kiosk-checklist-title">

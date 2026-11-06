@@ -259,6 +259,8 @@ type AppointmentRow = RowDataPacket & {
   reference_code?: string;
   equipment_checklist_required: number | boolean;
   equipment_entry_checklist_complete: number | boolean;
+  equipment_declaration_id: number | null;
+  equipment_exit_checklist_complete: number | boolean;
 };
 
 type AppointmentSnapshot = {
@@ -1849,6 +1851,11 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
               SELECT 1 FROM equipment_declarations ed
               WHERE ed.appointment_id = appointments.id
             ) AS equipment_checklist_required,
+            (
+              SELECT ed.id FROM equipment_declarations ed
+              WHERE ed.appointment_id = appointments.id
+              LIMIT 1
+            ) AS equipment_declaration_id,
             EXISTS (
               SELECT 1
               FROM equipment_declarations ed
@@ -1857,7 +1864,16 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
                AND ei.phase = 'Entrada'
                AND ei.status = 'Completada'
               WHERE ed.appointment_id = appointments.id
-            ) AS equipment_entry_checklist_complete
+            ) AS equipment_entry_checklist_complete,
+            EXISTS (
+              SELECT 1
+              FROM equipment_declarations ed
+              INNER JOIN equipment_inspections ei
+                ON ei.declaration_id = ed.id
+               AND ei.phase = 'Salida'
+               AND ei.status = 'Completada'
+              WHERE ed.appointment_id = appointments.id
+            ) AS equipment_exit_checklist_complete
      FROM appointments
      LEFT JOIN business_partners ON business_partners.id = appointments.business_partner_id
      WHERE appointments.deleted_at IS NULL
@@ -1880,7 +1896,11 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
     host: row.host_name,
     status: row.status,
     equipmentChecklistRequired: Boolean(row.equipment_checklist_required),
+    equipmentDeclarationId: row.equipment_declaration_id === null
+      ? null
+      : Number(row.equipment_declaration_id),
     equipmentEntryChecklistComplete: Boolean(row.equipment_entry_checklist_complete),
+    equipmentExitChecklistComplete: Boolean(row.equipment_exit_checklist_complete),
   }));
 }
 
@@ -2491,7 +2511,15 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
   try {
     const user = await getRequestUser(request);
     if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
-    if (!(await canManageExternalModules(user))) {
+    const receptionistChecklistAccess = !user.isAdmin &&
+      await hasSectionAccess(user, "recepcion") &&
+      (
+        (request.method === "GET" && Boolean(declarationPath[1]) && !declarationPath[2]) ||
+        (request.method === "PUT" && Boolean(declarationPath[1]) &&
+          (declarationPath[2] === "inspections/entrada" ||
+            declarationPath[2] === "inspections/salida"))
+      );
+    if (!(await canManageExternalModules(user)) && !receptionistChecklistAccess) {
       return Response.json({ error: "No tienes permiso para el módulo de equipo." }, { status: 403 });
     }
 
@@ -2738,12 +2766,13 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
 
     if (request.method === "GET" && declarationId !== null && action === null) {
       const [declarationRows] = await pool.execute<RowDataPacket[]>(
-        `SELECT d.id, d.person_name, d.status, d.created_by,
+        `SELECT d.id, d.person_name, d.status, d.created_by, d.appointment_id,
                 DATE_FORMAT(d.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
                 DATE_FORMAT(d.submitted_at, '%Y-%m-%d %H:%i:%s') AS submitted_at,
                 p.name AS company_name,
                 DATE_FORMAT(a.visit_date, '%Y-%m-%d') AS visit_date,
-                TIME_FORMAT(a.visit_time, '%H:%i') AS visit_time
+                TIME_FORMAT(a.visit_time, '%H:%i') AS visit_time,
+                a.status AS appointment_status
          FROM equipment_declarations d
          INNER JOIN business_partners p
            ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
@@ -2753,6 +2782,16 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       );
       const declaration = declarationRows[0];
       if (!declaration) return Response.json({ error: "No se encontró la declaración." }, { status: 404 });
+      if (
+        receptionistChecklistAccess &&
+        (declaration.appointment_id === null ||
+          declaration.visit_date !== getAppDateTime().date)
+      ) {
+        return Response.json(
+          { error: "Recepción solo puede consultar el checklist de una cita de hoy." },
+          { status: 403 },
+        );
+      }
       const [items] = await pool.execute<RowDataPacket[]>(
         `SELECT id, item_type, quantity, product, brand, model, serial_number, color, notes
          FROM equipment_declaration_items WHERE declaration_id = ? ORDER BY id`,
@@ -2885,7 +2924,12 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       try {
         await connection.beginTransaction();
         const [declarations] = await connection.execute<RowDataPacket[]>(
-          `SELECT id, status FROM equipment_declarations WHERE id = ? LIMIT 1 FOR UPDATE`,
+          `SELECT d.id, d.status, d.appointment_id,
+                  DATE_FORMAT(a.visit_date, '%Y-%m-%d') AS visit_date,
+                  a.status AS appointment_status
+           FROM equipment_declarations d
+           LEFT JOIN appointments a ON a.id = d.appointment_id
+           WHERE d.id = ? LIMIT 1 FOR UPDATE`,
           [declarationId],
         );
         if (!declarations[0]) {
@@ -2895,6 +2939,19 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         if (declarations[0].status !== "Enviada") {
           await connection.rollback();
           return Response.json({ error: "La persona debe enviar su declaración antes de la verificación." }, { status: 409 });
+        }
+        if (
+          receptionistChecklistAccess &&
+          (declarations[0].appointment_id === null ||
+            declarations[0].visit_date !== getAppDateTime().date ||
+            (phase === "Entrada" && declarations[0].appointment_status !== "En proceso") ||
+            (phase === "Salida" && declarations[0].appointment_status !== "Dentro"))
+        ) {
+          await connection.rollback();
+          return Response.json(
+            { error: "Recepción solo puede completar el checklist durante la etapa correspondiente de una cita de hoy." },
+            { status: 409 },
+          );
         }
         const [existing] = await connection.execute<RowDataPacket[]>(
           `SELECT id FROM equipment_inspections
@@ -4410,6 +4467,26 @@ const server = Bun.serve({
           ) {
             return Response.json(
               { error: "Completa el checklist de entrada del equipo y las herramientas de esta cita antes de registrar la entrada." },
+              { status: 409 },
+            );
+          }
+        }
+        if (input.event === "Retiro" && input.appointmentId !== null) {
+          const [equipmentDeclarations] = await pool.execute<RowDataPacket[]>(
+            `SELECT ei.status AS exit_inspection_status
+             FROM equipment_declarations ed
+             LEFT JOIN equipment_inspections ei
+               ON ei.declaration_id = ed.id AND ei.phase = 'Salida'
+             WHERE ed.appointment_id = ?
+             LIMIT 1`,
+            [input.appointmentId],
+          );
+          if (
+            equipmentDeclarations.length > 0 &&
+            equipmentDeclarations[0].exit_inspection_status !== "Completada"
+          ) {
+            return Response.json(
+              { error: "Completa el checklist de salida del equipo y las herramientas de esta cita antes de registrar la salida." },
               { status: 409 },
             );
           }

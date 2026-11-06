@@ -4023,6 +4023,185 @@ input:focus-visible {
   }
 }
 
+.tablet-visitor-landing {
+  display: none;
+}
+
+@media (orientation: landscape) and (min-width: 768px) and (any-pointer: coarse) {
+  .login-page.is-tablet-visitor-landing {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+    background: #010b1d;
+  }
+
+  .login-page.is-tablet-visitor-landing > .image-panel,
+  .login-page.is-tablet-visitor-landing > .login-panel {
+    display: none;
+  }
+
+  .tablet-visitor-landing {
+    position: absolute;
+    inset: 0;
+    display: block;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at 50% 52%, rgb(1 18 47 / 8%), #010b1d 90%),
+      #010b1d;
+  }
+
+  .tablet-visitor-landing-background {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    pointer-events: none;
+  }
+
+  .tablet-visitor-landing-button {
+    position: absolute;
+    top: 65.5%;
+    left: 50%;
+    display: grid;
+    width: min(68vw, 980px);
+    height: clamp(110px, 20.8vh, 174px);
+    grid-template-columns: minmax(74px, 20%) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: clamp(16px, 3.8vw, 48px);
+    padding: 10px clamp(18px, 3.8vw, 48px);
+    transform: translate(-50%, -50%);
+    border: 2px solid transparent;
+    border-radius: clamp(24px, 3vw, 36px);
+    background:
+      linear-gradient(110deg, rgb(1 13 34 / 95%), rgb(3 14 35 / 83%) 55%, rgb(25 10 29 / 89%)) padding-box,
+      linear-gradient(105deg, #00aaff 0%, #5ec9ff 46%, #d94fb1 70%, #ff193b 100%) border-box;
+    box-shadow:
+      0 0 11px rgb(0 164 255 / 90%),
+      0 0 22px rgb(0 101 255 / 48%),
+      0 0 17px rgb(255 27 59 / 68%),
+      inset 0 0 22px rgb(8 42 100 / 30%);
+    color: #f5f7fc;
+    text-decoration: none;
+    transition: box-shadow 160ms ease, filter 160ms ease;
+  }
+
+  .tablet-visitor-landing-button:hover {
+    filter: brightness(1.12);
+    box-shadow:
+      0 0 16px rgb(0 174 255 / 100%),
+      0 0 30px rgb(0 101 255 / 58%),
+      0 0 23px rgb(255 27 59 / 78%),
+      inset 0 0 24px rgb(8 42 100 / 38%);
+  }
+
+  .tablet-visitor-landing-button:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 7px;
+  }
+
+  .tablet-visitor-landing-icon {
+    display: grid;
+    height: 78%;
+    min-height: 66px;
+    place-items: center;
+    border-right: 2px solid rgb(66 195 255 / 90%);
+  }
+
+  .tablet-visitor-landing-icon img {
+    width: clamp(68px, 8vw, 104px);
+    height: 100%;
+    max-height: 116px;
+    object-fit: contain;
+  }
+
+  .tablet-visitor-landing-copy {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .tablet-visitor-landing-copy strong {
+    font-size: clamp(1.35rem, 3.8vw, 3rem);
+    font-weight: 750;
+    letter-spacing: -0.035em;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .tablet-visitor-landing-copy small {
+    color: #a9bfdc;
+    font-size: clamp(0.9rem, 2.35vw, 1.55rem);
+    line-height: 1.3;
+  }
+
+  .tablet-visitor-landing-arrow {
+    display: grid;
+    width: clamp(48px, 6.2vw, 76px);
+    aspect-ratio: 1;
+    place-items: center;
+    border: 1px solid rgb(102 149 208 / 22%);
+    border-radius: 50%;
+    background: rgb(52 68 112 / 48%);
+  }
+
+  .tablet-visitor-landing-arrow svg {
+    width: 58%;
+    height: 58%;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 3;
+  }
+
+  .tablet-visitor-landing-footer {
+    position: absolute;
+    bottom: 12.4%;
+    left: 50%;
+    display: flex;
+    width: min(84vw, 1050px);
+    align-items: center;
+    gap: clamp(14px, 2.8vw, 38px);
+    transform: translateX(-50%);
+  }
+
+  .tablet-visitor-landing-footer > span {
+    height: 1px;
+    flex: 1 1 0;
+    background: linear-gradient(90deg, transparent, #287cba);
+  }
+
+  .tablet-visitor-landing-footer > span:last-child {
+    background: linear-gradient(90deg, #287cba, transparent);
+  }
+
+  .tablet-visitor-landing-footer p {
+    display: flex;
+    align-items: center;
+    gap: clamp(14px, 2.2vw, 30px);
+    margin: 0;
+    color: #b6c8e1;
+    font-size: clamp(0.65rem, 1.45vw, 1rem);
+    font-weight: 500;
+    letter-spacing: clamp(0.16em, 0.35vw, 0.3em);
+    white-space: nowrap;
+  }
+
+  .tablet-visitor-landing-footer i {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: #fa193c;
+    box-shadow: 0 0 9px rgb(250 25 60 / 75%);
+  }
+}
+
 .date-filter {
   gap: 8px;
   cursor: default;
@@ -10647,6 +10826,10 @@ input:focus-visible {
   width: min(900px, calc(100vw - 32px));
   max-height: min(90vh, 800px);
   overflow: auto;
+}
+
+.visitor-kiosk-detail-backdrop {
+  z-index: 1000;
 }
 
 .visitor-kiosk-detail h3 {
