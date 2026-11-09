@@ -13,9 +13,29 @@ retirar cualquier ruta anterior. El versionado ayuda con la compatibilidad de
 clientes, pero la disponibilidad durante un deploy depende también de la
 estrategia de despliegue del servidor.
 
-El login ofrece el APK Android estático en
-`frontend/public/downloads/recep-movil.apk`; al preparar un release, copia allí
-el APK firmado de la aplicación móvil antes de desplegar el frontend.
+Los dashboards de administración, recepción y anfitriones ofrecen las descargas
+Android para celulares y tablets. El administrador publica nuevas versiones desde
+su menú de usuario, en **Aplicación móvil**, sin subir archivos directamente al
+VPS.
+
+Cada publicación recibe un canal independiente: **Celulares · Recepción** o
+**Tablets · Visitas sin cita**. La app selecciona el canal por tamaño de pantalla,
+consulta actualizaciones al iniciar y volver al primer plano, y abre la descarga
+para que la persona confirme la instalación en Android. La app no puede instalar
+un APK silenciosamente.
+
+Al desplegar por primera vez, la migración registra el APK firmado
+`1.0.2+3` en ambos canales. Las instalaciones anteriores deben actualizarse una
+vez desde la tarjeta del dashboard; después recibirán los avisos de nuevas
+versiones. Para publicar un release, incrementa la versión y compilación en el
+`pubspec.yaml` del proyecto RecepMovil, genera el APK firmado con la misma clave
+de las instalaciones y súbelo en el panel para el canal correspondiente. El panel
+valida que la compilación supere la última publicada en ese canal.
+
+Los APK cargados se guardan en el volumen Docker persistente `app_releases`, no
+en la imagen de la API. Los deploys normales conservan el volumen. No elimines
+ese volumen al actualizar los servicios; respáldalo junto con los datos de
+MySQL.
 
 ## Requisitos
 

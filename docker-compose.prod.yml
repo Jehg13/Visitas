@@ -49,6 +49,8 @@ services:
     restart: unless-stopped
     environment:
       <<: *backend-environment
+    volumes:
+      - app_releases:/app/backend/app-releases
     expose:
       - "3000"
     extra_hosts:
@@ -79,6 +81,8 @@ services:
     restart: "no"
     command: ["bun", "run", "--filter", "visitas-backend", "db:migrate"]
     environment: *backend-environment
+    volumes:
+      - app_releases:/app/backend/app-releases
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -90,3 +94,6 @@ networks:
     driver: bridge
   coolify:
     external: true
+
+volumes:
+  app_releases:

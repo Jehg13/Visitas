@@ -1,3 +1,7 @@
+import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import pool from "./db";
 import { getExternalUsersPool } from "./external-users-db";
 import type { RowDataPacket } from "mysql2";
@@ -15,6 +19,11 @@ const departmentHostsMigrationUrl = new URL(
   "../../database/init/007_create_department_hosts.sql",
   import.meta.url,
 );
+const mobileAppReleasesMigrationUrl = new URL(
+  "../../database/init/008_create_mobile_app_releases.sql",
+  import.meta.url,
+);
+const initialMobileAppUrl = new URL("../../initial-mobile-app.apk", import.meta.url);
 
 async function migrate() {
   const migrationFiles = [
@@ -23,6 +32,7 @@ async function migrate() {
     appointmentHistoryMigrationUrl,
     visitorIdentificationMigrationUrl,
     departmentHostsMigrationUrl,
+    mobileAppReleasesMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
@@ -52,6 +62,51 @@ async function migrate() {
   try {
     for (const statement of statements) {
       await connection.query(statement);
+    }
+    const [existingMobileReleases] = await connection.query<RowDataPacket[]>(
+      "SELECT id FROM mobile_app_releases LIMIT 1",
+    );
+    if (existingMobileReleases.length === 0) {
+      const initialApk = Bun.file(initialMobileAppUrl);
+      if (!(await initialApk.exists())) {
+        if (Bun.env.NODE_ENV === "production") {
+          throw new Error("The initial signed mobile APK is missing from the production image.");
+        }
+      } else {
+        const bytes = Buffer.from(await initialApk.arrayBuffer());
+        if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+          throw new Error("The initial mobile APK in the production image is invalid.");
+        }
+        const checksum = createHash("sha256").update(bytes).digest("hex");
+        const releaseDirectory = resolve(
+          Bun.env.APP_RELEASES_DIR?.trim() ||
+            fileURLToPath(new URL("../app-releases/", import.meta.url)),
+        );
+        const storageFilename = "baseline-1.0.2-3.apk";
+        const storagePath = join(releaseDirectory, storageFilename);
+        await mkdir(releaseDirectory, { recursive: true });
+        if (!(await Bun.file(storagePath).exists())) {
+          await Bun.write(storagePath, bytes);
+        }
+        await connection.execute(
+          `INSERT INTO mobile_app_releases
+             (channel, version, build_number, notes, original_filename,
+              storage_filename, file_size, sha256, created_by_login)
+           VALUES
+             ('phone', '1.0.2', 3, 'Versión inicial con avisos de actualización.',
+              'recep-movil.apk', ?, ?, ?, 'deployment'),
+             ('tablet', '1.0.2', 3, 'Versión inicial con avisos de actualización.',
+              'recep-movil.apk', ?, ?, ?, 'deployment')`,
+          [
+            storageFilename,
+            bytes.length,
+            checksum,
+            storageFilename,
+            bytes.length,
+            checksum,
+          ],
+        );
+      }
     }
     const [visitorKioskColumns] = await connection.query<RowDataPacket[]>(
       `SELECT COLUMN_NAME

@@ -25,6 +25,7 @@ RUN bun install --frozen-lockfile --production
 COPY backend backend
 COPY database database
 COPY frontend/public/images/cymez-recep-logo.webp frontend/public/images/cymez-recep-logo.webp
+COPY frontend/public/downloads/recep-movil.apk initial-mobile-app.apk
 
 EXPOSE 3000
 

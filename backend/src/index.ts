@@ -10,6 +10,10 @@ import {
 } from "./cors";
 import { sessionCookieAttributes } from "./session-cookie";
 import { normalizeApiPath } from "./api-version";
+import {
+  handleMobileAppReleaseRequest,
+  isPublicMobileAppReleaseRequest,
+} from "./mobile-releases";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
@@ -2357,8 +2361,9 @@ function isPublicApiRequest(request: Request, url: URL) {
   ) {
     return true;
   }
-  return ["GET", "PUT"].includes(method) &&
-    /^\/api\/equipment\/public\/[A-Za-z0-9_-]{40,60}$/.test(pathname);
+  return isPublicMobileAppReleaseRequest(request, url) ||
+    (["GET", "PUT"].includes(method) &&
+      /^\/api\/equipment\/public\/[A-Za-z0-9_-]{40,60}$/.test(pathname));
 }
 
 function getRequestUser(request: Request) {
@@ -3199,6 +3204,7 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
 
 const server = Bun.serve({
   port,
+  maxRequestBodySize: 160 * 1024 * 1024,
   async fetch(request, server) {
     const url = new URL(request.url);
     url.pathname = normalizeApiPath(url.pathname);
@@ -3287,6 +3293,13 @@ const server = Bun.serve({
       request.headers.get("x-real-ip") ?? server.requestIP(request)?.address ?? "unknown",
     );
     if (visitorKioskResponse) return visitorKioskResponse;
+
+    const mobileReleaseResponse = await handleMobileAppReleaseRequest(
+      request,
+      url,
+      getRequestUser,
+    );
+    if (mobileReleaseResponse) return mobileReleaseResponse;
 
     const publicEquipmentPath = url.pathname.match(/^\/api\/equipment\/public\/([A-Za-z0-9_-]{40,60})$/);
     if (publicEquipmentPath && ["GET", "PUT"].includes(request.method)) {

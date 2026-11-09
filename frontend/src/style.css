@@ -306,6 +306,38 @@ input:focus-visible {
   font-size: 0.68rem;
 }
 
+.mobile-app-menu-button {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #dce8f6;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-app-menu-button:hover,
+.mobile-app-menu-button:focus-visible {
+  border-color: #315577;
+  background: rgb(44 99 150 / 20%);
+  outline: none;
+}
+
+.mobile-app-menu-button .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.account-dropdown .mobile-app-menu-button span {
+  color: inherit;
+  font-size: 0.75rem;
+}
+
 .mobile-menu-button,
 .sidebar-mobile-heading {
   display: none;
@@ -3266,8 +3298,7 @@ input:focus-visible {
 }
 
 .app-download-card {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: 14px;
   margin-bottom: 16px;
   padding: 14px 18px;
@@ -3278,6 +3309,13 @@ input:focus-visible {
   text-decoration: none;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
   transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.app-download-card-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
 }
 
 .app-download-card:hover {
@@ -3327,12 +3365,64 @@ input:focus-visible {
   line-height: 1.4;
 }
 
-.app-download-card-arrow {
-  width: 20px;
-  height: 20px;
+.app-download-card-releases {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.app-download-card-release {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgb(88 153 220 / 30%);
+  border-radius: 10px;
+  background: rgb(4 18 34 / 48%);
+  color: inherit;
+  text-decoration: none;
+}
+
+.app-download-card-release:hover,
+.app-download-card-release:focus-visible {
+  border-color: #58a8ff;
+  outline: none;
+}
+
+.app-download-card-release-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app-download-card-release-copy strong {
+  font-size: 0.8rem;
+}
+
+.app-download-card-release-copy small {
+  overflow: hidden;
+  color: #b8c8db;
+  font-size: 0.69rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-download-card-release-version {
+  display: inline-flex;
   flex: 0 0 auto;
-  margin-left: auto;
-  stroke: #91bdeb;
+  align-items: center;
+  gap: 5px;
+  color: #91bdeb;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.app-download-card-release-version svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
@@ -3344,6 +3434,50 @@ input:focus-visible {
   gap: 12px;
   margin-bottom: 13px;
   color: #c4d0e0;
+}
+
+.dashboard-app[data-theme="light"] .app-download-card {
+  border-color: #cbdced;
+  background: linear-gradient(110deg, #fff, #f3f8fd);
+  color: #173a5d;
+  box-shadow: 0 5px 16px rgb(34 73 111 / 7%);
+}
+
+.dashboard-app[data-theme="light"] .app-download-card:hover {
+  border-color: #77a9d8;
+  box-shadow: 0 8px 20px rgb(34 73 111 / 12%);
+}
+
+.dashboard-app[data-theme="light"] .app-download-card-icon {
+  background: #e5f1fc;
+  color: #276b9f;
+}
+
+.dashboard-app[data-theme="light"] .app-download-card-copy > span {
+  color: #5c6f83;
+}
+
+.dashboard-app[data-theme="light"] .app-download-card-release {
+  border-color: #d5e2ef;
+  background: #f7fbff;
+}
+
+.dashboard-app[data-theme="light"] .app-download-card-release-copy small {
+  color: #5c6f83;
+}
+
+.dashboard-app[data-theme="light"] .app-download-card-release-version {
+  color: #3978aa;
+}
+
+.dashboard-app[data-theme="light"] .mobile-app-menu-button {
+  color: #27445f;
+}
+
+.dashboard-app[data-theme="light"] .mobile-app-menu-button:hover,
+.dashboard-app[data-theme="light"] .mobile-app-menu-button:focus-visible {
+  border-color: #c9d9e8;
+  background: #edf5fc;
 }
 
 .access-divider span {

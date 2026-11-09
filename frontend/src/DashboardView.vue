@@ -32,6 +32,9 @@ const AppointmentsSection = defineAsyncComponent(() => import("./sections/Appoin
 const HomeSection = defineAsyncComponent(() => import("./sections/HomeSection.vue"));
 const BusinessDirectorySection = defineAsyncComponent(() => import("./sections/BusinessDirectorySection.vue"));
 const AccessSection = defineAsyncComponent(() => import("./sections/AccessSection.vue"));
+const MobileAppReleasesSection = defineAsyncComponent(
+  () => import("./sections/MobileAppReleasesSection.vue"),
+);
 
 type AccessRoleDraft = "administrador" | "recepcion" | "";
 const otherAppointmentVisitor = "__otro__";
@@ -71,6 +74,7 @@ const dashboardSections = [
   "Contratistas, proveedores y visitantes",
   "Equipo y herramientas",
   "Bitácora diaria",
+  "Aplicación móvil",
 ];
 const visibleNavigationGroups = computed(() =>
   navigationGroups
@@ -2301,6 +2305,15 @@ async function removeBusinessPartner(id: number) {
             <span>{{ dashboardTheme === "dark" ? "Modo oscuro" : "Modo claro" }}</span>
             <span class="theme-toggle-switch" aria-hidden="true"><span></span></span>
           </button>
+          <button
+            v-if="currentUser.isAdmin"
+            class="mobile-app-menu-button"
+            type="button"
+            @click="privateMenuOpen = false; selectSection('Aplicación móvil')"
+          >
+            <svg class="icon"><use href="#i-tool" /></svg>
+            <span>Aplicación móvil</span>
+          </button>
           <button class="logout-button" type="button" @click="logout">
             <svg class="icon"><use href="#i-exit" /></svg>
             Cerrar sesión
@@ -2414,6 +2427,9 @@ async function removeBusinessPartner(id: number) {
           </p>
           <p v-else-if="activeSection === 'Accesos'">
             Asigna quién puede entrar al sistema y qué áreas puede utilizar · datos de demostración
+          </p>
+          <p v-else-if="activeSection === 'Aplicación móvil'">
+            Publica actualizaciones para celulares de recepción o tablets de visitas sin cita
           </p>
           <p v-else>Resumen de acceso y visitas</p>
         </div>
@@ -2576,6 +2592,10 @@ async function removeBusinessPartner(id: number) {
         @open-log="openDailyLogRange"
         @open-appointments="selectSection('Agenda de citas')"
         @open-equipment="selectSection('Equipo y herramientas')"
+      />
+      <MobileAppReleasesSection
+        v-else-if="activeSection === 'Aplicación móvil' && currentUser.isAdmin"
+        :theme="dashboardTheme"
       />
       <div v-else class="panel workspace-panel access-none-panel">
         <h2>Sin secciones asignadas</h2>
