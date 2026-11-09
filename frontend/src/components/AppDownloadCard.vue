@@ -2,6 +2,10 @@
 import { onMounted, ref } from "vue";
 import { apiFetch as fetch } from "../api";
 
+const props = withDefaults(defineProps<{ showTablet?: boolean }>(), {
+  showTablet: false,
+});
+
 type Channel = "phone" | "tablet";
 type DownloadRelease = { version: string; build: number; downloadUrl: string };
 type DownloadOption = {
@@ -18,12 +22,14 @@ const downloads = ref<DownloadOption[]>([
     description: "Recepción móvil",
     release: null,
   },
-  {
-    channel: "tablet",
-    title: "Tablets",
-    description: "Visitas sin cita",
-    release: null,
-  },
+  ...(props.showTablet
+    ? [{
+        channel: "tablet" as const,
+        title: "Tablets",
+        description: "Visitas sin cita",
+        release: null,
+      }]
+    : []),
 ]);
 
 async function loadRelease(channel: Channel) {
@@ -38,13 +44,11 @@ async function loadRelease(channel: Channel) {
 
 onMounted(async () => {
   try {
-    const [phone, tablet] = await Promise.all([
-      loadRelease("phone"),
-      loadRelease("tablet"),
-    ]);
+    const channels: Channel[] = props.showTablet ? ["phone", "tablet"] : ["phone"];
+    const releases = await Promise.all(channels.map(loadRelease));
     downloads.value = downloads.value.map((download) => ({
       ...download,
-      release: download.channel === "phone" ? phone : tablet,
+      release: releases[channels.indexOf(download.channel)] ?? null,
     }));
   } catch (error) {
     console.error("Could not load mobile app download versions:", error);
@@ -62,8 +66,12 @@ onMounted(async () => {
         </svg>
       </span>
       <span class="app-download-card-copy">
-        <strong>Aplicación móvil Android</strong>
-        <span>Descarga la versión para el dispositivo que utilizas.</span>
+        <strong>Descargar app para Android</strong>
+        <span>
+          {{ props.showTablet
+            ? "Selecciona la versión para celulares o tablets."
+            : "Disponible para celulares." }}
+        </span>
       </span>
     </div>
     <div class="app-download-card-releases">

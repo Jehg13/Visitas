@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { apiFetch as fetch } from "../api";
+import { confirmUser } from "../notifications";
 
 type Channel = "phone" | "tablet";
 type Release = {
@@ -15,6 +16,7 @@ type Release = {
   createdBy: string;
   createdAt: string;
   downloadUrl: string;
+  isLatest: boolean;
 };
 
 const props = defineProps<{ theme: "dark" | "light" }>();
@@ -29,6 +31,12 @@ const publishing = ref(false);
 const errorMessage = ref("");
 const successMessage = ref("");
 const fileInput = ref<HTMLInputElement | null>(null);
+const editingRelease = ref<Release | null>(null);
+const editingNotes = ref("");
+const savingEdit = ref(false);
+const deletingReleaseId = ref<number | null>(null);
+const historyPage = ref(1);
+const releasesPerPage = 7;
 
 const channelLabels: Record<Channel, string> = {
   phone: "Celulares · Recepción",
@@ -41,6 +49,18 @@ watch([channel, releases], () => {
     .reduce((latest, release) => Math.max(latest, release.build), 0);
   build.value = lastBuild + 1;
 }, { immediate: true });
+
+const totalHistoryPages = computed(() =>
+  Math.max(1, Math.ceil(releases.value.length / releasesPerPage)),
+);
+const paginatedReleases = computed(() => {
+  const start = (historyPage.value - 1) * releasesPerPage;
+  return releases.value.slice(start, start + releasesPerPage);
+});
+
+watch(releases, () => {
+  historyPage.value = Math.min(historyPage.value, totalHistoryPages.value);
+});
 
 async function loadReleases() {
   loading.value = true;
@@ -105,6 +125,80 @@ async function publishRelease() {
       : "No se pudo publicar la versión.";
   } finally {
     publishing.value = false;
+  }
+}
+
+function openEditRelease(release: Release) {
+  editingRelease.value = release;
+  editingNotes.value = release.notes;
+  errorMessage.value = "";
+}
+
+async function saveReleaseNotes() {
+  const release = editingRelease.value;
+  if (!release || editingNotes.value.trim().length > 2000) return;
+  savingEdit.value = true;
+  errorMessage.value = "";
+  successMessage.value = "";
+  try {
+    const response = await fetch(`/api/app-releases/admin/${release.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: editingNotes.value.trim() }),
+    });
+    const result = await response.json() as { error?: string };
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudieron guardar las notas.");
+    }
+    editingRelease.value = null;
+    successMessage.value = `Se actualizaron las notas de la versión ${release.version}.`;
+    await loadReleases();
+  } catch (error) {
+    errorMessage.value = error instanceof Error
+      ? error.message
+      : "No se pudieron guardar las notas.";
+  } finally {
+    savingEdit.value = false;
+  }
+}
+
+async function deleteRelease(release: Release) {
+  if (release.isLatest) return;
+  const confirmed = await confirmUser(
+    `Se eliminará la versión ${release.version} (compilación ${release.build}) del historial y del almacenamiento. Esta acción no se puede deshacer.`,
+    "Eliminar versión",
+    "¿Eliminar esta versión?",
+    "warning",
+  );
+  if (!confirmed) return;
+
+  deletingReleaseId.value = release.id;
+  errorMessage.value = "";
+  successMessage.value = "";
+  try {
+    const response = await fetch(`/api/app-releases/admin/${release.id}`, {
+      method: "DELETE",
+    });
+    const result = await response.json() as {
+      message?: string;
+      error?: string;
+      fileCleanupWarning?: boolean;
+    };
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudo eliminar la versión.");
+    }
+    if (result.fileCleanupWarning) {
+      errorMessage.value = result.message ?? "La versión se eliminó, pero el archivo no pudo limpiarse.";
+    } else {
+      successMessage.value = result.message ?? "La versión se eliminó.";
+    }
+    await loadReleases();
+  } catch (error) {
+    errorMessage.value = error instanceof Error
+      ? error.message
+      : "No se pudo eliminar la versión.";
+  } finally {
+    deletingReleaseId.value = null;
   }
 }
 
@@ -191,7 +285,7 @@ onMounted(loadReleases);
       <div class="mobile-release-history-heading">
         <div>
           <h2>Versiones publicadas</h2>
-          <p>Se conservan para consultar las publicaciones anteriores.</p>
+          <p>Historial de versiones · {{ releases.length }} publicaciones</p>
         </div>
         <button type="button" :disabled="loading" @click="loadReleases">
           {{ loading ? "Actualizando…" : "Actualizar lista" }}
@@ -211,21 +305,110 @@ onMounted(loadReleases);
               <th>Canal</th>
               <th>Publicado</th>
               <th>APK</th>
+              <th>Acciones</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="release in releases" :key="release.id">
+            <tr v-for="release in paginatedReleases" :key="release.id">
               <td><strong>{{ release.version }}</strong><small>Compilación {{ release.build }}</small></td>
-              <td>{{ channelLabels[release.channel] }}</td>
+              <td>
+                {{ channelLabels[release.channel] }}
+                <small v-if="release.isLatest" class="mobile-release-current">Activa</small>
+              </td>
               <td>{{ formatDate(release.createdAt) }}</td>
               <td>
                 <a :href="release.downloadUrl">{{ formatSize(release.size) }}</a>
                 <small>{{ release.filename }}</small>
               </td>
+              <td>
+                <div class="mobile-release-row-actions">
+                  <button
+                    class="mobile-release-action"
+                    type="button"
+                    :aria-label="`Editar notas de versión ${release.version}, compilación ${release.build}`"
+                    @click="openEditRelease(release)"
+                  >
+                    Editar
+                  </button>
+                  <button
+                    class="mobile-release-action is-danger"
+                    type="button"
+                    :disabled="release.isLatest || deletingReleaseId === release.id"
+                    :title="release.isLatest
+                      ? 'Publica primero una versión más reciente para mantener activo este canal.'
+                      : 'Eliminar versión'"
+                    :aria-label="`Eliminar versión ${release.version}, compilación ${release.build}`"
+                    @click="deleteRelease(release)"
+                  >
+                    {{ deletingReleaseId === release.id ? "Eliminando…" : "Eliminar" }}
+                  </button>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
+      <nav
+        v-if="releases.length > releasesPerPage"
+        class="mobile-release-pagination"
+        aria-label="Paginación del historial de versiones"
+      >
+        <span>
+          Mostrando {{ (historyPage - 1) * releasesPerPage + 1 }}–{{
+            Math.min(historyPage * releasesPerPage, releases.length)
+          }} de {{ releases.length }}
+        </span>
+        <div>
+          <button
+            type="button"
+            :disabled="historyPage === 1"
+            @click="historyPage -= 1"
+          >
+            Anterior
+          </button>
+          <strong>{{ historyPage }} / {{ totalHistoryPages }}</strong>
+          <button
+            type="button"
+            :disabled="historyPage === totalHistoryPages"
+            @click="historyPage += 1"
+          >
+            Siguiente
+          </button>
+        </div>
+      </nav>
+    </div>
+
+    <div
+      v-if="editingRelease"
+      class="mobile-release-edit-backdrop"
+      @click.self="!savingEdit && (editingRelease = null)"
+    >
+      <form class="mobile-release-edit-dialog" @submit.prevent="saveReleaseNotes">
+        <span class="mobile-release-eyebrow">EDITAR PUBLICACIÓN</span>
+        <h2>Versión {{ editingRelease.version }} · compilación {{ editingRelease.build }}</h2>
+        <p>{{ channelLabels[editingRelease.channel] }} · {{ editingRelease.filename }}</p>
+        <label class="mobile-release-field">
+          <span>Notas de la actualización</span>
+          <textarea v-model="editingNotes" rows="5" maxlength="2000" />
+        </label>
+        <p class="mobile-release-notice">
+          El APK, la versión y el número de compilación no se editan para mantener
+          los datos alineados con el archivo publicado.
+        </p>
+        <div class="mobile-release-edit-actions">
+          <button
+            class="mobile-release-cancel"
+            type="button"
+            :disabled="savingEdit"
+            @click="editingRelease = null"
+          >
+            Cancelar
+          </button>
+          <button class="mobile-release-submit" type="submit" :disabled="savingEdit">
+            {{ savingEdit ? "Guardando…" : "Guardar notas" }}
+          </button>
+        </div>
+      </form>
     </div>
   </section>
 </template>
@@ -437,6 +620,126 @@ onMounted(loadReleases);
   color: #8bc6ff;
 }
 
+.mobile-release-current {
+  width: fit-content;
+  padding: 3px 7px;
+  border: 1px solid rgb(83 188 164 / 36%);
+  border-radius: 999px;
+  background: rgb(40 145 121 / 14%);
+  color: #7ee0c1;
+  font-weight: 700;
+}
+
+.mobile-release-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.mobile-release-action,
+.mobile-release-pagination button,
+.mobile-release-cancel {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid #355676;
+  border-radius: 8px;
+  background: #102744;
+  color: #dce8f6;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mobile-release-action:hover:not(:disabled),
+.mobile-release-pagination button:hover:not(:disabled),
+.mobile-release-cancel:hover:not(:disabled) {
+  border-color: #69a9e2;
+  background: #163558;
+}
+
+.mobile-release-action.is-danger {
+  border-color: rgb(219 99 114 / 40%);
+  color: #ffabb4;
+}
+
+.mobile-release-action.is-danger:hover:not(:disabled) {
+  border-color: #dc7885;
+  background: rgb(120 39 52 / 28%);
+}
+
+.mobile-release-action:disabled,
+.mobile-release-pagination button:disabled,
+.mobile-release-cancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mobile-release-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 16px;
+  color: #a9bad0;
+  font-size: 0.8rem;
+}
+
+.mobile-release-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mobile-release-pagination strong {
+  color: #e7eef8;
+  white-space: nowrap;
+}
+
+.mobile-release-edit-backdrop {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 20px;
+  background: rgb(2 8 18 / 76%);
+  backdrop-filter: blur(6px);
+}
+
+.mobile-release-edit-dialog {
+  display: grid;
+  width: min(100%, 560px);
+  gap: 15px;
+  padding: clamp(20px, 4vw, 30px);
+  border: 1px solid #315576;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #10243d, #09182b);
+  color: #e7eef8;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 40%);
+}
+
+.mobile-release-edit-dialog h2,
+.mobile-release-edit-dialog p {
+  margin: 0;
+}
+
+.mobile-release-edit-dialog h2 {
+  font-size: 1.12rem;
+}
+
+.mobile-release-edit-dialog > p {
+  color: #9fb3ca;
+  font-size: 0.84rem;
+}
+
+.mobile-release-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .mobile-release-section[data-theme="light"] {
   color: #18334f;
 }
@@ -484,6 +787,55 @@ onMounted(loadReleases);
   border-color: #dce5ef;
 }
 
+.mobile-release-section[data-theme="light"] .mobile-release-current {
+  border-color: #b7dfd4;
+  background: #e8f7f2;
+  color: #17684f;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-action,
+.mobile-release-section[data-theme="light"] .mobile-release-pagination button,
+.mobile-release-section[data-theme="light"] .mobile-release-cancel {
+  border-color: #cbd9e7;
+  background: #f6f9fc;
+  color: #294968;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-action:hover:not(:disabled),
+.mobile-release-section[data-theme="light"] .mobile-release-pagination button:hover:not(:disabled),
+.mobile-release-section[data-theme="light"] .mobile-release-cancel:hover:not(:disabled) {
+  border-color: #91b6d8;
+  background: #eaf3fb;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-action.is-danger {
+  border-color: #ebc4c9;
+  color: #a12c3c;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-action.is-danger:hover:not(:disabled) {
+  border-color: #d98d97;
+  background: #fff0f1;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-pagination {
+  color: #62778d;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-pagination strong {
+  color: #284766;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-edit-dialog {
+  border-color: #c9d9e8;
+  background: linear-gradient(145deg, #fff, #f3f7fb);
+  color: #18334f;
+}
+
+.mobile-release-section[data-theme="light"] .mobile-release-edit-dialog > p {
+  color: #62778d;
+}
+
 @media (max-width: 640px) {
   .mobile-release-channels,
   .mobile-release-fields {
@@ -495,7 +847,17 @@ onMounted(loadReleases);
   }
 
   .mobile-release-table {
-    min-width: 600px;
+    min-width: 790px;
+  }
+
+  .mobile-release-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mobile-release-pagination > div {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 </style>

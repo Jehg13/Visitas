@@ -27,6 +27,13 @@ type MobileReleaseRow = RowDataPacket & {
   created_at: Date;
 };
 
+function releaseIdFromPath(pathname: string) {
+  const match = pathname.match(/^\/api\/app-releases\/admin\/(\d+)$/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 function isReleaseChannel(value: FormDataEntryValue | string | null): value is MobileReleaseChannel {
   return typeof value === "string" && channels.some((channel) => channel === value);
 }
@@ -35,7 +42,7 @@ function isValidVersion(value: FormDataEntryValue | string | null): value is str
   return typeof value === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value);
 }
 
-function releaseJson(release: MobileReleaseRow) {
+function releaseJson(release: MobileReleaseRow, isLatest = false) {
   return {
     id: Number(release.id),
     channel: release.channel,
@@ -47,6 +54,7 @@ function releaseJson(release: MobileReleaseRow) {
     sha256: release.sha256,
     createdBy: release.created_by_login,
     createdAt: release.created_at,
+    isLatest,
     downloadUrl: `/api/v1/app-releases/${Number(release.id)}/download`,
   };
 }
@@ -131,16 +139,165 @@ export async function handleMobileAppReleaseRequest(
         `SELECT id, channel, version, build_number, notes, storage_filename,
                 original_filename, file_size, sha256, created_by_login, created_at
          FROM mobile_app_releases
-         ORDER BY created_at DESC, id DESC
-         LIMIT 50`,
+         ORDER BY created_at DESC, id DESC`,
       );
-      return Response.json({ releases: rows.map(releaseJson) }, {
+      const latestByChannel = new Map<string, number>();
+      for (const release of rows) {
+        const currentLatest = latestByChannel.get(release.channel);
+        if (currentLatest === undefined || Number(release.build_number) > currentLatest) {
+          latestByChannel.set(release.channel, Number(release.build_number));
+        }
+      }
+      return Response.json({
+        releases: rows.map((release) =>
+          releaseJson(
+            release,
+            latestByChannel.get(release.channel) === Number(release.build_number),
+          )
+        ),
+      }, {
         headers: { "Cache-Control": "no-store" },
       });
     } catch (error) {
       console.error("Failed to list mobile app releases:", error);
       return jsonError("No se pudo cargar el historial de versiones.", 500);
     }
+  }
+
+  const adminReleaseId = releaseIdFromPath(url.pathname);
+  if (adminReleaseId !== null && request.method === "PATCH") {
+    const user = await getUser(request);
+    if (!user?.isAdmin) return jsonError("Se requiere acceso de administrador.", 403);
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch (error) {
+      console.warn("Invalid JSON request for mobile app release notes:", error);
+      return jsonError("La información de edición no tiene un formato válido.", 400);
+    }
+    if (
+      typeof body !== "object" ||
+      body === null ||
+      !("notes" in body) ||
+      typeof body.notes !== "string" ||
+      body.notes.trim().length > 2000
+    ) {
+      return jsonError("Las notas no pueden superar los 2,000 caracteres.", 400);
+    }
+
+    try {
+      const [existingRows] = await pool.execute<MobileReleaseRow[]>(
+        `SELECT id, channel, version, build_number, notes, storage_filename,
+                original_filename, file_size, sha256, created_by_login, created_at
+         FROM mobile_app_releases
+         WHERE id = ?
+         LIMIT 1`,
+        [adminReleaseId],
+      );
+      if (!existingRows[0]) return jsonError("No se encontró la versión seleccionada.", 404);
+      await pool.execute(
+        "UPDATE mobile_app_releases SET notes = ? WHERE id = ?",
+        [body.notes.trim(), adminReleaseId],
+      );
+      const [updatedRows] = await pool.execute<MobileReleaseRow[]>(
+        `SELECT id, channel, version, build_number, notes, storage_filename,
+                original_filename, file_size, sha256, created_by_login, created_at
+         FROM mobile_app_releases
+         WHERE id = ?
+         LIMIT 1`,
+        [adminReleaseId],
+      );
+      const [latestRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT build_number
+         FROM mobile_app_releases
+         WHERE channel = ?
+         ORDER BY build_number DESC
+         LIMIT 1`,
+        [updatedRows[0].channel],
+      );
+      return Response.json({
+        release: releaseJson(
+          updatedRows[0],
+          Number(latestRows[0]?.build_number) === Number(updatedRows[0].build_number),
+        ),
+      });
+    } catch (error) {
+      console.error("Failed to edit mobile app release notes:", error);
+      return jsonError("No se pudieron guardar las notas de la versión.", 500);
+    }
+  }
+
+  if (adminReleaseId !== null && request.method === "DELETE") {
+    const user = await getUser(request);
+    if (!user?.isAdmin) return jsonError("Se requiere acceso de administrador.", 403);
+
+    const connection = await pool.getConnection();
+    let storageFilename: string | null = null;
+    try {
+      await connection.beginTransaction();
+      const [releaseRows] = await connection.execute<MobileReleaseRow[]>(
+        `SELECT id, channel, version, build_number, notes, storage_filename,
+                original_filename, file_size, sha256, created_by_login, created_at
+         FROM mobile_app_releases
+         WHERE id = ?
+         FOR UPDATE`,
+        [adminReleaseId],
+      );
+      const release = releaseRows[0];
+      if (!release) {
+        await connection.rollback();
+        return jsonError("No se encontró la versión seleccionada.", 404);
+      }
+
+      const [latestRows] = await connection.execute<RowDataPacket[]>(
+        `SELECT id
+         FROM mobile_app_releases
+         WHERE channel = ?
+         ORDER BY build_number DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [release.channel],
+      );
+      if (Number(latestRows[0]?.id) === Number(release.id)) {
+        await connection.rollback();
+        return jsonError(
+          "No se puede eliminar la versión activa del canal. Publica una compilación más reciente primero.",
+          409,
+        );
+      }
+
+      await connection.execute(
+        "DELETE FROM mobile_app_releases WHERE id = ?",
+        [adminReleaseId],
+      );
+      storageFilename = release.storage_filename;
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      console.error("Failed to delete a mobile app release:", error);
+      return jsonError("No se pudo eliminar la versión seleccionada.", 500);
+    } finally {
+      connection.release();
+    }
+
+    let fileCleanupWarning = false;
+    if (storageFilename) {
+      try {
+        await unlink(join(releaseDirectory, storageFilename));
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+          fileCleanupWarning = true;
+          console.error("Failed to remove a deleted mobile app release file:", error);
+        }
+      }
+    }
+    return Response.json({
+      message: fileCleanupWarning
+        ? "La versión se eliminó, pero el archivo no pudo limpiarse del almacenamiento."
+        : "La versión se eliminó.",
+      fileCleanupWarning,
+    });
   }
 
   if (request.method === "POST" && url.pathname === "/api/app-releases/admin") {

@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppDownloadCard v-if="isAdmin" />
+  <AppDownloadCard v-if="isAdmin" :show-tablet="isAdmin" />
   <section class="metric-grid" aria-label="Resumen de hoy">
     <button class="metric-card" type="button" @click="emit('openAppointments')">
       <span class="metric-icon metric-red"><svg class="icon"><use href="#i-calendar" /></svg></span>

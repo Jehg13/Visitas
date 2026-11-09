@@ -27,6 +27,14 @@ describe("mobile app release access", () => {
       "https://example.test/api/app-releases/admin",
       { method: "POST" },
     );
+    const editRequest = new Request(
+      "https://example.test/api/app-releases/admin/12",
+      { method: "PATCH" },
+    );
+    const deleteRequest = new Request(
+      "https://example.test/api/app-releases/admin/12",
+      { method: "DELETE" },
+    );
 
     expect(
       isPublicMobileAppReleaseRequest(listRequest, new URL(listRequest.url)),
@@ -35,6 +43,15 @@ describe("mobile app release access", () => {
       isPublicMobileAppReleaseRequest(
         publishRequest,
         new URL(publishRequest.url),
+      ),
+    ).toBe(false);
+    expect(
+      isPublicMobileAppReleaseRequest(editRequest, new URL(editRequest.url)),
+    ).toBe(false);
+    expect(
+      isPublicMobileAppReleaseRequest(
+        deleteRequest,
+        new URL(deleteRequest.url),
       ),
     ).toBe(false);
   });
