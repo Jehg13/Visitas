@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import AppDownloadCard from "../components/AppDownloadCard.vue";
 import SectionHelpDialog from "./SectionHelpDialog.vue";
 
 type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
@@ -43,6 +44,7 @@ const props = defineProps<{
   isAdmin: boolean;
   isReception: boolean;
   isHost: boolean;
+  showAppDownload: boolean;
   theme: "dark" | "light";
 }>();
 
@@ -138,6 +140,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
+  <AppDownloadCard v-if="showAppDownload" />
   <section class="workspace-grid">
     <section class="panel workspace-panel agenda-workspace-panel" aria-labelledby="appointments-list-title">
       <header class="panel-heading workspace-heading">

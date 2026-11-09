@@ -3265,6 +3265,79 @@ input:focus-visible {
   margin-top: 16px;
 }
 
+.app-download-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border: 1px solid rgb(88 153 220 / 34%);
+  border-radius: 16px;
+  background: linear-gradient(110deg, rgb(13 45 77 / 94%), rgb(10 24 43 / 94%));
+  color: #f4f7fb;
+  text-decoration: none;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.app-download-card:hover {
+  border-color: #58a8ff;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 16%);
+  transform: translateY(-1px);
+}
+
+.app-download-card:focus-visible {
+  outline: 2px solid #58a8ff;
+  outline-offset: 3px;
+}
+
+.app-download-card-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 12px;
+  background: rgb(88 168 255 / 16%);
+  color: #8bc6ff;
+}
+
+.app-download-card-icon svg {
+  width: 23px;
+  height: 23px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.app-download-card-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-download-card-copy strong {
+  font-size: 0.9rem;
+}
+
+.app-download-card-copy > span {
+  color: #b8c8db;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.app-download-card-arrow {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  stroke: #91bdeb;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
 .access-divider {
   display: flex;
   align-items: center;
@@ -3318,16 +3391,6 @@ input:focus-visible {
 .access-notice-button:focus-visible {
   outline: 2px solid #58a8ff;
   outline-offset: 3px;
-}
-
-.app-download-divider {
-  margin-top: 16px;
-}
-
-.app-download-link {
-  background:
-    linear-gradient(115deg, rgb(9 45 76 / 97%), rgb(15 31 52 / 97%)) padding-box,
-    linear-gradient(105deg, #2879b8, #3b6590 57%, #a72d3b) border-box;
 }
 
 .access-notice-icon {

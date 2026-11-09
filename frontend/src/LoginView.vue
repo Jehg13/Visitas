@@ -316,28 +316,6 @@ async function resetPassword() {
               <path d="M4 10h12m-5-5 5 5-5 5" />
             </svg>
           </RouterLink>
-          <div class="access-divider app-download-divider" aria-hidden="true">
-            <span></span>
-            <p>Aplicación móvil</p>
-            <span></span>
-          </div>
-          <a
-            class="access-notice access-notice-button app-download-link"
-            href="/downloads/recep-movil.apk"
-            download="CyMEZ-Recepcion.apk"
-          >
-            <svg class="access-notice-icon" viewBox="0 0 32 36" fill="none" aria-hidden="true">
-              <path d="M16 3 4 8v9c0 7.7 4.7 13.1 12 16 7.3-2.9 12-8.3 12-16V8L16 3Z" />
-              <path d="M16 10v12m-5-5 5 5 5-5" />
-            </svg>
-            <div class="access-notice-copy">
-              <h2>Descargar app para Android</h2>
-              <p>Disponible para teléfono y tablet.</p>
-            </div>
-            <svg class="access-notice-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-              <path d="M4 10h12m-5-5 5 5-5 5" />
-            </svg>
-          </a>
         </div>
       </div>
     </section>

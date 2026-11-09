@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { apiFetch as fetch } from "../api";
+import AppDownloadCard from "../components/AppDownloadCard.vue";
 
 type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
 type Appointment = {
@@ -389,6 +390,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <AppDownloadCard v-if="isAdmin" />
   <section class="metric-grid" aria-label="Resumen de hoy">
     <button class="metric-card" type="button" @click="emit('openAppointments')">
       <span class="metric-icon metric-red"><svg class="icon"><use href="#i-calendar" /></svg></span>

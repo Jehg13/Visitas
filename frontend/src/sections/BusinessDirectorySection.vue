@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import AppDownloadCard from "../components/AppDownloadCard.vue";
 import SectionHelpDialog from "./SectionHelpDialog.vue";
 
 type Partner = {
@@ -30,6 +31,7 @@ const props = defineProps<{
   loading: boolean;
   businessPartnerSaving: boolean;
   isAdmin: boolean;
+  showAppDownload: boolean;
   theme: "dark" | "light";
 }>();
 
@@ -81,6 +83,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
+  <AppDownloadCard v-if="showAppDownload" />
   <section class="workspace-grid directory-workspace">
     <section class="panel workspace-panel directory-panel" aria-labelledby="business-partners-title">
       <header class="panel-heading workspace-heading">
