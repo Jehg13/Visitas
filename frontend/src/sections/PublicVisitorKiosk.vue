@@ -16,6 +16,7 @@ type KioskItem = {
 type RegistrationResult = {
   folio: string;
   visitorName: string;
+  autoAuthorized?: boolean;
 };
 
 type KioskSessionDraft = {
@@ -65,7 +66,7 @@ const identificationTypesSelected = ref<IdentificationType[]>([]);
 const informationConfirmed = ref(false);
 const completed = ref<RegistrationResult | null>(null);
 const completedStatus = ref<
-  "awaiting-entry-authorization" | "awaiting-entry-checklist" | "entered" | "rejected"
+  "awaiting-entry-authorization" | "awaiting-entry-checklist" | "registered" | "entered" | "rejected"
 >("awaiting-entry-authorization");
 const completedStatusPersistenceError = ref("");
 const pendingRegistration = ref<PendingKioskRegistration | null>(null);
@@ -178,7 +179,9 @@ function isPendingKioskRegistration(value: unknown): value is PendingKioskRegist
     value.completed.visitorName.length <= 180 &&
     isIdempotencyKey(value.requestIdempotencyKey) &&
     (typeof value.carriesItems === "boolean" || value.carriesItems === null) &&
-    Number.isSafeInteger(value.expiresAt)
+    Number.isSafeInteger(value.expiresAt) &&
+    (value.completed.autoAuthorized === undefined ||
+      typeof value.completed.autoAuthorized === "boolean")
   );
 }
 
@@ -244,10 +247,7 @@ function restoreKioskSession() {
         carriesItems.value = parsed.carriesItems;
         requestIdempotencyKey.value = parsed.requestIdempotencyKey;
         step.value = 5;
-        resetTimer = window.setTimeout(
-          resetKiosk,
-          Math.max(parsed.expiresAt - Date.now(), 0),
-        );
+        scheduleKioskReset(60_000);
         resumePendingStatus();
         return;
       }
@@ -319,10 +319,18 @@ watch(
 
 onMounted(() => {
   restoreKioskSession();
+  window.addEventListener("pointerdown", handleKioskActivity);
+  window.addEventListener("pointermove", handleKioskActivity);
+  window.addEventListener("keydown", handleKioskActivity);
+  window.addEventListener("touchstart", handleKioskActivity, { passive: true });
 });
 
 onBeforeUnmount(() => {
   if (resetTimer !== undefined) window.clearTimeout(resetTimer);
+  window.removeEventListener("pointerdown", handleKioskActivity);
+  window.removeEventListener("pointermove", handleKioskActivity);
+  window.removeEventListener("keydown", handleKioskActivity);
+  window.removeEventListener("touchstart", handleKioskActivity);
   statusEventSource?.close();
 });
 
@@ -332,6 +340,12 @@ function closeStatusEventSource() {
   if (statusPollingTimer !== undefined) {
     window.clearInterval(statusPollingTimer);
     statusPollingTimer = undefined;
+  }
+}
+
+function handleKioskActivity() {
+  if (step.value === 5 && completed.value && !sending.value) {
+    scheduleKioskReset(60_000);
   }
 }
 
@@ -482,6 +496,7 @@ async function refreshCompletedStatus() {
     });
     const result = await parseResponse<{
       authorizationStatus?: "Pendiente" | "Autorizada" | "Rechazada";
+      autoAuthorized?: boolean;
       entryChecklistComplete?: boolean;
       entered?: boolean;
       error?: string;
@@ -489,12 +504,15 @@ async function refreshCompletedStatus() {
     if (!response.ok) throw new Error(result.error ?? "No se pudo consultar la revisión de recepción.");
     if (
       !["Pendiente", "Autorizada", "Rechazada"].includes(String(result.authorizationStatus)) ||
+      typeof result.autoAuthorized !== "boolean" ||
       typeof result.entryChecklistComplete !== "boolean" ||
       typeof result.entered !== "boolean"
     ) {
       throw new Error("El servidor devolvió un estado de revisión inválido.");
     }
-    if (result.authorizationStatus === "Rechazada") {
+    if (result.autoAuthorized) {
+      completedStatus.value = "registered";
+    } else if (result.authorizationStatus === "Rechazada") {
       completedStatus.value = "rejected";
     } else if (result.authorizationStatus === "Autorizada" && result.entered) {
       completedStatus.value = "entered";
@@ -505,7 +523,6 @@ async function refreshCompletedStatus() {
     }
     if (completedStatus.value === "entered" || completedStatus.value === "rejected") {
       closeStatusEventSource();
-      scheduleKioskReset(30000);
     }
   } catch (error) {
     console.warn("No se pudo consultar el estado del autorregistro; se reintentará automáticamente:", error);
@@ -559,7 +576,11 @@ async function submitRegistration() {
     });
     const result = await parseResponse<RegistrationResult & { error?: string }>(response);
     if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el registro. Inténtalo de nuevo.");
-    if (typeof result.folio !== "string" || typeof result.visitorName !== "string") {
+    if (
+      typeof result.folio !== "string" ||
+      typeof result.visitorName !== "string" ||
+      typeof result.autoAuthorized !== "boolean"
+    ) {
       throw new Error("El servidor no confirmó el registro.");
     }
     pendingRegistration.value = {
@@ -567,7 +588,7 @@ async function submitRegistration() {
       completed: result,
       requestIdempotencyKey: requestIdempotencyKey.value,
       carriesItems: carriesItems.value,
-      expiresAt: Date.now() + 120000,
+      expiresAt: Date.now() + 60000,
     };
     try {
       sessionStorage.setItem(pendingStorageKey, JSON.stringify(pendingRegistration.value));
@@ -577,10 +598,10 @@ async function submitRegistration() {
       notifyUser("El registro se guardó, pero no se pudo conservar el folio en esta pestaña.");
     }
     completed.value = result;
-    completedStatus.value = "awaiting-entry-authorization";
+    completedStatus.value = result.autoAuthorized ? "registered" : "awaiting-entry-authorization";
     step.value = 5;
     resumePendingStatus();
-    scheduleKioskReset(120000);
+    scheduleKioskReset(60000);
   } catch (error) {
     console.error("No se pudo enviar el autorregistro:", error);
     errorMessage.value = error instanceof Error
@@ -906,7 +927,7 @@ async function submitRegistration() {
       <img class="visitor-kiosk-neon-frame" src="/images/visitor-kiosk-neon-frame.webp" alt="" width="1527" height="738" decoding="async" />
       <div class="visitor-kiosk-success-content">
         <div class="visitor-kiosk-success-mark" :class="`is-${completedStatus}`" aria-hidden="true">
-          <svg v-if="completedStatus === 'entered'" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="m14 24 7 7 14-15" /></svg>
+          <svg v-if="completedStatus === 'entered' || completedStatus === 'registered'" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="m14 24 7 7 14-15" /></svg>
           <svg v-else-if="completedStatus === 'rejected'" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="m17 17 14 14m0-14L17 31" /></svg>
           <svg v-else viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" /><path d="M24 13v12l8 5" /></svg>
         </div>
@@ -915,16 +936,20 @@ async function submitRegistration() {
             ? "REVISIÓN COMPLETADA"
             : completedStatus === "rejected"
               ? "REVISIÓN RECHAZADA"
-              : "AUTORIZACIÓN EN PROCESO" }}
+              : completedStatus === "registered"
+                ? "REGISTRO COMPLETADO"
+                : "AUTORIZACIÓN EN PROCESO" }}
         </p>
         <h1>
           {{ completedStatus === "entered"
             ? "Tu ingreso fue registrado"
             : completedStatus === "rejected"
               ? "Acude con recepción"
-              : completedStatus === "awaiting-entry-checklist"
-                ? "Completa la revisión de equipo"
-                : "Esperando autorización de entrada" }}
+              : completedStatus === "registered"
+                ? "Tu visita ha sido registrada"
+                : completedStatus === "awaiting-entry-checklist"
+                  ? "Completa la revisión de equipo"
+                  : "Esperando autorización de entrada" }}
         </h1>
         <span class="visitor-kiosk-success-accent" aria-hidden="true"></span>
         <div class="visitor-kiosk-folio">
@@ -937,11 +962,15 @@ async function submitRegistration() {
             ? "Recepción completó el checklist de entrada y registró tu ingreso en la bitácora."
             : completedStatus === "rejected"
               ? "Recepción no autorizó el registro. Solicita asistencia antes de ingresar."
-              : completedStatus === "awaiting-entry-checklist"
-                ? "Recepción autorizó tu entrada. El checklist de equipo debe completarse antes de registrar el ingreso."
-                : carriesItems
-                  ? "Tu llegada quedó anotada. Espera mientras recepción revisa el checklist de equipos y autoriza el ingreso."
-                  : "Tu llegada quedó anotada. Espera mientras recepción revisa y autoriza el ingreso." }}
+              : completedStatus === "registered"
+                ? carriesItems
+                  ? "Tu visita quedó registrada sin esperar autorización. Permanece en recepción mientras revisan el equipo antes de ingresar."
+                  : "Tu visita quedó registrada y tu llegada fue autorizada automáticamente. Ya puedes continuar con la persona que visitas."
+                : completedStatus === "awaiting-entry-checklist"
+                  ? "Recepción autorizó tu entrada. El checklist de equipo debe completarse antes de registrar el ingreso."
+                  : carriesItems
+                    ? "Tu llegada quedó anotada. Espera mientras recepción revisa el checklist de equipos y autoriza el ingreso."
+                    : "Tu llegada quedó anotada. Espera mientras recepción revisa y autoriza el ingreso." }}
         </p>
         <div v-if="waitingMessage" class="visitor-kiosk-waiting" role="status">
           <span class="visitor-kiosk-waiting-indicator" aria-hidden="true"></span>

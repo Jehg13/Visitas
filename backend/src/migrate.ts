@@ -23,6 +23,14 @@ const mobileAppReleasesMigrationUrl = new URL(
   "../../database/init/008_create_mobile_app_releases.sql",
   import.meta.url,
 );
+const visitTimersNotificationsMigrationUrl = new URL(
+  "../../database/init/009_create_visit_timers_notifications.sql",
+  import.meta.url,
+);
+const visitorKioskSettingsMigrationUrl = new URL(
+  "../../database/init/010_create_visitor_kiosk_settings.sql",
+  import.meta.url,
+);
 const initialMobileAppUrl = new URL("../../initial-mobile-app.apk", import.meta.url);
 
 async function migrate() {
@@ -33,6 +41,8 @@ async function migrate() {
     visitorIdentificationMigrationUrl,
     departmentHostsMigrationUrl,
     mobileAppReleasesMigrationUrl,
+    visitTimersNotificationsMigrationUrl,
+    visitorKioskSettingsMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
@@ -62,6 +72,30 @@ async function migrate() {
   try {
     for (const statement of statements) {
       await connection.query(statement);
+    }
+    const [visitorOwnerColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'general_visitors'
+         AND COLUMN_NAME = 'registered_by_login'`,
+    );
+    if (visitorOwnerColumns.length === 0) {
+      await connection.query(
+        "ALTER TABLE general_visitors ADD COLUMN registered_by_login VARCHAR(255) NULL",
+      );
+    }
+    const [visitorOwnerIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'general_visitors'
+         AND INDEX_NAME = 'idx_general_visitors_registered_by_login'`,
+    );
+    if (visitorOwnerIndexes.length === 0) {
+      await connection.query(
+        "ALTER TABLE general_visitors ADD INDEX idx_general_visitors_registered_by_login (registered_by_login)",
+      );
     }
     const [existingMobileReleases] = await connection.query<RowDataPacket[]>(
       "SELECT id FROM mobile_app_releases LIMIT 1",

@@ -18,6 +18,9 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
 import QRCode from "qrcode";
+import { cert, getApps, initializeApp } from "firebase-admin/app";
+import { getMessaging } from "firebase-admin/messaging";
+import webpush from "web-push";
 
 const port = Number(Bun.env.PORT ?? 3000);
 const appTimeZone = Bun.env.APP_TIME_ZONE?.trim() || "America/Mexico_City";
@@ -141,6 +144,445 @@ function publishRealtimeUpdate(publicKey?: string) {
   }
 }
 
+function formatUtcSqlDateTime(date: Date) {
+  return date.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function getWebPushPublicKey() {
+  const publicKey = Bun.env.WEB_PUSH_PUBLIC_KEY?.trim() ?? "";
+  const privateKey = Bun.env.WEB_PUSH_PRIVATE_KEY?.trim() ?? "";
+  if (Boolean(publicKey) !== Boolean(privateKey)) {
+    throw new Error("WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY must be configured together.");
+  }
+  if (!publicKey) return null;
+  const subject = Bun.env.WEB_PUSH_SUBJECT?.trim();
+  if (!subject) {
+    throw new Error("WEB_PUSH_SUBJECT is required when Web Push is enabled.");
+  }
+  webpush.setVapidDetails(
+    subject,
+    publicKey,
+    privateKey,
+  );
+  return publicKey;
+}
+
+function getFirebaseClientConfiguration() {
+  const apiKey = Bun.env.FIREBASE_API_KEY?.trim() ?? "";
+  const appId = Bun.env.FIREBASE_APP_ID?.trim() ?? "";
+  const messagingSenderId = Bun.env.FIREBASE_MESSAGING_SENDER_ID?.trim() ?? "";
+  const projectId = Bun.env.FIREBASE_PROJECT_ID?.trim() ?? "";
+  if (![apiKey, appId, messagingSenderId, projectId].every(Boolean)) return null;
+  return { apiKey, appId, messagingSenderId, projectId };
+}
+
+function getFirebaseMessaging() {
+  const credentialJson = Bun.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64?.trim();
+  if (!credentialJson) return null;
+  const existingApp = getApps().find((app) => app.name === "visitas-timer-notifications");
+  if (existingApp) return getMessaging(existingApp);
+
+  const parsedCredential: unknown = JSON.parse(
+    Buffer.from(credentialJson, "base64").toString("utf8"),
+  );
+  if (
+    !isRecord(parsedCredential) ||
+    typeof parsedCredential.project_id !== "string" ||
+    typeof parsedCredential.client_email !== "string" ||
+    typeof parsedCredential.private_key !== "string"
+  ) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 is not a valid Firebase service account.");
+  }
+  const app = initializeApp(
+    {
+      credential: cert(parsedCredential as Parameters<typeof cert>[0]),
+      projectId: parsedCredential.project_id,
+    },
+    "visitas-timer-notifications",
+  );
+  return getMessaging(app);
+}
+
+type ActiveDailyLogTimer = {
+  id: number;
+  appointmentId: number | null;
+  visitorRecordId: number | null;
+  personName: string;
+  phase: "Llegada" | "Ingreso";
+  intervalMinutes: number;
+  startedAt: string;
+  dueAt: string;
+  status: "active";
+};
+
+async function listActiveDailyLogTimers() {
+  const [rows] = await pool.query<(RowDataPacket & {
+    id: number;
+    appointment_id: number | null;
+    visitor_record_id: number | null;
+    person_name: string;
+    phase: "Llegada" | "Ingreso";
+    interval_minutes: number;
+    started_at: string;
+    due_at: string;
+  })[]>(
+    `SELECT id, appointment_id, visitor_record_id, person_name, phase, interval_minutes,
+            DATE_FORMAT(started_at, '%Y-%m-%dT%H:%i:%s.000Z') AS started_at,
+            DATE_FORMAT(due_at, '%Y-%m-%dT%H:%i:%s.000Z') AS due_at
+     FROM daily_log_timers
+     WHERE status = 'active' AND visit_date = ?
+     ORDER BY due_at, id`,
+    [getAppDateTime().date],
+  );
+  return rows.map((row): ActiveDailyLogTimer => ({
+    id: Number(row.id),
+    appointmentId: row.appointment_id === null ? null : Number(row.appointment_id),
+    visitorRecordId: row.visitor_record_id === null ? null : Number(row.visitor_record_id),
+    personName: row.person_name,
+    phase: row.phase,
+    intervalMinutes: Number(row.interval_minutes),
+    startedAt: row.started_at,
+    dueAt: row.due_at,
+    status: "active",
+  }));
+}
+
+async function sendDueDailyLogTimerNotifications() {
+  const webPushPublicKey = getWebPushPublicKey();
+  const firebaseMessaging = getFirebaseMessaging();
+  if (!webPushPublicKey && !firebaseMessaging) return;
+
+  const [dueTimers] = await pool.query<(RowDataPacket & {
+    id: number;
+    person_name: string;
+    phase: "Llegada" | "Ingreso";
+    interval_minutes: number;
+  })[]>(
+    `SELECT id, person_name, phase, interval_minutes
+     FROM daily_log_timers
+     WHERE status = 'active'
+       AND notification_sent_at IS NULL
+       AND due_at <= UTC_TIMESTAMP()
+       AND visit_date = ?
+     ORDER BY due_at, id
+     LIMIT 50`,
+    [getAppDateTime().date],
+  );
+  if (dueTimers.length === 0) return;
+
+  const [recipientRows] = await pool.query<(RowDataPacket & { login: string })[]>(
+    `SELECT DISTINCT login
+     FROM accesos_secciones
+     WHERE seccion IN ('recepcion', 'administrador')`,
+  );
+  if (recipientRows.length === 0) {
+    await pool.execute(
+      `UPDATE daily_log_timers
+       SET notification_sent_at = UTC_TIMESTAMP()
+       WHERE status = 'active' AND notification_sent_at IS NULL AND due_at <= UTC_TIMESTAMP()
+         AND visit_date = ?`,
+      [getAppDateTime().date],
+    );
+    return;
+  }
+  const recipients = recipientRows.map((row) => row.login);
+  const [subscriptionRows] = await pool.execute<(RowDataPacket & {
+    id: number;
+    platform: "web" | "mobile";
+    endpoint: string | null;
+    p256dh: string | null;
+    auth_secret: string | null;
+    fcm_token: string | null;
+  })[]>(
+    `SELECT id, platform, endpoint, p256dh, auth_secret, fcm_token
+     FROM notification_subscriptions
+     WHERE user_login IN (${recipients.map(() => "?").join(", ")})`,
+    recipients,
+  );
+
+  for (const timer of dueTimers) {
+    const [claimed] = await pool.execute<ResultSetHeader>(
+      `UPDATE daily_log_timers
+       SET notification_sent_at = UTC_TIMESTAMP()
+       WHERE id = ? AND status = 'active' AND notification_sent_at IS NULL
+         AND due_at <= UTC_TIMESTAMP()`,
+      [timer.id],
+    );
+    if (claimed.affectedRows === 0) continue;
+
+    const title = timer.phase === "Llegada"
+      ? "Seguimiento de llegada"
+      : "Seguimiento de visita";
+    const body = timer.phase === "Llegada"
+      ? `${timer.person_name} lleva ${timer.interval_minutes} minutos esperando en recepción.`
+      : `${timer.person_name} lleva ${timer.interval_minutes} minutos dentro de las instalaciones.`;
+    const webPayload = JSON.stringify({
+      title,
+      body,
+      icon: "/favicon.ico",
+      tag: `daily-log-timer-${timer.id}`,
+      requireInteraction: true,
+      vibrate: [400, 200, 400, 200, 800],
+      data: { timerId: Number(timer.id), url: "/bitacora" },
+      actions: [
+        { action: "snooze", title: `Repetir ${timer.interval_minutes} min` },
+        { action: "cancel", title: "Cancelar alarma" },
+      ],
+    });
+
+    for (const subscription of subscriptionRows) {
+      if (subscription.platform === "web" && webPushPublicKey && subscription.endpoint) {
+        try {
+          await webpush.sendNotification(
+            {
+              endpoint: subscription.endpoint,
+              keys: {
+                p256dh: subscription.p256dh ?? "",
+                auth: subscription.auth_secret ?? "",
+              },
+            },
+            webPayload,
+          );
+        } catch (error) {
+          const statusCode =
+            isRecord(error) && typeof error.statusCode === "number" ? error.statusCode : null;
+          if (statusCode === 404 || statusCode === 410) {
+            await pool.execute("DELETE FROM notification_subscriptions WHERE id = ?", [subscription.id]);
+          } else {
+            console.error("Failed to deliver a web timer notification:", error);
+          }
+        }
+      } else if (
+        subscription.platform === "mobile" &&
+        firebaseMessaging &&
+        subscription.fcm_token
+      ) {
+        try {
+          await firebaseMessaging.send({
+            token: subscription.fcm_token,
+            notification: { title, body },
+            data: {
+              timerId: String(timer.id),
+              phase: timer.phase,
+              intervalMinutes: String(timer.interval_minutes),
+            },
+            android: {
+              priority: "high",
+              notification: {
+                channelId: "visit_timers",
+                sound: "default",
+                tag: `daily-log-timer-${timer.id}`,
+              },
+            },
+            apns: {
+              payload: { aps: { sound: "default" } },
+            },
+          });
+        } catch (error) {
+          const errorCode = isRecord(error) && typeof error.code === "string" ? error.code : "";
+          if (
+            errorCode === "messaging/registration-token-not-registered" ||
+            errorCode === "messaging/invalid-registration-token"
+          ) {
+            await pool.execute("DELETE FROM notification_subscriptions WHERE id = ?", [subscription.id]);
+          } else {
+            console.error("Failed to deliver a mobile timer notification:", error);
+          }
+        }
+      }
+    }
+  }
+}
+
+async function updateVisitTimerForMovement(
+  connection: DatabaseConnection,
+  input: {
+    entryId: number;
+    date: string;
+    event: "Llegada" | "Ingreso" | "Retiro";
+    appointmentId: number | null;
+    visitorRecordId: number | null;
+    personName: string;
+  },
+) {
+  const scope = input.appointmentId !== null
+    ? { sql: "appointment_id = ? AND visitor_record_id <=> ?", params: [input.appointmentId, input.visitorRecordId] }
+    : input.visitorRecordId !== null
+      ? { sql: "appointment_id IS NULL AND visitor_record_id = ?", params: [input.visitorRecordId] }
+      : { sql: "appointment_id IS NULL AND visitor_record_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))", params: [input.personName] };
+  const [activeRows] = await connection.execute<(RowDataPacket & { id: number })[]>(
+    `SELECT id FROM daily_log_timers
+     WHERE visit_date = ? AND status = 'active' AND ${scope.sql}
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+     FOR UPDATE`,
+    [input.date, ...scope.params],
+  );
+  const existingId = activeRows[0] ? Number(activeRows[0].id) : null;
+  if (input.event === "Retiro") {
+    if (existingId !== null) {
+      await connection.execute(
+        `UPDATE daily_log_timers
+         SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
+         WHERE id = ?`,
+        [existingId],
+      );
+    }
+    return;
+  }
+
+  const intervalMinutes = input.event === "Llegada" ? 15 : 30;
+  const now = new Date();
+  const startedAt = formatUtcSqlDateTime(now);
+  const dueAt = formatUtcSqlDateTime(new Date(now.getTime() + intervalMinutes * 60_000));
+  if (existingId !== null) {
+    const visitEntryUpdate = input.event === "Llegada" ? "visit_entry_id = ?, " : "";
+    await connection.execute(
+      `UPDATE daily_log_timers
+       SET ${visitEntryUpdate}person_name = ?, phase = ?, interval_minutes = ?,
+           started_at = ?, due_at = ?, notification_sent_at = NULL
+       WHERE id = ?`,
+      [
+        ...(input.event === "Llegada" ? [input.entryId] : []),
+        input.personName,
+        input.event,
+        intervalMinutes,
+        startedAt,
+        dueAt,
+        existingId,
+      ],
+    );
+    return;
+  }
+  await connection.execute(
+    `INSERT INTO daily_log_timers
+       (visit_date, appointment_id, visitor_record_id, visit_entry_id, person_name, phase,
+        interval_minutes, started_at, due_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      input.date,
+      input.appointmentId,
+      input.visitorRecordId,
+      input.entryId,
+      input.personName,
+      input.event,
+      intervalMinutes,
+      startedAt,
+      dueAt,
+    ],
+  );
+}
+
+async function reconcileVisitTimerAfterMovementDeletion(
+  deletedMovement: {
+    date: string;
+    appointmentId: number | null;
+    visitorRecordId: number | null;
+    personName: string;
+  },
+) {
+  if (deletedMovement.date !== getAppDateTime().date) return;
+  const scope = deletedMovement.appointmentId !== null
+    ? {
+        sql: "appointment_id = ? AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
+        params: [deletedMovement.appointmentId, deletedMovement.personName],
+      }
+    : deletedMovement.visitorRecordId !== null
+      ? {
+          sql: "appointment_id IS NULL AND visitor_record_id = ?",
+          params: [deletedMovement.visitorRecordId],
+        }
+      : {
+          sql: "appointment_id IS NULL AND visitor_record_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
+          params: [deletedMovement.personName],
+        };
+  const [latestRows] = await pool.execute<(RowDataPacket & {
+    id: number;
+    event_type: "Llegada" | "Ingreso" | "Retiro";
+    external_staff_id: number | null;
+    partner_type: "Contratista" | "Proveedor" | "Visitante" | null;
+    visitor_record_id: number | null;
+  })[]>(
+    `SELECT d.id, d.event_type, d.external_staff_id, d.visitor_record_id, bp.partner_type
+     FROM daily_log_entries d
+     LEFT JOIN appointments a ON a.id = d.appointment_id
+     LEFT JOIN external_staff s ON s.id = d.external_staff_id
+     LEFT JOIN business_partners bp ON bp.id = COALESCE(s.business_partner_id, a.business_partner_id)
+     WHERE d.entry_date = ? AND d.event_type IN ('Llegada', 'Ingreso', 'Retiro')
+       AND ${scope.sql}
+     ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
+     LIMIT 1`,
+    [deletedMovement.date, ...scope.params],
+  );
+  const latest = latestRows[0];
+  if (
+    !latest ||
+    latest.external_staff_id !== null ||
+    latest.partner_type === "Contratista" ||
+    latest.partner_type === "Proveedor" ||
+    (latest.partner_type !== "Visitante" && latest.visitor_record_id === null)
+  ) {
+    await pool.execute(
+      `UPDATE daily_log_timers
+       SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
+       WHERE visit_date = ? AND status = 'active' AND ${scope.sql}`,
+      [deletedMovement.date, ...scope.params],
+    );
+    return;
+  }
+  if (latest.event_type === "Retiro") {
+    await pool.execute(
+      `UPDATE daily_log_timers
+       SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
+       WHERE visit_date = ? AND status = 'active' AND ${scope.sql}`,
+      [deletedMovement.date, ...scope.params],
+    );
+    return;
+  }
+  const intervalMinutes = latest.event_type === "Llegada" ? 15 : 30;
+  const now = new Date();
+  const [timerRows] = await pool.execute<(RowDataPacket & {
+    id: number;
+    status: "active" | "canceled" | "completed";
+  })[]>(
+    `SELECT id, status
+     FROM daily_log_timers
+     WHERE visit_date = ? AND ${scope.sql}
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1`,
+    [deletedMovement.date, ...scope.params],
+  );
+  const timer = timerRows[0];
+  if (timer?.status === "canceled") return;
+  const startedAt = formatUtcSqlDateTime(now);
+  const dueAt = formatUtcSqlDateTime(new Date(now.getTime() + intervalMinutes * 60_000));
+  if (timer) {
+    await pool.execute(
+      `UPDATE daily_log_timers
+       SET visit_entry_id = ?, phase = ?, interval_minutes = ?, status = 'active',
+           started_at = ?, due_at = ?, notification_sent_at = NULL
+       WHERE id = ?`,
+      [latest.id, latest.event_type, intervalMinutes, startedAt, dueAt, timer.id],
+    );
+    return;
+  }
+  await pool.execute(
+    `INSERT INTO daily_log_timers
+       (visit_date, appointment_id, visitor_record_id, visit_entry_id, person_name, phase,
+        interval_minutes, started_at, due_at)
+     SELECT ?, d.appointment_id, d.visitor_record_id, d.id, d.person_name, ?, ?, ?, ?
+     FROM daily_log_entries d WHERE d.id = ?`,
+    [
+      deletedMovement.date,
+      latest.event_type,
+      intervalMinutes,
+      startedAt,
+      dueAt,
+      latest.id,
+    ],
+  );
+}
+
 type AccessAccountRow = RowDataPacket & {
   login: string;
   name: string | null;
@@ -250,7 +692,7 @@ type VisitorKioskRegistrationRow = RowDataPacket & {
 type AppointmentRow = RowDataPacket & {
   id: number;
   business_partner_id: number | null;
-  partner_type?: "Contratista" | "Proveedor" | null;
+  partner_type?: "Contratista" | "Proveedor" | "Visitante" | null;
   visitor_record_id?: number | null;
   created_by_login?: string | null;
   visit_date: string;
@@ -270,6 +712,7 @@ type AppointmentRow = RowDataPacket & {
 
 type AppointmentSnapshot = {
   businessPartnerId: number | null;
+  visitorRecordId: number | null;
   date: string;
   time: string;
   visitor: string;
@@ -285,6 +728,7 @@ type AppointmentSnapshot = {
 function appointmentSnapshot(row: AppointmentRow): AppointmentSnapshot {
   return {
     businessPartnerId: row.business_partner_id === null ? null : Number(row.business_partner_id),
+    visitorRecordId: row.visitor_record_id == null ? null : Number(row.visitor_record_id),
     date: row.visit_date,
     time: row.visit_time,
     visitor: row.visitor_name,
@@ -388,10 +832,17 @@ type ExternalStaffInput = {
 type AppointmentInput = {
   visitorName: string;
   visitorEmail: string;
-  businessPartnerId: number;
+  businessPartnerId: number | null;
+  visitorRecordId: number | null;
   hostName: string;
   date: string;
   time: string;
+};
+
+type HostVisitorInput = {
+  fullName: string;
+  phone: string;
+  email: string;
 };
 
 type EquipmentDeclaredItemInput = {
@@ -923,7 +1374,10 @@ function parseVisitorKioskInspection(value: unknown): VisitorKioskInspectionInpu
 
 async function writeVisitorKioskMovement(
   connection: DatabaseConnection,
-  registration: VisitorKioskRegistrationRow,
+  registration: Pick<
+    VisitorKioskRegistrationRow,
+    "folio" | "visitor_record_id" | "visitor_name" | "kiosk_items_present"
+  >,
   event: "Ingreso" | "Retiro",
   actorLogin: string,
   actorName: string,
@@ -944,7 +1398,7 @@ async function writeVisitorKioskMovement(
     [registration.visitor_record_id, event, details],
   );
   if (existing[0]) return;
-  await connection.execute(
+  const [movementResult] = await connection.execute<ResultSetHeader>(
     `INSERT INTO daily_log_entries
        (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
         details, visitor_record_id)
@@ -960,6 +1414,14 @@ async function writeVisitorKioskMovement(
       registration.visitor_record_id,
     ],
   );
+  await updateVisitTimerForMovement(connection, {
+    entryId: Number(movementResult.insertId),
+    date,
+    event,
+    appointmentId: null,
+    visitorRecordId: registration.visitor_record_id,
+    personName: registration.visitor_name,
+  });
 }
 
 async function handleVisitorKioskRequest(
@@ -967,6 +1429,56 @@ async function handleVisitorKioskRequest(
   url: URL,
   sourceAddress: string,
 ): Promise<Response | null> {
+  if (url.pathname === "/api/visitor-kiosk/settings" && request.method === "GET") {
+    try {
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT auto_authorize_public_visitors
+         FROM visitor_kiosk_settings
+         WHERE id = 1
+         LIMIT 1`,
+      );
+      return Response.json({
+        autoAuthorizePublicVisitors: Boolean(rows[0]?.auto_authorize_public_visitors),
+      });
+    } catch (error) {
+      console.error("Failed to load visitor kiosk settings:", error);
+      return Response.json({ error: "No se pudo cargar la configuración del registro." }, { status: 500 });
+    }
+  }
+
+  if (url.pathname === "/api/visitor-kiosk/settings" && request.method === "PUT") {
+    const user = await getRequestUser(request);
+    if (!user) {
+      return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+    }
+    if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+      return Response.json({ error: "Solo recepción o administración pueden cambiar esta opción." }, { status: 403 });
+    }
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "La configuración enviada no es válida." }, { status: 400 });
+    }
+    if (!isRecord(body) || typeof body.autoAuthorizePublicVisitors !== "boolean") {
+      return Response.json({ error: "Selecciona un valor válido para la autorización automática." }, { status: 400 });
+    }
+    try {
+      await pool.execute(
+        `UPDATE visitor_kiosk_settings
+         SET auto_authorize_public_visitors = ?
+         WHERE id = 1`,
+        [body.autoAuthorizePublicVisitors],
+      );
+      return Response.json({
+        autoAuthorizePublicVisitors: body.autoAuthorizePublicVisitors,
+      });
+    } catch (error) {
+      console.error("Failed to update visitor kiosk settings:", error);
+      return Response.json({ error: "No se pudo guardar la configuración del registro." }, { status: 500 });
+    }
+  }
+
   if (request.method === "GET" && url.pathname === "/api/visitor-kiosk/status") {
     const requestKey = request.headers.get("Idempotency-Key") ?? "";
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestKey)) {
@@ -976,6 +1488,11 @@ async function handleVisitorKioskRequest(
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT r.folio, v.full_name AS visitor_name,
                 r.authorization_status,
+                EXISTS (
+                  SELECT 1 FROM visitor_kiosk_audit a
+                  WHERE a.registration_id = r.id
+                    AND a.action = 'Visita autorizada automáticamente'
+                ) AS auto_authorized,
                 (
                   EXISTS (
                     SELECT 1 FROM visitor_kiosk_inspections i
@@ -1012,6 +1529,7 @@ async function handleVisitorKioskRequest(
         folio: rows[0].folio,
         visitorName: rows[0].visitor_name,
         authorizationStatus: rows[0].authorization_status,
+        autoAuthorized: Boolean(rows[0].auto_authorized),
         entryChecklistComplete: Boolean(rows[0].entry_checklist_complete),
         entered: Boolean(rows[0].entered),
       });
@@ -1062,7 +1580,12 @@ async function handleVisitorKioskRequest(
       await connection.beginTransaction();
       transactionStep = "comprobar clave de idempotencia";
       const [existingRegistrations] = await connection.execute<RowDataPacket[]>(
-        `SELECT r.folio, v.full_name AS visitor_name
+        `SELECT r.folio, v.full_name AS visitor_name, r.authorization_status,
+                EXISTS (
+                  SELECT 1 FROM visitor_kiosk_audit a
+                  WHERE a.registration_id = r.id
+                    AND a.action = 'Visita autorizada automáticamente'
+                ) AS auto_authorized
          FROM visitor_kiosk_registrations r
          INNER JOIN general_visitors v ON v.id = r.visitor_record_id
          WHERE r.idempotency_key = ? LIMIT 1 FOR UPDATE`,
@@ -1073,8 +1596,17 @@ async function handleVisitorKioskRequest(
         return Response.json({
           folio: existingRegistrations[0].folio,
           visitorName: existingRegistrations[0].visitor_name,
+          autoAuthorized: Boolean(existingRegistrations[0].auto_authorized),
         });
       }
+
+      const [settingsRows] = await connection.execute<RowDataPacket[]>(
+        `SELECT auto_authorize_public_visitors
+         FROM visitor_kiosk_settings
+         WHERE id = 1
+         LIMIT 1`,
+      );
+      const autoAuthorizePublicVisitors = Boolean(settingsRows[0]?.auto_authorize_public_visitors);
 
       transactionStep = "crear ficha de visitante";
       const [visitorMatches] = await connection.execute<(RowDataPacket & {
@@ -1140,8 +1672,8 @@ async function handleVisitorKioskRequest(
       const [registrationResult] = await connection.execute<ResultSetHeader>(
         `INSERT INTO visitor_kiosk_registrations
            (visitor_record_id, folio, company_name, visit_reason, carries_equipment, identification_type,
-            idempotency_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            idempotency_key, authorization_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           visitorRecordId,
           folio,
@@ -1150,6 +1682,7 @@ async function handleVisitorKioskRequest(
           input.carriesItems,
           input.identificationTypes.join(", "),
           requestKey,
+          autoAuthorizePublicVisitors ? "Autorizada" : "Pendiente",
         ],
       );
       transactionStep = "guardar artículos";
@@ -1172,7 +1705,7 @@ async function handleVisitorKioskRequest(
       }
       transactionStep = "registrar llegada en bitácora";
       const { date, time } = getAppDateTime();
-      await connection.execute(
+      const [arrivalResult] = await connection.execute<ResultSetHeader>(
         `INSERT INTO daily_log_entries
            (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
             details, visitor_record_id)
@@ -1181,10 +1714,34 @@ async function handleVisitorKioskRequest(
           date,
           time,
           input.visitorName,
-          `Registro manual · Folio ${folio} · Pendiente de autorización · Motivo: ${input.visitReason}`,
+          `Registro manual · Folio ${folio} · ${
+            autoAuthorizePublicVisitors ? "Autorización automática" : "Pendiente de autorización"
+          } · Motivo: ${input.visitReason}`,
           visitorRecordId,
         ],
       );
+      await updateVisitTimerForMovement(connection, {
+        entryId: Number(arrivalResult.insertId),
+        date,
+        event: "Llegada",
+        appointmentId: null,
+        visitorRecordId,
+        personName: input.visitorName,
+      });
+      if (autoAuthorizePublicVisitors && !input.carriesItems) {
+        await writeVisitorKioskMovement(
+          connection,
+          {
+            folio,
+            visitor_record_id: visitorRecordId,
+            visitor_name: input.visitorName,
+            kiosk_items_present: false,
+          },
+          "Ingreso",
+          "autorregistro",
+          "Autorización automática",
+        );
+      }
       transactionStep = "guardar auditoría del registro";
       await connection.execute(
         `INSERT INTO visitor_kiosk_audit
@@ -1195,12 +1752,28 @@ async function handleVisitorKioskRequest(
           `Tipo(s) de identificación presentada(s): ${input.identificationTypes.join(", ")}.` +
             (input.identificationHeldForSafekeeping
               ? " Identificación entregada a recepción para resguardo."
+              : "") +
+            (autoAuthorizePublicVisitors
+              ? " Autorización de entrada automática habilitada por recepción."
               : ""),
         ],
       );
+      if (autoAuthorizePublicVisitors) {
+        await connection.execute(
+          `INSERT INTO visitor_kiosk_audit
+             (registration_id, action, actor_login, actor_name, details)
+           VALUES (?, 'Visita autorizada automáticamente', NULL, 'Sistema',
+             'Autorización automática habilitada por recepción o administración.')`,
+          [registrationResult.insertId],
+        );
+      }
       await connection.commit();
       publishRealtimeUpdate(requestKey);
-      return Response.json({ folio, visitorName: input.visitorName }, { status: 201 });
+      return Response.json({
+        folio,
+        visitorName: input.visitorName,
+        autoAuthorized: autoAuthorizePublicVisitors,
+      }, { status: 201 });
     } catch (error) {
       await connection.rollback();
       if (
@@ -1210,7 +1783,12 @@ async function handleVisitorKioskRequest(
         error.code === "ER_DUP_ENTRY"
       ) {
         const [existingRegistrations] = await pool.execute<RowDataPacket[]>(
-          `SELECT r.folio, v.full_name AS visitor_name
+          `SELECT r.folio, v.full_name AS visitor_name,
+                  EXISTS (
+                    SELECT 1 FROM visitor_kiosk_audit a
+                    WHERE a.registration_id = r.id
+                      AND a.action = 'Visita autorizada automáticamente'
+                  ) AS auto_authorized
            FROM visitor_kiosk_registrations r
            INNER JOIN general_visitors v ON v.id = r.visitor_record_id
            WHERE r.idempotency_key = ? LIMIT 1`,
@@ -1220,6 +1798,7 @@ async function handleVisitorKioskRequest(
           return Response.json({
             folio: existingRegistrations[0].folio,
             visitorName: existingRegistrations[0].visitor_name,
+            autoAuthorized: Boolean(existingRegistrations[0].auto_authorized),
           });
         }
       }
@@ -1693,14 +2272,24 @@ async function handleVisitorKioskRequest(
 
 function parseAppointment(value: unknown): AppointmentInput | null {
   if (!isRecord(value)) return null;
-  const { visitorName, visitorEmail, businessPartnerId, hostName, date, time } = value;
+  const { visitorName, visitorEmail, businessPartnerId, visitorRecordId, hostName, date, time } = value;
+  const validOptionalId = (id: unknown) =>
+    id === null || id === undefined || (
+      typeof id === "number" && Number.isSafeInteger(id) && id > 0
+    );
+  const parsedBusinessPartnerId =
+    typeof businessPartnerId === "number" ? businessPartnerId : null;
+  const parsedVisitorRecordId =
+    typeof visitorRecordId === "number" ? visitorRecordId : null;
   if (
     typeof visitorName !== "string" || !visitorName.trim() || visitorName.trim().length > 180 ||
     hasUnsafeControlCharacters(visitorName) ||
     typeof visitorEmail !== "string" || visitorEmail.trim().length > 254 ||
     (visitorEmail.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(visitorEmail.trim())) ||
-    typeof businessPartnerId !== "number" ||
-    !Number.isSafeInteger(businessPartnerId) || businessPartnerId < 1 ||
+    !validOptionalId(businessPartnerId) ||
+    !validOptionalId(visitorRecordId) ||
+    (parsedBusinessPartnerId === null && parsedVisitorRecordId === null) ||
+    (parsedBusinessPartnerId !== null && parsedVisitorRecordId !== null) ||
     typeof hostName !== "string" || !hostName.trim() || hostName.trim().length > 180 ||
     hasUnsafeControlCharacters(hostName) ||
     typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
@@ -1715,10 +2304,74 @@ function parseAppointment(value: unknown): AppointmentInput | null {
   return {
     visitorName: visitorName.trim(),
     visitorEmail: visitorEmail.trim(),
-    businessPartnerId,
+    businessPartnerId: parsedBusinessPartnerId,
+    visitorRecordId: parsedVisitorRecordId,
     hostName: hostName.trim(),
     date,
     time,
+  };
+}
+
+function parseHostVisitor(value: unknown): HostVisitorInput | null {
+  if (!isRecord(value)) return null;
+  const { fullName } = value;
+  const phone = value.phone ?? "";
+  const email = value.email ?? "";
+  if (
+    typeof fullName !== "string" || !fullName.trim() || fullName.trim().length > 180 ||
+    hasUnsafeControlCharacters(fullName) ||
+    typeof phone !== "string" || phone.length > 30 || hasUnsafeControlCharacters(phone) ||
+    typeof email !== "string" || email.length > 254 ||
+    (email.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+  ) {
+    return null;
+  }
+  return {
+    fullName: fullName.trim(),
+    phone: phone.trim(),
+    email: email.trim(),
+  };
+}
+
+async function resolveAppointmentDetails(
+  input: AppointmentInput,
+  ownerLogin?: string,
+) {
+  if (input.visitorRecordId !== null) {
+    const [visitors] = await pool.execute<(RowDataPacket & {
+      full_name: string;
+      email: string;
+    })[]>(
+      `SELECT full_name, email
+       FROM general_visitors
+       WHERE id = ?
+         AND registered_by_login IS NOT NULL
+         ${ownerLogin === undefined ? "" : "AND registered_by_login = ?"}
+       LIMIT 1`,
+      ownerLogin === undefined
+        ? [input.visitorRecordId]
+        : [input.visitorRecordId, ownerLogin],
+    );
+    if (!visitors[0]) return null;
+    return {
+      businessPartnerId: null,
+      visitorRecordId: input.visitorRecordId,
+      visitorName: visitors[0].full_name,
+      visitorEmail: visitors[0].email,
+      companyName: "Público general",
+    };
+  }
+  const [partners] = await pool.execute<(RowDataPacket & { name: string })[]>(
+    "SELECT name FROM business_partners WHERE id = ? LIMIT 1",
+    [input.businessPartnerId],
+  );
+  if (!partners[0]) return null;
+  return {
+    businessPartnerId: input.businessPartnerId,
+    visitorRecordId: null,
+    visitorName: input.visitorName,
+    visitorEmail: input.visitorEmail,
+    companyName: partners[0].name,
   };
 }
 
@@ -1827,6 +2480,28 @@ async function listGeneralVisitors() {
   }));
 }
 
+async function listHostVisitors(ownerLogin?: string) {
+  const [rows] = await pool.execute<(RowDataPacket & {
+    id: number;
+    full_name: string;
+    phone: string;
+    email: string;
+  })[]>(
+    `SELECT id, full_name, phone, email
+     FROM general_visitors
+     WHERE registered_by_login IS NOT NULL
+       ${ownerLogin === undefined ? "" : "AND registered_by_login = ?"}
+     ORDER BY full_name, id`,
+    ownerLogin === undefined ? [] : [ownerLogin],
+  );
+  return rows.map((row) => ({
+    id: Number(row.id),
+    fullName: row.full_name,
+    phone: row.phone,
+    email: row.email,
+  }));
+}
+
 async function listExternalStaff() {
   const [rows] = await pool.query<ExternalStaffRow[]>(
     `SELECT s.id, s.business_partner_id, s.full_name, s.phone, s.email,
@@ -1859,7 +2534,8 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
     );
     visibilityParameters.push(...hostNames.map((name) => name.trim().toLocaleLowerCase()));
   }
-  const query = `SELECT appointments.id, appointments.business_partner_id, DATE_FORMAT(appointments.visit_date, '%Y-%m-%d') AS visit_date,
+  const query = `SELECT appointments.id, appointments.business_partner_id, appointments.visitor_record_id,
+            DATE_FORMAT(appointments.visit_date, '%Y-%m-%d') AS visit_date,
             TIME_FORMAT(appointments.visit_time, '%H:%i') AS visit_time,
             appointments.visitor_name, appointments.visitor_email, appointments.reference_code, appointments.registered_by,
             appointments.company_name, appointments.host_name, appointments.status,
@@ -1902,6 +2578,9 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
   return rows.map((row) => ({
     id: Number(row.id),
     businessPartnerId: row.business_partner_id === null ? null : Number(row.business_partner_id),
+    visitorRecordId: row.visitor_record_id === null || row.visitor_record_id === undefined
+      ? null
+      : Number(row.visitor_record_id),
     date: row.visit_date,
     time: row.visit_time,
     visitor: row.visitor_name,
@@ -1909,7 +2588,7 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
     referenceCode: row.reference_code ?? "",
     registeredBy: row.registered_by,
     company: row.company_name,
-    partnerType: row.partner_type ?? undefined,
+    partnerType: row.partner_type ?? (row.visitor_record_id ? "Visitante" : undefined),
     host: row.host_name,
     status: row.status,
     equipmentChecklistRequired: Boolean(row.equipment_checklist_required),
@@ -4012,6 +4691,51 @@ const server = Bun.serve({
       }
     }
 
+    if (url.pathname === "/api/host-visitors" && ["GET", "POST"].includes(request.method)) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        const hostOnlyAccess = await hasHostOnlyAccess(user);
+        const receptionAccess = await hasSectionAccess(user, "recepcion");
+        if (request.method === "GET") {
+          if (!user.isAdmin && !hostOnlyAccess && !receptionAccess) {
+            return Response.json({ error: "No tienes permiso para consultar visitantes registrados." }, { status: 403 });
+          }
+          return Response.json({
+            visitors: await listHostVisitors(hostOnlyAccess ? user.login : undefined),
+          });
+        }
+        if (!user.isAdmin && !hostOnlyAccess) {
+          return Response.json({ error: "Solo anfitriones pueden registrar visitantes." }, { status: 403 });
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        const visitor = parseHostVisitor(body);
+        if (!visitor) {
+          return Response.json({ error: "Revisa el nombre, teléfono y correo del visitante." }, { status: 400 });
+        }
+        await pool.execute(
+          `INSERT INTO general_visitors
+             (full_name, curp, phone, email, registered_by_login)
+           VALUES (?, NULL, ?, ?, ?)`,
+          [visitor.fullName, visitor.phone, visitor.email, user.login],
+        );
+        publishRealtimeUpdate();
+        return Response.json({
+          visitors: await listHostVisitors(hostOnlyAccess ? user.login : undefined),
+        }, { status: 201 });
+      } catch (error) {
+        console.error("Failed to modify host visitor:", error);
+        return Response.json({ error: "No se pudo guardar el visitante. Inténtalo de nuevo." }, { status: 500 });
+      }
+    }
+
     const generalVisitorsPath = url.pathname.match(/^\/api\/general-visitors(?:\/(\d+))?$/);
     if (
       generalVisitorsPath &&
@@ -4120,6 +4844,203 @@ const server = Bun.serve({
 
     const equipmentResponse = await handleEquipmentRequest(request, url);
     if (equipmentResponse) return equipmentResponse;
+
+    if (url.pathname === "/api/notifications/config" && ["GET", "POST", "DELETE"].includes(request.method)) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (
+          request.method !== "DELETE" &&
+          !user.isAdmin &&
+          !(await hasSectionAccess(user, "recepcion"))
+        ) {
+          return Response.json({ error: "Solo recepción puede activar las notificaciones de seguimiento." }, { status: 403 });
+        }
+        if (request.method === "GET") {
+          return Response.json({
+            firebase: getFirebaseClientConfiguration(),
+            mobilePushEnabled: Boolean(
+              Bun.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64?.trim() &&
+              getFirebaseClientConfiguration(),
+            ),
+            webPushPublicKey: getWebPushPublicKey(),
+          }, { headers: { "Cache-Control": "no-store" } });
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (!isRecord(body) || (body.platform !== "web" && body.platform !== "mobile")) {
+          return Response.json({ error: "Selecciona una plataforma de notificación válida." }, { status: 400 });
+        }
+
+        if (request.method === "DELETE") {
+          const subscriptionValue =
+            body.platform === "mobile" ? body.token : body.endpoint;
+          if (
+            typeof subscriptionValue !== "string" ||
+            subscriptionValue.trim().length < 20 ||
+            subscriptionValue.trim().length > 4096
+          ) {
+            return Response.json({ error: "La suscripción de notificaciones no es válida." }, { status: 400 });
+          }
+          const subscriptionKey = createHash("sha256")
+            .update(`${body.platform}:${subscriptionValue.trim()}`)
+            .digest("hex");
+          await pool.execute(
+            "DELETE FROM notification_subscriptions WHERE user_login = ? AND subscription_key = ?",
+            [user.login, subscriptionKey],
+          );
+          return Response.json({ message: "La suscripción de notificaciones se eliminó." });
+        }
+
+        let subscriptionKey: string;
+        let endpoint: string | null = null;
+        let p256dh: string | null = null;
+        let authSecret: string | null = null;
+        let fcmToken: string | null = null;
+        if (body.platform === "mobile") {
+          if (
+            typeof body.token !== "string" ||
+            body.token.trim().length < 20 ||
+            body.token.trim().length > 4096
+          ) {
+            return Response.json({ error: "El token de notificaciones móviles no es válido." }, { status: 400 });
+          }
+          if (!getFirebaseClientConfiguration() || !getFirebaseMessaging()) {
+            return Response.json({ error: "Firebase no está configurado para notificaciones móviles." }, { status: 503 });
+          }
+          fcmToken = body.token.trim();
+          subscriptionKey = createHash("sha256").update(`mobile:${fcmToken}`).digest("hex");
+        } else {
+          if (
+            !isRecord(body.subscription) ||
+            typeof body.subscription.endpoint !== "string" ||
+            !isRecord(body.subscription.keys) ||
+            typeof body.subscription.keys.p256dh !== "string" ||
+            typeof body.subscription.keys.auth !== "string"
+          ) {
+            return Response.json({ error: "La suscripción de notificaciones web no es válida." }, { status: 400 });
+          }
+          let parsedEndpoint: URL;
+          try {
+            parsedEndpoint = new URL(body.subscription.endpoint);
+          } catch {
+            return Response.json({ error: "La suscripción de notificaciones web no es válida." }, { status: 400 });
+          }
+          if (
+            parsedEndpoint.protocol !== "https:" ||
+            body.subscription.endpoint.length > 2048 ||
+            body.subscription.keys.p256dh.length > 255 ||
+            body.subscription.keys.auth.length > 255
+          ) {
+            return Response.json({ error: "La suscripción de notificaciones web no es válida." }, { status: 400 });
+          }
+          if (!getWebPushPublicKey()) {
+            return Response.json({ error: "Web Push no está configurado en el servidor." }, { status: 503 });
+          }
+          endpoint = body.subscription.endpoint;
+          p256dh = body.subscription.keys.p256dh;
+          authSecret = body.subscription.keys.auth;
+          subscriptionKey = createHash("sha256").update(`web:${endpoint}`).digest("hex");
+        }
+        await pool.execute(
+          `INSERT INTO notification_subscriptions
+             (user_login, platform, subscription_key, endpoint, p256dh, auth_secret, fcm_token)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE user_login = VALUES(user_login), endpoint = VALUES(endpoint),
+             p256dh = VALUES(p256dh), auth_secret = VALUES(auth_secret), fcm_token = VALUES(fcm_token)`,
+          [
+            user.login,
+            body.platform,
+            subscriptionKey,
+            endpoint,
+            p256dh,
+            authSecret,
+            fcmToken,
+          ],
+        );
+        return Response.json({ message: "Las notificaciones de seguimiento quedaron activadas." }, {
+          status: 201,
+        });
+      } catch (error) {
+        console.error("Failed to configure timer notifications:", error);
+        return Response.json({ error: "No se pudieron configurar las notificaciones de seguimiento." }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/api/daily-log/timers" && request.method === "GET") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+          return Response.json({ error: "No tienes permiso para consultar los temporizadores." }, { status: 403 });
+        }
+        return Response.json({ timers: await listActiveDailyLogTimers() });
+      } catch (error) {
+        console.error("Failed to load daily log timers:", error);
+        return Response.json({ error: "No se pudieron cargar los temporizadores." }, { status: 500 });
+      }
+    }
+
+    const dailyLogTimerPath = url.pathname.match(/^\/api\/daily-log\/timers\/(\d+)$/);
+    if (dailyLogTimerPath && request.method === "POST") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+          return Response.json({ error: "No tienes permiso para administrar los temporizadores." }, { status: 403 });
+        }
+        const timerId = Number(dailyLogTimerPath[1]);
+        if (!Number.isSafeInteger(timerId) || timerId < 1) {
+          return Response.json({ error: "El temporizador seleccionado no es válido." }, { status: 400 });
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (!isRecord(body) || (body.action !== "snooze" && body.action !== "cancel")) {
+          return Response.json({ error: "Selecciona posponer o cancelar la alarma." }, { status: 400 });
+        }
+        const update = body.action === "snooze"
+          ? `UPDATE daily_log_timers
+             SET started_at = UTC_TIMESTAMP(),
+                 due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_minutes MINUTE),
+                 notification_sent_at = NULL
+             WHERE id = ? AND visit_date = ? AND status = 'active'`
+          : `UPDATE daily_log_timers
+             SET status = 'canceled', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
+             WHERE id = ? AND visit_date = ? AND status = 'active'`;
+        const [result] = await pool.execute<ResultSetHeader>(
+          update,
+          [timerId, getAppDateTime().date],
+        );
+        if (result.affectedRows === 0) {
+          const [matches] = await pool.execute<RowDataPacket[]>(
+            "SELECT id FROM daily_log_timers WHERE id = ? AND status = 'active' LIMIT 1",
+            [timerId],
+          );
+          return matches.length === 0
+            ? Response.json({ error: "El temporizador ya no está activo." }, { status: 404 })
+            : Response.json({ error: "Solo puedes modificar temporizadores del día actual." }, { status: 409 });
+        }
+        publishRealtimeUpdate();
+        return Response.json({ timers: await listActiveDailyLogTimers() });
+      } catch (error) {
+        console.error("Failed to update daily log timer:", error);
+        return Response.json({ error: "No se pudo actualizar el temporizador." }, { status: 500 });
+      }
+    }
 
     if (url.pathname === "/api/daily-log/stats" && request.method === "GET") {
       try {
@@ -4243,6 +5164,7 @@ const server = Bun.serve({
           }
           const [entriesToDelete] = await pool.execute<RowDataPacket[]>(
             `SELECT appointment_id,
+                    visitor_record_id, external_staff_id, person_name, event_type,
                     DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
              FROM daily_log_entries WHERE id = ? LIMIT 1`,
             [entryId],
@@ -4270,6 +5192,16 @@ const server = Bun.serve({
           if (result.affectedRows === 0) {
             return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
           }
+          if (["Llegada", "Ingreso", "Retiro"].includes(String(entriesToDelete[0].event_type))) {
+            await reconcileVisitTimerAfterMovementDeletion({
+              date: String(entriesToDelete[0].entry_date),
+              appointmentId: linkedAppointmentId,
+              visitorRecordId: entriesToDelete[0].visitor_record_id === null
+                ? null
+                : Number(entriesToDelete[0].visitor_record_id),
+              personName: String(entriesToDelete[0].person_name),
+            });
+          }
           if (linkedAppointmentId !== null) {
             const [latestRows] = await pool.execute<RowDataPacket[]>(
               `SELECT event_type
@@ -4293,6 +5225,7 @@ const server = Bun.serve({
               [appointmentStatus, linkedAppointmentId],
             );
           }
+          publishRealtimeUpdate();
           return Response.json({ message: "El movimiento se eliminó." });
         }
         if (entryId !== null) {
@@ -4342,16 +5275,18 @@ const server = Bun.serve({
 
         let personName = input.personName;
         let businessPartnerId: number | null = null;
+        let partnerType: "Contratista" | "Proveedor" | "Visitante" | null = null;
         let externalStaffId = input.externalStaffId;
         let visitorId = input.visitorRecordId;
         if (input.appointmentId !== null) {
           const [matches] = await pool.execute<AppointmentRow[]>(
-            `SELECT id, business_partner_id,
+            `SELECT a.id, a.business_partner_id, a.visitor_record_id, bp.partner_type,
                     DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
-                    visit_time,
-                    visitor_name, visitor_email, registered_by, company_name, host_name, status
-             FROM appointments
-             WHERE id = ?
+                    a.visit_time,
+                    a.visitor_name, a.visitor_email, a.registered_by, a.company_name, a.host_name, a.status
+             FROM appointments a
+             LEFT JOIN business_partners bp ON bp.id = a.business_partner_id
+             WHERE a.id = ?
              LIMIT 1`,
             [input.appointmentId],
           );
@@ -4376,21 +5311,26 @@ const server = Bun.serve({
           businessPartnerId = appointment.business_partner_id === null
             ? null
             : Number(appointment.business_partner_id);
+          partnerType = appointment.partner_type ?? null;
           if (visitorId === null) {
-            const [visitorMatches] = await pool.execute<RowDataPacket[]>(
-              "SELECT visitor_record_id FROM appointments WHERE id = ? LIMIT 1",
-              [input.appointmentId],
-            );
             visitorId =
-              visitorMatches[0]?.visitor_record_id === null ||
-              visitorMatches[0]?.visitor_record_id === undefined
+              appointment.visitor_record_id === null ||
+              appointment.visitor_record_id === undefined
                 ? null
-                : Number(visitorMatches[0].visitor_record_id);
+                : Number(appointment.visitor_record_id);
           }
+          if (visitorId !== null && partnerType === null) partnerType = "Visitante";
         }
         if (input.externalStaffId !== null) {
-          const [matches] = await pool.execute<RowDataPacket[]>(
-            "SELECT full_name, business_partner_id FROM external_staff WHERE id = ? LIMIT 1",
+          const [matches] = await pool.execute<(RowDataPacket & {
+            full_name: string;
+            business_partner_id: number;
+            partner_type: "Contratista" | "Proveedor" | "Visitante";
+          })[]>(
+            `SELECT s.full_name, s.business_partner_id, p.partner_type
+             FROM external_staff s
+             INNER JOIN business_partners p ON p.id = s.business_partner_id
+             WHERE s.id = ? LIMIT 1`,
             [input.externalStaffId],
           );
           if (!matches[0]) {
@@ -4407,16 +5347,18 @@ const server = Bun.serve({
             );
           }
           personName = String(matches[0].full_name);
+          partnerType = matches[0].partner_type;
         }
         if (input.visitorRecordId !== null) {
           const [matches] = await pool.execute<RowDataPacket[]>(
-            "SELECT full_name FROM general_visitors WHERE id = ? LIMIT 1",
+            "SELECT full_name, registered_by_login FROM general_visitors WHERE id = ? LIMIT 1",
             [input.visitorRecordId],
           );
           if (!matches[0]) {
             return Response.json({ error: "La ficha del visitante ya no existe." }, { status: 404 });
           }
           personName = String(matches[0].full_name);
+          if (partnerType === null) partnerType = "Visitante";
         }
         if (
           input.appointmentId !== null &&
@@ -4622,24 +5564,50 @@ const server = Bun.serve({
           return Response.json({ error: "No se puede registrar la salida: primero registra una llegada o entrada para esta persona." }, { status: 409 });
         }
 
-        await pool.execute(
-          `INSERT INTO daily_log_entries
-             (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
-              appointment_id, external_staff_id, visitor_record_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            input.date,
-            input.time,
-            input.event,
-            personName,
-            user.login,
-            user.name?.trim() || user.login,
-            input.details || null,
-            input.appointmentId,
-            externalStaffId,
-            visitorId,
-          ],
-        );
+        const timerEligible =
+          isMovementEvent &&
+          input.date === currentBusinessDate &&
+          partnerType !== "Contratista" &&
+          partnerType !== "Proveedor" &&
+          (partnerType === "Visitante" || visitorId !== null);
+        const movementConnection = await pool.getConnection();
+        try {
+          await movementConnection.beginTransaction();
+          const [movementResult] = await movementConnection.execute<ResultSetHeader>(
+            `INSERT INTO daily_log_entries
+               (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
+                appointment_id, external_staff_id, visitor_record_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              input.date,
+              input.time,
+              input.event,
+              personName,
+              user.login,
+              user.name?.trim() || user.login,
+              input.details || null,
+              input.appointmentId,
+              externalStaffId,
+              visitorId,
+            ],
+          );
+          if (timerEligible) {
+            await updateVisitTimerForMovement(movementConnection, {
+              entryId: Number(movementResult.insertId),
+              date: input.date,
+              event: input.event as "Llegada" | "Ingreso" | "Retiro",
+              appointmentId: input.appointmentId,
+              visitorRecordId: visitorId,
+              personName,
+            });
+          }
+          await movementConnection.commit();
+        } catch (error) {
+          await movementConnection.rollback();
+          throw error;
+        } finally {
+          movementConnection.release();
+        }
         if (
           input.appointmentId !== null &&
           (input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro")
@@ -4705,6 +5673,7 @@ const server = Bun.serve({
             [appointmentStatus, input.appointmentId],
           );
         }
+        publishRealtimeUpdate();
         return Response.json({ message: "El movimiento se registró.", personName }, { status: 201 });
       } catch (error) {
         console.error("Failed to modify daily log:", error);
@@ -5542,7 +6511,7 @@ const server = Bun.serve({
             await connection.beginTransaction();
             const [matches] = await connection.execute<AppointmentRow[]>(
               user.isAdmin
-                ? `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                ? `SELECT id, business_partner_id, visitor_record_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                           TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
                           reference_code, registered_by, created_by_login, company_name, host_name, status,
                           0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
@@ -5550,7 +6519,7 @@ const server = Bun.serve({
                    WHERE id = ? AND deleted_at IS NULL
                    LIMIT 1
                    FOR UPDATE`
-                : `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                : `SELECT id, business_partner_id, visitor_record_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                           TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
                           reference_code, registered_by, created_by_login, company_name, host_name, status,
                           0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
@@ -5587,6 +6556,12 @@ const server = Bun.serve({
               "UPDATE appointments SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL",
               [appointmentId],
             );
+            await connection.execute(
+              `UPDATE daily_log_timers
+               SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
+               WHERE appointment_id = ? AND status = 'active'`,
+              [appointmentId],
+            );
             await connection.commit();
           } catch (error) {
             await connection.rollback();
@@ -5615,7 +6590,7 @@ const server = Bun.serve({
               await connection.beginTransaction();
               const [matches] = await connection.execute<AppointmentRow[]>(
                 user.isAdmin
-                  ? `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                  ? `SELECT id, business_partner_id, visitor_record_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                             TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
                             reference_code, registered_by, created_by_login, company_name, host_name, status,
                             0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
@@ -5623,7 +6598,7 @@ const server = Bun.serve({
                      WHERE id = ? AND deleted_at IS NULL
                      LIMIT 1
                      FOR UPDATE`
-                  : `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                  : `SELECT id, business_partner_id, visitor_record_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                             TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
                             reference_code, registered_by, created_by_login, company_name, host_name, status,
                             0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
@@ -5651,6 +6626,12 @@ const server = Bun.serve({
                 "UPDATE appointments SET status = 'Cancelada' WHERE id = ? AND deleted_at IS NULL",
                 [targetAppointmentId],
               );
+              await connection.execute(
+                `UPDATE daily_log_timers
+                 SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
+                 WHERE appointment_id = ? AND status = 'active'`,
+                [targetAppointmentId],
+              );
               await recordAppointmentHistory(
                 connection,
                 targetAppointmentId,
@@ -5671,24 +6652,30 @@ const server = Bun.serve({
             const appointment = parseAppointment(body);
             if (!appointment) {
               return Response.json(
-                { error: "Revisa el nombre y correo del visitante, la empresa, el anfitrión, la fecha y la hora." },
+                { error: "Revisa el nombre y correo del visitante, el visitante o empresa, el anfitrión, la fecha y la hora." },
                 { status: 400 },
               );
             }
-            const [partners] = await pool.execute<BusinessPartnerRow[]>(
-              `SELECT id, name, description, rfc, category, employee_count, partner_type, is_active
-               FROM business_partners WHERE id = ? LIMIT 1`,
-              [appointment.businessPartnerId],
+            const details = await resolveAppointmentDetails(
+              appointment,
+              hasHostAccess && !user.isAdmin ? user.login : undefined,
             );
-            if (partners.length === 0) {
-              return Response.json({ error: "La empresa seleccionada ya no está disponible." }, { status: 400 });
+            if (!details) {
+              return Response.json(
+                {
+                  error: appointment.visitorRecordId !== null
+                    ? "El visitante seleccionado ya no está disponible o no te pertenece."
+                    : "La empresa seleccionada ya no está disponible.",
+                },
+                { status: 400 },
+              );
             }
             const connection = await pool.getConnection();
             try {
               await connection.beginTransaction();
               const [matches] = await connection.execute<AppointmentRow[]>(
                 user.isAdmin
-                  ? `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                  ? `SELECT id, business_partner_id, visitor_record_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                             TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
                             reference_code, registered_by, created_by_login, company_name, host_name, status,
                             0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
@@ -5696,7 +6683,7 @@ const server = Bun.serve({
                      WHERE id = ? AND deleted_at IS NULL
                      LIMIT 1
                      FOR UPDATE`
-                  : `SELECT id, business_partner_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                  : `SELECT id, business_partner_id, visitor_record_id, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                             TIME_FORMAT(visit_time, '%H:%i') AS visit_time, visitor_name, visitor_email,
                             reference_code, registered_by, created_by_login, company_name, host_name, status,
                             0 AS equipment_checklist_required, 0 AS equipment_entry_checklist_complete
@@ -5718,12 +6705,13 @@ const server = Bun.serve({
               const previousSnapshot = appointmentSnapshot(previousRow);
               const currentSnapshot: AppointmentSnapshot = {
                 ...previousSnapshot,
-                businessPartnerId: appointment.businessPartnerId,
+                businessPartnerId: details.businessPartnerId,
+                visitorRecordId: details.visitorRecordId,
                 date: appointment.date,
                 time: appointment.time,
-                visitor: appointment.visitorName,
-                email: appointment.visitorEmail,
-                company: partners[0].name,
+                visitor: details.visitorName,
+                email: details.visitorEmail,
+                company: details.companyName,
                 host: user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
               };
               const changedFields: string[] = [];
@@ -5732,6 +6720,7 @@ const server = Bun.serve({
               if (previousSnapshot.visitor !== currentSnapshot.visitor) changedFields.push("visitante");
               if (previousSnapshot.email !== currentSnapshot.email) changedFields.push("correo");
               if (previousSnapshot.businessPartnerId !== currentSnapshot.businessPartnerId) changedFields.push("empresa");
+              if (previousSnapshot.visitorRecordId !== currentSnapshot.visitorRecordId) changedFields.push("visitante registrado");
               if (previousSnapshot.host !== currentSnapshot.host) changedFields.push("anfitrión");
               if (changedFields.length === 0) {
                 await connection.rollback();
@@ -5745,16 +6734,17 @@ const server = Bun.serve({
               }
               await connection.execute(
                 `UPDATE appointments
-                 SET business_partner_id = ?, visit_date = ?, visit_time = ?, visitor_name = ?,
-                     visitor_email = ?, company_name = ?, host_name = ?
+                 SET business_partner_id = ?, visitor_record_id = ?, visit_date = ?, visit_time = ?,
+                     visitor_name = ?, visitor_email = ?, company_name = ?, host_name = ?
                  WHERE id = ? AND deleted_at IS NULL`,
                 [
-                  appointment.businessPartnerId,
+                  details.businessPartnerId,
+                  details.visitorRecordId,
                   appointment.date,
                   appointment.time,
-                  appointment.visitorName,
-                  appointment.visitorEmail,
-                  partners[0].name,
+                  details.visitorName,
+                  details.visitorEmail,
+                  details.companyName,
                   currentSnapshot.host,
                   targetAppointmentId,
                 ],
@@ -5780,17 +6770,23 @@ const server = Bun.serve({
           const appointment = parseAppointment(body);
           if (!appointment) {
             return Response.json(
-              { error: "Revisa el nombre y correo del visitante, la empresa, el anfitrión, la fecha y la hora." },
+              { error: "Revisa el nombre y correo del visitante, el visitante o empresa, el anfitrión, la fecha y la hora." },
               { status: 400 },
             );
           }
-          const [partners] = await pool.execute<BusinessPartnerRow[]>(
-            `SELECT id, name, description, rfc, category, employee_count, partner_type, is_active
-             FROM business_partners WHERE id = ? LIMIT 1`,
-            [appointment.businessPartnerId],
+          const details = await resolveAppointmentDetails(
+            appointment,
+            hasHostAccess && !user.isAdmin ? user.login : undefined,
           );
-          if (partners.length === 0) {
-            return Response.json({ error: "La empresa seleccionada ya no está disponible." }, { status: 400 });
+          if (!details) {
+            return Response.json(
+              {
+                error: appointment.visitorRecordId !== null
+                  ? "El visitante seleccionado ya no está disponible o no te pertenece."
+                  : "La empresa seleccionada ya no está disponible.",
+              },
+              { status: 400 },
+            );
           }
           const connection = await pool.getConnection();
           try {
@@ -5801,32 +6797,34 @@ const server = Bun.serve({
               try {
                 const [result] = await connection.execute<ResultSetHeader>(
                   `INSERT INTO appointments
-                    (business_partner_id, visit_date, visit_time, visitor_name, visitor_email,
+                    (business_partner_id, visitor_record_id, visit_date, visit_time, visitor_name, visitor_email,
                      reference_code, registered_by, created_by_login, company_name, host_name, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
                   [
-                    appointment.businessPartnerId,
+                    details.businessPartnerId,
+                    details.visitorRecordId,
                     appointment.date,
                     appointment.time,
-                    appointment.visitorName,
-                    appointment.visitorEmail,
+                    details.visitorName,
+                    details.visitorEmail,
                     referenceCode,
                     user.name?.trim() || user.login,
                     user.login,
-                    partners[0].name,
+                    details.companyName,
                     user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
                   ],
                 );
                 const snapshot: AppointmentSnapshot = {
-                  businessPartnerId: appointment.businessPartnerId,
+                  businessPartnerId: details.businessPartnerId,
+                  visitorRecordId: details.visitorRecordId,
                   date: appointment.date,
                   time: appointment.time,
-                  visitor: appointment.visitorName,
-                  email: appointment.visitorEmail,
+                  visitor: details.visitorName,
+                  email: details.visitorEmail,
                   referenceCode,
                   registeredBy: user.name?.trim() || user.login,
                   createdByLogin: user.login,
-                  company: partners[0].name,
+                  company: details.companyName,
                   host: user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
                   status: "Pendiente",
                 };
@@ -6572,6 +7570,16 @@ console.log(
     databaseName: Bun.env.DB_NAME ?? "visitas_recep",
   },
 );
+
+setInterval(() => {
+  void sendDueDailyLogTimerNotifications().catch((error: unknown) => {
+    console.error("Failed to process due daily log timer notifications:", error);
+  });
+}, 10_000);
+
+void sendDueDailyLogTimerNotifications().catch((error: unknown) => {
+  console.error("Failed to process due daily log timer notifications:", error);
+});
 
 void Promise.resolve()
   .then(() => Promise.all([

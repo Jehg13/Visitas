@@ -31,6 +31,7 @@ type LogSummary = {
 type Appointment = {
   id: number;
   businessPartnerId?: number | null;
+  visitorRecordId?: number | null;
   date: string;
   time: string;
   visitor: string;
@@ -83,6 +84,25 @@ type LogResponse = {
   pages?: number;
   error?: string;
 };
+type VisitTimer = {
+  id: number;
+  appointmentId: number | null;
+  visitorRecordId: number | null;
+  personName: string;
+  phase: "Llegada" | "Ingreso";
+  intervalMinutes: number;
+  startedAt: string;
+  dueAt: string;
+  status: "active";
+};
+type NotificationConfigResponse = {
+  webPushPublicKey?: string | null;
+  error?: string;
+};
+type VisitorKioskSettingsResponse = {
+  autoAuthorizePublicVisitors?: boolean;
+  error?: string;
+};
 
 const props = defineProps<{
   isAdmin: boolean;
@@ -125,6 +145,16 @@ const total = ref(0);
 const pages = ref(1);
 const recentTotal = ref(0);
 const recentPages = ref(1);
+const activeTimers = ref<VisitTimer[]>([]);
+const timerNow = ref(Date.now());
+const timerError = ref("");
+const timerActionId = ref<number | null>(null);
+const notificationSetupMessage = ref("");
+const notificationSetupBusy = ref(false);
+const autoAuthorizePublicVisitors = ref(false);
+const kioskSettingsLoading = ref(false);
+const kioskSettingsSaving = ref(false);
+const kioskSettingsMessage = ref("");
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
@@ -166,6 +196,11 @@ const logDetails = ref("");
 let requestVersion = 0;
 let employeeRosterRequestVersion = 0;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let timerPoller: ReturnType<typeof setInterval> | undefined;
+let timerClock: ReturnType<typeof setInterval> | undefined;
+let timerRequestInProgress = false;
+let webPushPublicKey: string | null = null;
+const dueNotificationKeys = new Set<string>();
 
 const dailyLogHelpSections = [
   {
@@ -496,6 +531,208 @@ async function loadEntries() {
     }
   } finally {
     if (currentRequest === requestVersion) loading.value = false;
+  }
+}
+
+const orderedActiveTimers = computed(() =>
+  [...activeTimers.value].sort((first, second) =>
+    first.dueAt.localeCompare(second.dueAt),
+  ),
+);
+const dueTimers = computed(() =>
+  orderedActiveTimers.value.filter(
+    (timer) => Date.parse(timer.dueAt) <= timerNow.value,
+  ),
+);
+
+function isVisitTimer(value: unknown): value is VisitTimer {
+  if (typeof value !== "object" || value === null) return false;
+  const timer = value as Partial<VisitTimer>;
+  return Number.isSafeInteger(timer.id) &&
+    (timer.appointmentId === null || Number.isSafeInteger(timer.appointmentId)) &&
+    (timer.visitorRecordId === null || Number.isSafeInteger(timer.visitorRecordId)) &&
+    typeof timer.personName === "string" &&
+    (timer.phase === "Llegada" || timer.phase === "Ingreso") &&
+    Number.isSafeInteger(timer.intervalMinutes) &&
+    typeof timer.startedAt === "string" &&
+    !Number.isNaN(Date.parse(timer.startedAt)) &&
+    typeof timer.dueAt === "string" &&
+    !Number.isNaN(Date.parse(timer.dueAt)) &&
+    timer.status === "active";
+}
+
+async function loadTimers() {
+  if (timerRequestInProgress) return;
+  timerRequestInProgress = true;
+  try {
+    const response = await fetch("/api/daily-log/timers");
+    const result = await response.json() as { timers?: unknown; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "No se pudieron cargar los temporizadores.");
+    if (!Array.isArray(result.timers) || !result.timers.every(isVisitTimer)) {
+      throw new Error("El servidor devolvió temporizadores con formato inválido.");
+    }
+    activeTimers.value = result.timers;
+    timerError.value = "";
+  } catch (cause) {
+    console.error("Failed to load daily log timers:", cause);
+    timerError.value = cause instanceof Error
+      ? cause.message
+      : "No se pudieron cargar los temporizadores.";
+  } finally {
+    timerRequestInProgress = false;
+  }
+}
+
+function formatTimerRemaining(timer: VisitTimer) {
+  const seconds = Math.max(0, Math.ceil((Date.parse(timer.dueAt) - timerNow.value) / 1000));
+  if (seconds === 0) return "Alarma vencida";
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
+  if (timerActionId.value !== null) return;
+  timerActionId.value = timer.id;
+  timerError.value = "";
+  try {
+    const response = await fetch(`/api/daily-log/timers/${timer.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const result = await response.json() as { timers?: unknown; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "No se pudo actualizar el temporizador.");
+    if (!Array.isArray(result.timers) || !result.timers.every(isVisitTimer)) {
+      throw new Error("El servidor devolvió temporizadores con formato inválido.");
+    }
+    activeTimers.value = result.timers;
+  } catch (cause) {
+    console.error("Failed to update daily log timer:", cause);
+    timerError.value = cause instanceof Error
+      ? cause.message
+      : "No se pudo actualizar el temporizador.";
+  } finally {
+    timerActionId.value = null;
+  }
+}
+
+function decodeVapidPublicKey(value: string) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function activateWebPushNotifications() {
+  if (notificationSetupBusy.value) return;
+  notificationSetupBusy.value = true;
+  notificationSetupMessage.value = "";
+  try {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      throw new Error("Este navegador no admite notificaciones en segundo plano.");
+    }
+    const configResponse = await fetch("/api/notifications/config");
+    const config = await configResponse.json() as NotificationConfigResponse;
+    if (!configResponse.ok) {
+      throw new Error(config.error ?? "No se pudo cargar la configuración de notificaciones.");
+    }
+    if (!config.webPushPublicKey) {
+      throw new Error("Web Push no está configurado en el servidor.");
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      throw new Error("Permite las notificaciones de este sitio en la configuración del navegador.");
+    }
+    const registration = await navigator.serviceWorker.register("/visitas-notifications-sw.js");
+    const subscription = await registration.pushManager.getSubscription() ??
+      await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: decodeVapidPublicKey(config.webPushPublicKey),
+      });
+    const subscriptionJson = subscription.toJSON();
+    if (!subscriptionJson.keys?.p256dh || !subscriptionJson.keys.auth) {
+      throw new Error("El navegador devolvió una suscripción incompleta.");
+    }
+    const saveResponse = await fetch("/api/notifications/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform: "web",
+        subscription: {
+          endpoint: subscription.endpoint,
+          keys: subscriptionJson.keys,
+        },
+      }),
+    });
+    const saved = await saveResponse.json() as { error?: string };
+    if (!saveResponse.ok) {
+      throw new Error(saved.error ?? "No se pudo activar el servicio de notificaciones.");
+    }
+    webPushPublicKey = config.webPushPublicKey;
+    notificationSetupMessage.value = "Las alarmas en segundo plano quedaron activadas en este navegador.";
+  } catch (cause) {
+    console.error("Failed to enable web timer notifications:", cause);
+    notificationSetupMessage.value = cause instanceof Error
+      ? cause.message
+      : "No se pudieron activar las notificaciones.";
+  } finally {
+    notificationSetupBusy.value = false;
+  }
+}
+
+async function loadVisitorKioskSettings() {
+  kioskSettingsLoading.value = true;
+  try {
+    const response = await fetch("/api/visitor-kiosk/settings");
+    const result = await response.json() as VisitorKioskSettingsResponse;
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudo cargar la opción de autorregistro.");
+    }
+    if (typeof result.autoAuthorizePublicVisitors !== "boolean") {
+      throw new Error("El servidor devolvió una configuración inválida.");
+    }
+    autoAuthorizePublicVisitors.value = result.autoAuthorizePublicVisitors;
+    kioskSettingsMessage.value = "";
+  } catch (cause) {
+    console.error("Failed to load visitor kiosk settings:", cause);
+    kioskSettingsMessage.value = cause instanceof Error
+      ? cause.message
+      : "No se pudo cargar la opción de autorregistro.";
+  } finally {
+    kioskSettingsLoading.value = false;
+  }
+}
+
+async function saveVisitorKioskSetting(enabled: boolean) {
+  if (kioskSettingsSaving.value) return;
+  const previousValue = autoAuthorizePublicVisitors.value;
+  autoAuthorizePublicVisitors.value = enabled;
+  kioskSettingsSaving.value = true;
+  kioskSettingsMessage.value = "";
+  try {
+    const response = await fetch("/api/visitor-kiosk/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoAuthorizePublicVisitors: enabled }),
+    });
+    const result = await response.json() as VisitorKioskSettingsResponse;
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudo guardar la opción de autorregistro.");
+    }
+    if (result.autoAuthorizePublicVisitors !== enabled) {
+      throw new Error("El servidor no confirmó el cambio de configuración.");
+    }
+    kioskSettingsMessage.value = enabled
+      ? "El registro público se autorizará automáticamente."
+      : "El registro público volverá a requerir autorización de recepción.";
+  } catch (cause) {
+    console.error("Failed to save visitor kiosk settings:", cause);
+    autoAuthorizePublicVisitors.value = previousValue;
+    kioskSettingsMessage.value = cause instanceof Error
+      ? cause.message
+      : "No se pudo guardar la opción de autorregistro.";
+  } finally {
+    kioskSettingsSaving.value = false;
   }
 }
 
@@ -1131,6 +1368,7 @@ watch(search, () => {
 });
 
 function refreshDailyLogAfterRealtimeUpdate() {
+  void loadTimers();
   if (
     document.visibilityState === "visible" &&
     fromDate.value &&
@@ -1143,6 +1381,12 @@ function refreshDailyLogAfterRealtimeUpdate() {
 
 onMounted(() => {
   void loadEntries();
+  void loadTimers();
+  void loadVisitorKioskSettings();
+  timerPoller = setInterval(() => void loadTimers(), 10_000);
+  timerClock = setInterval(() => {
+    timerNow.value = Date.now();
+  }, 1000);
   quickSearchInput.value?.focus();
   window.addEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
   window.addEventListener("keydown", handleDetailDrawerKeydown);
@@ -1151,6 +1395,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   requestVersion += 1;
   if (searchTimer) clearTimeout(searchTimer);
+  if (timerPoller) clearInterval(timerPoller);
+  if (timerClock) clearInterval(timerClock);
   window.removeEventListener("visitas:data-changed", refreshDailyLogAfterRealtimeUpdate);
   window.removeEventListener("keydown", handleDetailDrawerKeydown);
   closeQrScanner();
@@ -1274,6 +1520,79 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
 
     <div class="daily-log-workspace">
       <div class="daily-log-main-column">
+        <section class="daily-log-timer-panel" aria-labelledby="daily-log-timers-title">
+          <div class="daily-log-timer-heading">
+            <div>
+              <span class="daily-log-panel-kicker">SEGUIMIENTO DE VISITAS</span>
+              <h2 id="daily-log-timers-title">Temporizadores activos</h2>
+            </div>
+            <button
+              class="daily-log-secondary-button"
+              type="button"
+              :disabled="notificationSetupBusy"
+              @click="activateWebPushNotifications"
+            >
+              {{ notificationSetupBusy ? "Activando..." : "Activar alarma en segundo plano" }}
+            </button>
+          </div>
+          <p v-if="notificationSetupMessage" class="daily-log-timer-message" role="status">
+            {{ notificationSetupMessage }}
+          </p>
+          <label class="daily-log-kiosk-setting">
+            <input
+              type="checkbox"
+              :checked="autoAuthorizePublicVisitors"
+              :disabled="kioskSettingsLoading || kioskSettingsSaving"
+              @change="saveVisitorKioskSetting(($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              <strong>Autorizar automáticamente visitas sin cita</strong>
+              <small>Al activarlo, el registro manual anotará la llegada y no esperará autorización de recepción. Si declara equipo, recepción aún debe completar su checklist.</small>
+            </span>
+          </label>
+          <p v-if="kioskSettingsMessage" class="daily-log-timer-message" role="status">
+            {{ kioskSettingsMessage }}
+          </p>
+          <p v-if="timerError" class="daily-log-timer-error" role="alert">{{ timerError }}</p>
+          <p v-if="activeTimers.length === 0" class="daily-log-timer-empty">
+            No hay temporizadores activos para las visitas de hoy.
+          </p>
+          <div v-else class="daily-log-timer-list" :aria-live="dueTimers.length ? 'assertive' : 'off'">
+            <article
+              v-for="timer in orderedActiveTimers"
+              :key="timer.id"
+              class="daily-log-timer-card"
+              :class="{ 'is-due': Date.parse(timer.dueAt) <= timerNow }"
+            >
+              <div class="daily-log-timer-person">
+                <strong>{{ timer.personName }}</strong>
+                <span>
+                  {{ timer.phase === "Llegada" ? "Esperando en recepción" : "Dentro de las instalaciones" }}
+                  · {{ timer.intervalMinutes }} min
+                </span>
+              </div>
+              <strong class="daily-log-timer-remaining">{{ formatTimerRemaining(timer) }}</strong>
+              <div v-if="Date.parse(timer.dueAt) <= timerNow" class="daily-log-timer-actions">
+                <button
+                  type="button"
+                  class="daily-log-secondary-button"
+                  :disabled="timerActionId !== null"
+                  @click="updateTimer(timer, 'snooze')"
+                >
+                  {{ timerActionId === timer.id ? "Guardando..." : `Repetir ${timer.intervalMinutes} min` }}
+                </button>
+                <button
+                  type="button"
+                  class="daily-log-danger-button"
+                  :disabled="timerActionId !== null"
+                  @click="updateTimer(timer, 'cancel')"
+                >
+                  Cancelar alarma
+                </button>
+              </div>
+            </article>
+          </div>
+        </section>
         <section class="daily-log-quick-panel" aria-labelledby="daily-log-quick-title">
           <div class="daily-log-quick-heading">
             <div>

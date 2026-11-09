@@ -10441,6 +10441,7 @@ input:focus-visible {
   content: "";
 }
 
+.visitor-kiosk-success-mark.is-registered,
 .visitor-kiosk-success-mark.is-entered {
   background:
     linear-gradient(145deg, rgb(7 52 46 / 98%), rgb(4 24 31 / 98%)) padding-box,
@@ -14235,5 +14236,182 @@ input:focus-visible {
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 9px;
     padding: 11px 9px;
+  }
+}
+
+.daily-log-timer-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 12px;
+  background: var(--ds-surface);
+  color: var(--ds-text);
+}
+
+.daily-log-timer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.daily-log-timer-heading h2 {
+  margin: 3px 0 0;
+  font-size: 1rem;
+}
+
+.daily-log-timer-message,
+.daily-log-timer-error,
+.daily-log-timer-empty {
+  margin: 0;
+  color: var(--ds-text-muted);
+  font-size: 0.78rem;
+}
+
+.daily-log-kiosk-setting {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--ds-border);
+  border-radius: 9px;
+  background: var(--ds-surface-muted);
+  cursor: pointer;
+}
+
+.daily-log-kiosk-setting input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: #2689e8;
+}
+
+.daily-log-kiosk-setting span {
+  display: grid;
+  gap: 4px;
+}
+
+.daily-log-kiosk-setting strong {
+  font-size: 0.82rem;
+}
+
+.daily-log-kiosk-setting small {
+  color: var(--ds-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.daily-log-timer-error {
+  color: #d33f50;
+}
+
+.daily-log-timer-list {
+  display: grid;
+  gap: 8px;
+}
+
+.daily-log-timer-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--ds-border);
+  border-radius: 9px;
+  background: var(--ds-surface-muted);
+}
+
+.daily-log-timer-card.is-due {
+  border-color: #d94b57;
+  background: color-mix(in srgb, #d94b57 12%, var(--ds-surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, #d94b57 28%, transparent);
+}
+
+.daily-log-timer-person {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+}
+
+.daily-log-timer-person strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-log-timer-person span,
+.daily-log-timer-remaining {
+  color: var(--ds-text-muted);
+  font-size: 0.76rem;
+}
+
+.daily-log-timer-remaining {
+  min-width: 88px;
+  color: var(--ds-text);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.daily-log-timer-card.is-due .daily-log-timer-remaining {
+  color: #b82739;
+}
+
+.daily-log-timer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.daily-log-timer-actions button {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 7px;
+  background: var(--ds-surface);
+  color: var(--ds-text);
+  font-size: 0.74rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.daily-log-timer-actions .daily-log-danger-button {
+  border-color: #d94b57;
+  color: #b82739;
+}
+
+.daily-log-timer-actions button:disabled,
+.daily-log-timer-heading button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@media (max-width: 760px) {
+  .daily-log-timer-heading,
+  .daily-log-timer-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .daily-log-timer-heading {
+    gap: 10px;
+  }
+
+  .daily-log-timer-heading button {
+    width: 100%;
+  }
+
+  .daily-log-timer-remaining {
+    text-align: left;
+  }
+
+  .daily-log-timer-actions {
+    justify-content: stretch;
+  }
+
+  .daily-log-timer-actions button {
+    flex: 1;
   }
 }

@@ -38,6 +38,13 @@ const MobileAppReleasesSection = defineAsyncComponent(
 
 type AccessRoleDraft = "administrador" | "recepcion" | "";
 const otherAppointmentVisitor = "__otro__";
+const hostVisitorCompanyOption = -1;
+type HostVisitor = {
+  id: number;
+  fullName: string;
+  phone: string;
+  email: string;
+};
 
 function isProgrammerRole(role: string | null) {
   return role?.trim().toLocaleLowerCase("es") === "programador";
@@ -189,6 +196,12 @@ const privateMenuOpen = ref(false);
 const accountMenuRef = ref<HTMLElement | null>(null);
 const appointmentDialogOpen = ref(false);
 const editingAppointmentId = ref<number | null>(null);
+const hostVisitorDialogOpen = ref(false);
+const hostVisitorSaving = ref(false);
+const hostVisitorName = ref("");
+const hostVisitorPhone = ref("");
+const hostVisitorEmail = ref("");
+const hostVisitors = ref<HostVisitor[]>([]);
 const qrDialogOpen = ref(false);
 const qrAppointment = ref<Appointment | null>(null);
 const qrExternalStaff = ref<ExternalStaff | null>(null);
@@ -357,6 +370,12 @@ function refreshVisibleSection() {
     void loadAppointments(true);
   }
   if (
+    activeSection.value === "Agenda de citas" &&
+    (currentUser.value.isAdmin || isHost.value)
+  ) {
+    void loadHostVisitors(true);
+  }
+  if (
     activeSection.value === "Personal de externos" ||
     activeSection.value === "Contratistas, proveedores y visitantes" ||
     activeSection.value === "Agenda de citas" ||
@@ -439,6 +458,7 @@ onMounted(() => {
     void loadBusinessDirectory();
     void loadAppointments();
   }
+  if (currentUser.value.isAdmin || isHost.value) void loadHostVisitors();
   if (currentUser.value.isAdmin) {
     void loadHostAccounts();
   }
@@ -500,6 +520,28 @@ async function loadAppointments(silent = false) {
   } finally {
     appointmentsRequestInProgress = false;
     if (!silent) appointmentLoading.value = false;
+  }
+}
+
+async function loadHostVisitors(silent = false) {
+  try {
+    const response = await fetch("/api/host-visitors");
+    const result = await response.json() as { visitors?: HostVisitor[]; error?: string };
+    if (!response.ok) {
+      const message = result.error ?? "No se pudieron cargar los visitantes registrados.";
+      if (silent) console.error(message);
+      else showToast(message);
+      return;
+    }
+    if (!Array.isArray(result.visitors)) {
+      throw new Error("La API devolvió visitantes con formato inválido.");
+    }
+    hostVisitors.value = result.visitors;
+  } catch (error) {
+    console.error("Failed to load host visitors:", error);
+    if (!silent) {
+      showToast(error instanceof Error ? error.message : "No se pudieron cargar los visitantes registrados.");
+    }
   }
 }
 
@@ -740,9 +782,13 @@ const appointmentHostOptions = computed(() =>
     : [...hosts.value].sort((first, second) => first.name.localeCompare(second.name, "es")),
 );
 const appointmentVisitorOptions = computed(() =>
-  externalStaff.value
-    .filter((staff) => staff.businessPartnerId === visitorCompanyId.value)
-    .sort((first, second) => first.fullName.localeCompare(second.fullName, "es")),
+  visitorCompanyId.value === hostVisitorCompanyOption
+    ? [...hostVisitors.value].sort((first, second) =>
+        first.fullName.localeCompare(second.fullName, "es"),
+      )
+    : externalStaff.value
+        .filter((staff) => staff.businessPartnerId === visitorCompanyId.value)
+        .sort((first, second) => first.fullName.localeCompare(second.fullName, "es")),
 );
 const filteredHosts = computed(() => {
   const query = hostSearch.value.trim().toLocaleLowerCase();
@@ -1020,6 +1066,25 @@ function showToast(message: string, type: AppAlertType = "error", title?: string
 }
 
 async function logout() {
+  if ("serviceWorker" in navigator) {
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        const response = await fetch("/api/notifications/config", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platform: "web", endpoint: subscription.endpoint }),
+        });
+        if (!response.ok) {
+          console.warn("No se pudo eliminar la suscripción web antes de cerrar sesión.");
+        }
+        await subscription.unsubscribe();
+      }
+    } catch (error) {
+      console.warn("No se pudo cerrar la suscripción de notificaciones web:", error);
+    }
+  }
   try {
     const response = await fetch("/api/auth/logout", { method: "POST" });
     if (!response.ok) {
@@ -1187,12 +1252,18 @@ function openAppointmentDialog(appointment?: Appointment) {
   visitorTime.value = appointment?.time ?? "18:00";
   visitorName.value = appointment?.visitor ?? "";
   visitorEmail.value = appointment?.email ?? "";
-  visitorSelection.value = appointment ? otherAppointmentVisitor : "";
-  visitorCompanyId.value = appointment
-    ? appointment.businessPartnerId ??
-      businessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
-      null
-    : null;
+  visitorSelection.value = appointment?.visitorRecordId
+    ? String(appointment.visitorRecordId)
+    : appointment
+      ? otherAppointmentVisitor
+      : "";
+  visitorCompanyId.value = appointment?.visitorRecordId
+    ? hostVisitorCompanyOption
+    : appointment
+      ? appointment.businessPartnerId ??
+        businessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
+        null
+      : null;
   visitorHostLogin.value = isHost.value
     ? currentUser.value.login
     : hosts.value.find((host) => host.name === appointment?.host)?.login ?? "";
@@ -1221,6 +1292,52 @@ function changeAppointmentVisitor() {
   );
   visitorName.value = visitor?.fullName ?? "";
   visitorEmail.value = visitor?.email ?? "";
+}
+
+function openHostVisitorDialog() {
+  hostVisitorName.value = "";
+  hostVisitorPhone.value = "";
+  hostVisitorEmail.value = "";
+  hostVisitorDialogOpen.value = true;
+}
+
+async function submitHostVisitor() {
+  if (hostVisitorSaving.value) return;
+  const fullName = hostVisitorName.value.trim();
+  const phone = hostVisitorPhone.value.trim();
+  const email = hostVisitorEmail.value.trim();
+  if (!fullName) {
+    showToast("Ingresa el nombre completo del visitante.");
+    return;
+  }
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showToast("Ingresa un correo válido o déjalo vacío.");
+    return;
+  }
+  hostVisitorSaving.value = true;
+  try {
+    const response = await fetch("/api/host-visitors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullName, phone, email }),
+    });
+    const result = await response.json() as { visitors?: HostVisitor[]; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo guardar el visitante.");
+      return;
+    }
+    if (!Array.isArray(result.visitors)) {
+      throw new Error("La API devolvió visitantes con formato inválido.");
+    }
+    hostVisitors.value = result.visitors;
+    hostVisitorDialogOpen.value = false;
+    showToast("El visitante quedó guardado para usarlo en tus citas.", "success", "Visitante registrado");
+  } catch (error) {
+    console.error("Failed to save host visitor:", error);
+    showToast(error instanceof Error ? error.message : "No se pudo guardar el visitante.");
+  } finally {
+    hostVisitorSaving.value = false;
+  }
 }
 
 function changeCalendarMonth(offset: number) {
@@ -1503,9 +1620,10 @@ function setAppointmentFilter(filter: "day" | "all") {
 
 async function submitAppointment() {
   if (appointmentSaving.value) return;
-  const company = businessPartners.value.find(
-    (partner) => partner.id === visitorCompanyId.value,
-  );
+  const isHostVisitor = visitorCompanyId.value === hostVisitorCompanyOption;
+  const company = isHostVisitor
+    ? undefined
+    : businessPartners.value.find((partner) => partner.id === visitorCompanyId.value);
   const host = isHost.value
     ? {
         login: currentUser.value.login,
@@ -1513,22 +1631,25 @@ async function submitAppointment() {
       }
     : hosts.value.find((candidate) => candidate.login === visitorHostLogin.value);
   const selectedVisitor =
-    visitorSelection.value === otherAppointmentVisitor
+    isHostVisitor || visitorSelection.value === otherAppointmentVisitor
       ? null
       : appointmentVisitorOptions.value.find(
           (staff) => String(staff.id) === visitorSelection.value,
         );
+  const selectedHostVisitor = isHostVisitor
+    ? hostVisitors.value.find((visitor) => String(visitor.id) === visitorSelection.value)
+    : undefined;
   const appointmentVisitorName =
     visitorSelection.value === otherAppointmentVisitor
       ? visitorName.value.trim()
-      : selectedVisitor?.fullName ?? "";
+      : selectedHostVisitor?.fullName ?? selectedVisitor?.fullName ?? "";
   const email = visitorEmail.value.trim();
   let appointmentEmail =
     visitorSelection.value === otherAppointmentVisitor
       ? email
-      : selectedVisitor?.email.trim() ?? "";
-  if (!appointmentVisitorName || !company || !host || !visitorSelection.value) {
-    showToast("Selecciona empresa, visitante y anfitrión.");
+      : selectedHostVisitor?.email.trim() ?? selectedVisitor?.email.trim() ?? "";
+  if (!appointmentVisitorName || (!company && !isHostVisitor) || !host || !visitorSelection.value) {
+    showToast("Selecciona una empresa o un visitante registrado, y un visitante.");
     return;
   }
   if (appointmentEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(appointmentEmail)) {
@@ -1549,7 +1670,8 @@ async function submitAppointment() {
       body: JSON.stringify({
         visitorName: appointmentVisitorName,
         visitorEmail: appointmentEmail,
-        businessPartnerId: company.id,
+        businessPartnerId: company?.id ?? null,
+        visitorRecordId: selectedHostVisitor?.id ?? null,
         hostName: host.name,
         date: visitorDate.value,
         time: visitorTime.value,
@@ -2476,6 +2598,7 @@ async function removeBusinessPartner(id: number) {
         :theme="dashboardTheme"
         @update:page="appointmentsPage = $event"
         @create="openAppointmentDialog"
+        @register-visitor="openHostVisitorDialog"
         @cancel="cancelAppointment"
         @open-qr="openQrDialog"
         @send-company-qrs="openCompanyQrDispatch"
@@ -2617,13 +2740,19 @@ async function removeBusinessPartner(id: number) {
         <p class="dialog-description">{{ editingAppointmentId === null ? "Agrega una visita a la agenda." : "Actualiza los datos de la visita." }}</p>
         <form class="appointment-form" @submit.prevent="submitAppointment">
           <label>
-            Empresa
+            Empresa o visitante registrado
             <select
               v-model.number="visitorCompanyId"
               required
               @change="changeAppointmentCompany"
             >
               <option :value="null" disabled>Selecciona una empresa</option>
+              <option
+                v-if="currentUser.isAdmin || isHost"
+                :value="hostVisitorCompanyOption"
+              >
+                Visitante registrado
+              </option>
               <option
                 v-for="company in appointmentCompanyOptions"
                 :key="company.id"
@@ -2642,7 +2771,7 @@ async function removeBusinessPartner(id: number) {
               @change="changeAppointmentVisitor"
             >
               <option value="" disabled>
-                {{ visitorCompanyId === null ? "Primero selecciona una empresa" : "Selecciona el nombre del visitante" }}
+                {{ visitorCompanyId === null ? "Primero selecciona una empresa o visitante" : "Selecciona el nombre del visitante" }}
               </option>
               <option
                 v-for="person in appointmentVisitorOptions"
@@ -2651,7 +2780,10 @@ async function removeBusinessPartner(id: number) {
               >
                 {{ person.fullName }}
               </option>
-              <option :value="otherAppointmentVisitor">Otro (escribir nombre)</option>
+              <option
+                v-if="visitorCompanyId !== hostVisitorCompanyOption"
+                :value="otherAppointmentVisitor"
+              >Otro (escribir nombre)</option>
             </select>
             <input
               v-if="visitorSelection === otherAppointmentVisitor"
@@ -2663,6 +2795,12 @@ async function removeBusinessPartner(id: number) {
               placeholder="Nombre completo del visitante"
               required
             />
+            <span
+              v-else-if="visitorCompanyId === hostVisitorCompanyOption && appointmentVisitorOptions.length === 0"
+              class="appointment-field-hint"
+            >
+              Registra primero al visitante para poder seleccionarlo.
+            </span>
             <span
               v-else-if="visitorCompanyId !== null && appointmentVisitorOptions.length === 0"
               class="appointment-field-hint"
@@ -2712,6 +2850,37 @@ async function removeBusinessPartner(id: number) {
         </form>
       </section>
     </div>
+
+      <div
+        v-if="hostVisitorDialogOpen"
+        class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+        :data-theme="dashboardTheme"
+        @click.self="hostVisitorDialogOpen = false"
+      >
+        <section class="dialog appointment-dialog" role="dialog" aria-modal="true" aria-labelledby="host-visitor-dialog-title">
+          <button class="dialog-close" type="button" aria-label="Cerrar" @click="hostVisitorDialogOpen = false"><svg class="icon"><use href="#i-close" /></svg></button>
+          <span class="dialog-icon"><svg class="icon"><use href="#i-user" /></svg></span>
+          <h2 id="host-visitor-dialog-title">Registrar visitante</h2>
+          <p class="dialog-description">Guarda sus datos para seleccionarlo al programar futuras citas.</p>
+          <form class="appointment-form" @submit.prevent="submitHostVisitor">
+            <label class="appointment-form-full">
+              Nombre completo
+              <input v-model.trim="hostVisitorName" type="text" autocomplete="name" maxlength="180" required />
+            </label>
+            <label>
+              Teléfono (opcional)
+              <input v-model.trim="hostVisitorPhone" type="tel" autocomplete="tel" maxlength="30" />
+            </label>
+            <label>
+              Correo (opcional)
+              <input v-model.trim="hostVisitorEmail" type="email" autocomplete="email" maxlength="254" />
+            </label>
+            <button class="button-primary dialog-submit" type="submit" :disabled="hostVisitorSaving">
+              {{ hostVisitorSaving ? "Guardando visitante..." : "Guardar visitante" }}
+            </button>
+          </form>
+        </section>
+      </div>
 
       <div
         v-if="qrDialogOpen"

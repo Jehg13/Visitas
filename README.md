@@ -138,6 +138,14 @@ agenda sin borrar su historial ni los movimientos asociados. Los cambios de Exte
 requieren el permiso `anfitriones`; asignar el permiso de Recepción mantiene
 ese rol en modo de solo lectura para la Agenda.
 
+Los anfitriones pueden guardar visitantes reutilizables desde Agenda y
+seleccionarlos al crear una cita. Cada cita conserva su propio QR y código de
+referencia; recepción puede ver esos movimientos en la bitácora diaria. La
+bitácora inicia un temporizador de 15 minutos al registrar la llegada y uno de
+30 minutos al registrar el ingreso. Proveedores y contratistas quedan
+excluidos. Cada temporizador puede cancelarse o posponerse por el mismo
+intervalo.
+
 El autorregistro público está disponible en `/registro` y no requiere una
 cuenta de visitante. El formulario guarda de forma transaccional el visitante,
 los artículos, el folio, la declaración sobre identificación y la llegada
@@ -155,8 +163,14 @@ solicitudes de alta se limitan por IP. Cada acción de recepción se audita y la
 confirmaciones usan alertas compatibles con el tema claro u oscuro. La visita
 requiere autorización y, cuando hay artículos declarados, completar el
 checklist de entrada antes de registrar el ingreso y el checklist de salida
-antes de registrar el retiro. Sin equipo ni herramientas, la autorización
-registra el ingreso sin mostrar acciones de checklist. Los autorregistros
+antes de registrar el retiro. Recepción y Administración pueden activar en la
+Bitácora diaria la autorización automática para nuevos registros públicos; al
+activarla, las visitas sin artículos registran también el ingreso, mientras
+que las visitas con artículos quedan autorizadas pero deben esperar el checklist
+de recepción. Desactivada, se conserva el flujo de autorización habitual. La
+pantalla final del kiosco vuelve al inicio después de un minuto sin actividad.
+Sin equipo ni herramientas, la autorización manual registra el ingreso sin
+mostrar acciones de checklist. Los autorregistros
 aparecen como movimientos manuales en la bitácora; al seleccionar uno, el panel
 lateral ofrece las acciones de identificación y autorización y, solo si hay
 artículos, los checklists. Estos registran coincidencias, faltantes, daños,
@@ -293,6 +307,25 @@ respaldos antes de cualquier cambio de esquema.
 - Ejecuta Bun con `NODE_ENV=production` para que las cookies de sesión incluyan `Secure`, y
   configura `PUBLIC_APP_URL` con la URL HTTPS pública del frontend para los enlaces enviados
   por correo.
+
+## Notificaciones de temporizadores
+
+Las alarmas en segundo plano requieren HTTPS, permiso de notificaciones del
+navegador y configuración de Web Push y Firebase Cloud Messaging. Genera claves
+VAPID para el servidor con `bunx web-push generate-vapid-keys` y configura
+`WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` y un `WEB_PUSH_SUBJECT` real en
+`.env.production`. En Firebase, habilita Cloud Messaging y configura en el
+servidor `FIREBASE_API_KEY`, `FIREBASE_APP_ID`,
+`FIREBASE_MESSAGING_SENDER_ID` y `FIREBASE_PROJECT_ID`. Guarda la cuenta de
+servicio de Firebase como `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64`; no la
+incluyas en Git ni la compartas por el chat.
+
+La aplicación móvil debe compilarse con las opciones Firebase correspondientes
+al mismo proyecto. Sin esos secretos/configuración, los temporizadores siguen
+sincronizados y visibles mientras recepción usa la app, pero las notificaciones
+push en segundo plano no se entregan. Cada dispositivo de recepción debe
+autorizar las notificaciones en la app o en el navegador; el permiso se registra
+por cuenta para dirigirle las alarmas.
 
 ## Comandos
 

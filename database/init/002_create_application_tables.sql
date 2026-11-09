@@ -13,12 +13,14 @@ CREATE TABLE IF NOT EXISTS general_visitors (
   curp CHAR(18) NULL,
   phone VARCHAR(30) NOT NULL DEFAULT '',
   email VARCHAR(254) NOT NULL DEFAULT '',
+  registered_by_login VARCHAR(255) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_general_visitors_curp (curp),
   KEY idx_general_visitors_full_name (full_name),
-  KEY idx_general_visitors_email (email)
+  KEY idx_general_visitors_email (email),
+  KEY idx_general_visitors_registered_by_login (registered_by_login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS business_partners (

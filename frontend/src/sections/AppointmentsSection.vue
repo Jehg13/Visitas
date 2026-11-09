@@ -7,6 +7,7 @@ type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "C
 type Appointment = {
   id: number;
   businessPartnerId?: number | null;
+  visitorRecordId?: number | null;
   partnerType?: "Contratista" | "Proveedor" | "Visitante";
   date: string;
   time: string;
@@ -129,6 +130,7 @@ const emit = defineEmits<{
   "update:search": [value: string];
   "update:page": [value: number];
   create: [];
+  registerVisitor: [];
   cancel: [appointment: Appointment];
   openQr: [appointment: Appointment];
   sendCompanyQrs: [appointment: Appointment];
@@ -155,6 +157,14 @@ const emit = defineEmits<{
           <button class="button-secondary section-help-trigger" type="button" @click="helpOpen = true">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M9.8 9a2.3 2.3 0 1 1 3.9 1.7c-1.1 1-1.7 1.4-1.7 2.8M12 17h.01" /></svg>
             Ayuda
+          </button>
+          <button
+            v-if="isHost || isAdmin"
+            class="button-secondary"
+            type="button"
+            @click="emit('registerVisitor')"
+          >
+            <span>Registrar visitante</span>
           </button>
           <button
             v-if="canCreateAppointments"
