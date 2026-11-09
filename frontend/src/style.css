@@ -3320,6 +3320,16 @@ input:focus-visible {
   outline-offset: 3px;
 }
 
+.app-download-divider {
+  margin-top: 16px;
+}
+
+.app-download-link {
+  background:
+    linear-gradient(115deg, rgb(9 45 76 / 97%), rgb(15 31 52 / 97%)) padding-box,
+    linear-gradient(105deg, #2879b8, #3b6590 57%, #a72d3b) border-box;
+}
+
 .access-notice-icon {
   width: 34px;
   height: 38px;

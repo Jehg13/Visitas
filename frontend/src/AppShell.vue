@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppAlert from "./components/AppAlert.vue";
+import { apiFetch as fetch } from "./api";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
 import type { AccessAccount, AuthenticatedUser } from "./stores/types";

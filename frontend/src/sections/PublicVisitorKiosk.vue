@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { apiEventSource, apiFetch as fetch } from "../api";
 import { notifyUser } from "../notifications";
 
 type KioskItem = {
@@ -220,7 +221,7 @@ function scheduleKioskReset(delay: number) {
 function resumePendingStatus() {
   if (!completed.value) return;
   closeStatusEventSource();
-  statusEventSource = new EventSource(
+  statusEventSource = apiEventSource(
     `/api/visitor-kiosk/events?key=${encodeURIComponent(requestIdempotencyKey.value)}`,
   );
   statusEventSource.onopen = () => void refreshCompletedStatus();

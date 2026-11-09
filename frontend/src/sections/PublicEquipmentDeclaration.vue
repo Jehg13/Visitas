@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { apiFetch as fetch } from "../api";
 
 type ItemType = "Equipo" | "Herramienta";
 type DeclaredItem = {

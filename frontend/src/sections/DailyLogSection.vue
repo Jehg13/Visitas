@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { apiFetch as fetch } from "../api";
 import { confirmUser, notifyUser } from "../notifications";
 import SectionHelpDialog from "./SectionHelpDialog.vue";
 import VisitorKioskReceptionSection from "./VisitorKioskReceptionSection.vue";

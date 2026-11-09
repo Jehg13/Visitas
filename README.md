@@ -2,6 +2,21 @@
 
 Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y TypeScript para la API, y MySQL 8.4 como base de datos.
 
+## API
+
+Los clientes web y móvil usan la API en `/api/v1`. Durante la transición, el
+backend conserva también las rutas `/api` sin versión para que las instalaciones
+anteriores de la aplicación móvil sigan funcionando. La versión `v1` actualmente
+dirige a los mismos controladores y contratos que las rutas heredadas; los
+cambios incompatibles futuros deben publicarse en una versión nueva antes de
+retirar cualquier ruta anterior. El versionado ayuda con la compatibilidad de
+clientes, pero la disponibilidad durante un deploy depende también de la
+estrategia de despliegue del servidor.
+
+El login ofrece el APK Android estático en
+`frontend/public/downloads/recep-movil.apk`; al preparar un release, copia allí
+el APK firmado de la aplicación móvil antes de desplegar el frontend.
+
 ## Requisitos
 
 - [Bun](https://bun.sh/) 1.2 o posterior

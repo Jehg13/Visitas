@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
+import { apiEventSource, apiFetch as fetch } from "./api";
 import { confirmUser, notifyUser, type AppAlertType } from "./notifications";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
@@ -440,7 +441,7 @@ onMounted(() => {
   if (currentUser.value.isAdmin || isReception.value) {
     void loadDepartmentHosts();
   }
-  realtimeEvents = new EventSource("/api/events");
+  realtimeEvents = apiEventSource("/api/events");
   realtimeEvents.onopen = () => {
     stopRealtimeFallback();
     refreshAfterRealtimeUpdate();

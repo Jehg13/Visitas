@@ -9,6 +9,7 @@ import {
   resolveCorsOrigin,
 } from "./cors";
 import { sessionCookieAttributes } from "./session-cookie";
+import { normalizeApiPath } from "./api-version";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
@@ -3200,6 +3201,7 @@ const server = Bun.serve({
   port,
   async fetch(request, server) {
     const url = new URL(request.url);
+    url.pathname = normalizeApiPath(url.pathname);
     const requestOrigin = request.headers.get("origin");
     const allowLocalhostWildcard = Bun.env.NODE_ENV !== "production";
     const corsOrigin = resolveCorsOrigin(

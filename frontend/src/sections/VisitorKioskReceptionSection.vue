@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { apiFetch as fetch } from "../api";
 import { confirmUser, notifyUser } from "../notifications";
 
 type KioskItem = {

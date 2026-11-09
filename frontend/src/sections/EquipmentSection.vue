@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { apiFetch as fetch } from "../api";
 import { confirmUser, notifyUser } from "../notifications";
 
 const props = defineProps<{ theme: "dark" | "light"; isAdmin: boolean; isHost: boolean }>();
