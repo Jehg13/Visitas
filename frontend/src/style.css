@@ -823,33 +823,33 @@ input:focus-visible {
 
 .appointment-table th:first-child,
 .appointment-table td:first-child {
-  width: 10%;
+  width: 8%;
   padding-left: 14px;
 }
 
 .appointment-table th:nth-child(2),
 .appointment-table td:nth-child(2) {
-  width: 17%;
+  width: 14%;
 }
 
 .appointment-table th:nth-child(3),
 .appointment-table td:nth-child(3) {
-  width: 19%;
+  width: 15%;
 }
 
 .appointment-table th:nth-child(4),
 .appointment-table td:nth-child(4) {
-  width: 15%;
+  width: 12%;
 }
 
 .appointment-table th:nth-child(5),
 .appointment-table td:nth-child(5) {
-  width: 14%;
+  width: 11%;
 }
 
 .appointment-table th:nth-child(6),
 .appointment-table td:nth-child(6) {
-  width: 20%;
+  width: 40%;
   text-align: center;
 }
 

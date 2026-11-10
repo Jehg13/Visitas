@@ -4948,10 +4948,108 @@
   box-shadow: none;
 }
 
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-summary {
+  border-color: #cbdce8;
+  background:
+    radial-gradient(ellipse at top left, rgb(41 126 183 / 6%), transparent 58%),
+    linear-gradient(145deg, #f8fbfd, #f0f6fa);
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-overview > div,
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-identification {
+  border-color: #d7e3eb;
+  background: #fff;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-label {
+  color: #60798f;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-overview strong,
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-identification-copy strong {
+  color: #1a344d;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-icon {
+  border-color: #c1d9e7;
+  background: #edf6fb;
+  color: #28749a;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-authorization {
+  border-top-color: #d6e2ea;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-button.is-reject {
+  border-color: #e4b7be;
+  background: #fff0f2;
+  color: #9f2d3a;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-button.is-reject:hover:not(:disabled) {
+  background: #fde4e8;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-equipment {
+  border-color: #cbdce8;
+  background: linear-gradient(130deg, #f5f9fc, #edf4f8);
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-equipment-heading strong {
+  color: #1a344d;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-equipment-heading small,
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-equipment li small {
+  color: #60778c;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-equipment li {
+  border-bottom-color: #d8e3eb;
+  color: #31485f;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-summary .daily-log-selection-action {
+  border-color: #9dbdd0;
+  background: #e8f2f8;
+  color: #245676;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-summary .daily-log-selection-action.is-exit {
+  border-color: #e4b7be;
+  background: #fff0f2;
+  color: #9f2d3a;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-summary .daily-log-selection-hint,
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-reception-summary .daily-log-selection-action-group > span {
+  color: #586f84;
+}
+
+.dashboard-app[data-theme="light"] .dashboard-main .visitor-kiosk-inbox-folio {
+  border-color: #c5dceb;
+  background: #edf6fb;
+  color: #2f6389;
+}
+
 .dashboard-app .home-agenda-actions {
-  min-width: 430px;
+  min-width: 0;
+  flex-wrap: nowrap;
   justify-content: flex-start;
   gap: 5px;
+}
+
+.dashboard-app .home-agenda-actions > button {
+  flex: 0 0 auto;
+  padding-right: 5px;
+  padding-left: 5px;
+  font-size: 0.58rem;
+  white-space: nowrap;
+}
+
+.dashboard-app .home-agenda-actions .qr-button {
+  min-width: 0;
+  gap: 3px;
 }
 
 .dashboard-app .home-appointment-history {
@@ -5072,7 +5170,7 @@
 @media (max-width: 940px) {
   .dashboard-app .home-agenda-actions {
     min-width: 0;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
 }
 
@@ -5100,13 +5198,13 @@
   }
 
   .dashboard-app .home-agenda-actions {
-    min-width: 390px;
+    min-width: 0;
   }
 }
 
 @media (max-width: 360px) {
   .dashboard-app .home-agenda-actions {
-    min-width: 370px;
+    min-width: 0;
   }
 }
 
