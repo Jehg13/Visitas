@@ -325,6 +325,11 @@ respaldos antes de cualquier cambio de esquema.
 
 ## Notificaciones de temporizadores
 
+Los movimientos de llegada e ingreso crean temporizadores tanto para citas como
+para visitas manuales. Al consultar el panel, la API también recupera
+temporizadores faltantes de movimientos activos del día, para que registros
+anteriores al despliegue no desaparezcan del seguimiento.
+
 Las alarmas en segundo plano se envían únicamente a la aplicación móvil mediante
 Firebase Cloud Messaging; la versión web muestra los temporizadores mientras
 Bitácora está abierta, pero no registra service workers ni suscripciones Web
@@ -340,6 +345,14 @@ sincronizados y visibles mientras recepción usa la app, pero las notificaciones
 push en segundo plano no se entregan. Cada dispositivo de recepción debe
 autorizar las notificaciones en la aplicación; el token FCM se registra por
 cuenta para dirigirle las alarmas.
+
+Las cuentas de anfitrión también reciben notificaciones móviles cuando se agenda
+una cita para ellas y cuando su estado cambia a llegada, ingreso, salida o
+cancelación. El anfitrión debe iniciar sesión en la app móvil y autorizar las
+notificaciones para registrar su token. La API relaciona el nombre del anfitrión
+de la cita con una cuenta habilitada como anfitrión; si no existe esa cuenta o no
+hay un dispositivo registrado, la cita se guarda normalmente pero no se entrega
+una notificación.
 
 Esta configuración se realiza una sola vez por entorno: guarda las cinco
 variables Firebase como variables persistentes de runtime en Coolify (no como

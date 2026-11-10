@@ -147,6 +147,42 @@ function formatUtcSqlDateTime(date: Date) {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
+function parseAppLocalDateTimeToUtc(date: string, time: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(
+    `${date} ${time}`,
+  );
+  if (!match) throw new Error("A visit movement has an invalid date or time.");
+  const [, year, month, day, hour, minute, second] = match;
+  const desiredUtc = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  );
+  let timestamp = desiredUtc;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = Object.fromEntries(
+      appDateTimeFormatter
+        .formatToParts(new Date(timestamp))
+        .map(({ type, value }) => [type, value]),
+    );
+    const formattedAsUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    const adjustedTimestamp = desiredUtc - (formattedAsUtc - timestamp);
+    if (adjustedTimestamp === timestamp) break;
+    timestamp = adjustedTimestamp;
+  }
+  return new Date(timestamp);
+}
+
 function getFirebaseClientConfiguration() {
   const apiKey = Bun.env.FIREBASE_API_KEY?.trim() ?? "";
   const appId = Bun.env.FIREBASE_APP_ID?.trim() ?? "";
@@ -181,6 +217,127 @@ function getFirebaseMessaging() {
     "visitas-timer-notifications",
   );
   return getMessaging(app);
+}
+
+async function sendAppointmentStatusNotification(appointmentId: number) {
+  try {
+    const firebaseMessaging = getFirebaseMessaging();
+    if (!firebaseMessaging) return;
+
+    const [appointments] = await pool.execute<(RowDataPacket & {
+      visitor_name: string;
+      visit_date: string;
+      visit_time: string;
+      host_name: string;
+      status: string;
+    })[]>(
+      `SELECT visitor_name, DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+              TIME_FORMAT(visit_time, '%H:%i') AS visit_time, host_name, status
+       FROM appointments
+       WHERE id = ? AND deleted_at IS NULL
+       LIMIT 1`,
+      [appointmentId],
+    );
+    const appointment = appointments[0];
+    if (!appointment?.host_name) return;
+
+    const [matchingAccounts] = await getExternalUsersPool().execute<
+      (RowDataPacket & { login: string })[]
+    >(
+      `SELECT login FROM seg_users
+       WHERE LOWER(TRIM(login)) = LOWER(TRIM(?))
+          OR LOWER(TRIM(name)) = LOWER(TRIM(?))`,
+      [appointment.host_name, appointment.host_name],
+    );
+    if (matchingAccounts.length === 0) return;
+
+    const hostLogins = matchingAccounts.map((account) => account.login);
+    const [hostRows] = await pool.query<(RowDataPacket & { login: string })[]>(
+      `SELECT DISTINCT login FROM department_hosts
+       WHERE login IN (${hostLogins.map(() => "?").join(", ")})`,
+      hostLogins,
+    );
+    if (hostRows.length === 0) return;
+
+    const hostAccounts = hostRows.map((host) => host.login);
+    const [subscriptions] = await pool.execute<(RowDataPacket & {
+      id: number;
+      fcm_token: string | null;
+    })[]>(
+      `SELECT id, fcm_token FROM notification_subscriptions
+       WHERE platform = 'mobile'
+         AND user_login IN (${hostAccounts.map(() => "?").join(", ")})`,
+      hostAccounts,
+    );
+
+    const visitorName = appointment.visitor_name;
+    const title = appointment.status === "Pendiente"
+      ? "Nueva cita agendada"
+      : appointment.status === "En proceso"
+        ? "Tu visita llegó"
+        : appointment.status === "Dentro"
+          ? "Tu visita ya ingresó"
+          : appointment.status === "Retirado"
+            ? "Tu visita salió"
+            : appointment.status === "Cancelada"
+              ? "Cita cancelada"
+              : "Actualización de cita";
+    const body = appointment.status === "Pendiente"
+      ? `Tienes una cita con ${visitorName} el ${appointment.visit_date} a las ${appointment.visit_time}.`
+      : appointment.status === "En proceso"
+        ? `${visitorName} ya llegó a recepción.`
+        : appointment.status === "Dentro"
+          ? `${visitorName} ya ingresó a las instalaciones.`
+          : appointment.status === "Retirado"
+            ? `${visitorName} ya salió de las instalaciones.`
+            : appointment.status === "Cancelada"
+              ? `La cita de ${visitorName} del ${appointment.visit_date} fue cancelada.`
+              : `El estado de la cita de ${visitorName} cambió a ${appointment.status}.`;
+
+    for (const subscription of subscriptions) {
+      if (!subscription.fcm_token) continue;
+      try {
+        await firebaseMessaging.send({
+          token: subscription.fcm_token,
+          notification: { title, body },
+          data: {
+            type: "appointment_status",
+            appointmentId: String(appointmentId),
+            appointmentStatus: appointment.status,
+            visitorName,
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "visit_timer_alerts",
+              sound: "default",
+              tag: `appointment-${appointmentId}-${appointment.status}`,
+            },
+          },
+          apns: {
+            payload: { aps: { sound: "default" } },
+          },
+        });
+      } catch (error) {
+        const errorCode = isRecord(error) && typeof error.code === "string"
+          ? error.code
+          : "";
+        if (
+          errorCode === "messaging/registration-token-not-registered" ||
+          errorCode === "messaging/invalid-registration-token"
+        ) {
+          await pool.execute(
+            "DELETE FROM notification_subscriptions WHERE id = ?",
+            [subscription.id],
+          );
+        } else {
+          console.error("Failed to deliver a host appointment notification:", error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Failed to prepare host appointment notification:", error);
+  }
 }
 
 type ActiveDailyLogTimer = {
@@ -225,6 +382,97 @@ async function listActiveDailyLogTimers() {
     dueAt: row.due_at,
     status: "active",
   }));
+}
+
+async function ensureTimersForActiveDailyLogVisits() {
+  const visitDate = getAppDateTime().date;
+  const [movementRows] = await pool.query<(RowDataPacket & {
+    id: number;
+    appointment_id: number | null;
+    visitor_record_id: number | null;
+    person_name: string;
+    event_type: "Llegada" | "Ingreso" | "Retiro";
+    entry_date: string;
+    entry_time: string;
+  })[]>(
+    `SELECT id, appointment_id, visitor_record_id, person_name, event_type,
+            DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date,
+            TIME_FORMAT(entry_time, '%H:%i:%s') AS entry_time
+     FROM daily_log_entries
+     WHERE entry_date = ? AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
+     ORDER BY entry_time, id`,
+    [visitDate],
+  );
+  if (movementRows.length === 0) return;
+
+  const movementsByVisitor = new Map<string, typeof movementRows>();
+  for (const movement of movementRows) {
+    const key = JSON.stringify([
+      movement.appointment_id ?? "",
+      movement.visitor_record_id ?? "",
+      movement.person_name.trim().toLocaleLowerCase(),
+    ]);
+    const movements = movementsByVisitor.get(key) ?? [];
+    movements.push(movement);
+    movementsByVisitor.set(key, movements);
+  }
+
+  const activeVisits = [...movementsByVisitor.values()]
+    .map((movements) => {
+      const latestMovement = movements[movements.length - 1];
+      if (latestMovement.event_type === "Retiro") return null;
+      const latestArrival = [...movements]
+        .reverse()
+        .find((movement) => movement.event_type === "Llegada");
+      return {
+        movement: latestMovement,
+        timerEntryId: latestArrival?.id ?? latestMovement.id,
+      };
+    })
+    .filter((visit): visit is NonNullable<typeof visit> => visit !== null);
+  if (activeVisits.length === 0) return;
+
+  const timerEntryIds = activeVisits.map((visit) => visit.timerEntryId);
+  const [existingTimers] = await pool.query<(RowDataPacket & {
+    visit_entry_id: number;
+  })[]>(
+    `SELECT visit_entry_id FROM daily_log_timers
+     WHERE visit_date = ?
+       AND visit_entry_id IN (${timerEntryIds.map(() => "?").join(", ")})`,
+    [visitDate, ...timerEntryIds],
+  );
+  const existingTimerEntryIds = new Set(
+    existingTimers.map((timer) => Number(timer.visit_entry_id)),
+  );
+
+  for (const { movement, timerEntryId } of activeVisits) {
+    if (existingTimerEntryIds.has(timerEntryId)) continue;
+    const intervalMinutes = movement.event_type === "Llegada" ? 15 : 30;
+    const startedAt = parseAppLocalDateTimeToUtc(
+      movement.entry_date,
+      movement.entry_time,
+    );
+    const dueAt = new Date(startedAt.getTime() + intervalMinutes * 60_000);
+    await pool.execute(
+      `INSERT INTO daily_log_timers
+         (visit_date, appointment_id, visitor_record_id, visit_entry_id, person_name, phase,
+          interval_minutes, started_at, due_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE id = id`,
+      [
+        visitDate,
+        movement.appointment_id,
+        movement.visitor_record_id,
+        timerEntryId,
+        movement.person_name,
+        movement.event_type,
+        intervalMinutes,
+        formatUtcSqlDateTime(startedAt),
+        formatUtcSqlDateTime(dueAt),
+      ],
+    );
+    existingTimerEntryIds.add(timerEntryId);
+  }
 }
 
 async function sendDueDailyLogTimerNotifications() {
@@ -344,9 +592,15 @@ async function updateVisitTimerForMovement(
   },
 ) {
   const scope = input.appointmentId !== null
-    ? { sql: "appointment_id = ? AND visitor_record_id <=> ?", params: [input.appointmentId, input.visitorRecordId] }
+    ? {
+        sql: "appointment_id = ? AND visitor_record_id <=> ? AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
+        params: [input.appointmentId, input.visitorRecordId, input.personName],
+      }
     : input.visitorRecordId !== null
-      ? { sql: "appointment_id IS NULL AND visitor_record_id = ?", params: [input.visitorRecordId] }
+      ? {
+          sql: "appointment_id IS NULL AND visitor_record_id = ? AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
+          params: [input.visitorRecordId, input.personName],
+        }
       : { sql: "appointment_id IS NULL AND visitor_record_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))", params: [input.personName] };
   const [activeRows] = await connection.execute<(RowDataPacket & { id: number })[]>(
     `SELECT id FROM daily_log_timers
@@ -4789,12 +5043,16 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (
-          request.method !== "DELETE" &&
-          !user.isAdmin &&
-          !(await hasSectionAccess(user, "recepcion"))
-        ) {
-          return Response.json({ error: "Solo recepción puede activar las notificaciones de seguimiento." }, { status: 403 });
+        if (request.method !== "DELETE") {
+          const canReceiveNotifications = user.isAdmin ||
+            await hasSectionAccess(user, "recepcion") ||
+            await hasHostOnlyAccess(user);
+          if (!canReceiveNotifications) {
+            return Response.json(
+              { error: "Solo recepción y anfitriones pueden activar notificaciones móviles." },
+              { status: 403 },
+            );
+          }
         }
         if (request.method === "GET") {
           return Response.json({
@@ -4858,12 +5116,12 @@ const server = Bun.serve({
             fcmToken,
           ],
         );
-        return Response.json({ message: "Las notificaciones de seguimiento quedaron activadas." }, {
+        return Response.json({ message: "Las notificaciones móviles quedaron activadas." }, {
           status: 201,
         });
       } catch (error) {
-        console.error("Failed to configure timer notifications:", error);
-        return Response.json({ error: "No se pudieron configurar las notificaciones de seguimiento." }, { status: 500 });
+        console.error("Failed to configure mobile notifications:", error);
+        return Response.json({ error: "No se pudieron configurar las notificaciones móviles." }, { status: 500 });
       }
     }
 
@@ -4876,6 +5134,7 @@ const server = Bun.serve({
         if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
           return Response.json({ error: "No tienes permiso para consultar los temporizadores." }, { status: 403 });
         }
+        await ensureTimersForActiveDailyLogVisits();
         return Response.json({ timers: await listActiveDailyLogTimers() });
       } catch (error) {
         console.error("Failed to load daily log timers:", error);
@@ -5461,9 +5720,7 @@ const server = Bun.serve({
         const timerEligible =
           isMovementEvent &&
           input.date === currentBusinessDate &&
-          partnerType !== "Contratista" &&
-          partnerType !== "Proveedor" &&
-          (partnerType === "Visitante" || visitorId !== null);
+          (input.appointmentId !== null || externalStaffId === null);
         const movementConnection = await pool.getConnection();
         try {
           await movementConnection.beginTransaction();
@@ -5562,10 +5819,13 @@ const server = Bun.serve({
                 ? "En proceso"
                 : "Retirado";
           }
-          await pool.execute(
+          const [statusUpdate] = await pool.execute<ResultSetHeader>(
             "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
             [appointmentStatus, input.appointmentId],
           );
+          if (statusUpdate.affectedRows > 0) {
+            void sendAppointmentStatusNotification(input.appointmentId);
+          }
         }
         publishRealtimeUpdate();
         return Response.json({ message: "El movimiento se registró.", personName }, { status: 201 });
@@ -6542,6 +6802,7 @@ const server = Bun.serve({
             } finally {
               connection.release();
             }
+            void sendAppointmentStatusNotification(targetAppointmentId);
           } else {
             const appointment = parseAppointment(body);
             if (!appointment) {
@@ -6683,6 +6944,7 @@ const server = Bun.serve({
             );
           }
           const connection = await pool.getConnection();
+          let createdAppointmentId: number | null = null;
           try {
             await connection.beginTransaction();
             let created = false;
@@ -6708,6 +6970,7 @@ const server = Bun.serve({
                     user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
                   ],
                 );
+                createdAppointmentId = Number(result.insertId);
                 const snapshot: AppointmentSnapshot = {
                   businessPartnerId: details.businessPartnerId,
                   visitorRecordId: details.visitorRecordId,
@@ -6743,6 +7006,9 @@ const server = Bun.serve({
             throw error;
           } finally {
             connection.release();
+          }
+          if (createdAppointmentId !== null) {
+            void sendAppointmentStatusNotification(createdAppointmentId);
           }
         }
 
