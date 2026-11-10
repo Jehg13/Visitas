@@ -20,7 +20,7 @@ import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
-import webpush from "web-push";
+import * as webpush from "web-push";
 
 const port = Number(Bun.env.PORT ?? 3000);
 const appTimeZone = Bun.env.APP_TIME_ZONE?.trim() || "America/Mexico_City";
