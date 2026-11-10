@@ -144,6 +144,8 @@ const recentPages = ref(1);
 const activeTimers = ref<VisitTimer[]>([]);
 const timerNow = ref(Date.now());
 const timerError = ref("");
+const timerLoading = ref(false);
+const timerLastUpdatedAt = ref<number | null>(null);
 const timerActionId = ref<number | null>(null);
 const autoAuthorizePublicVisitors = ref(false);
 const kioskSettingsLoading = ref(false);
@@ -557,6 +559,7 @@ function isVisitTimer(value: unknown): value is VisitTimer {
 async function loadTimers() {
   if (timerRequestInProgress) return;
   timerRequestInProgress = true;
+  timerLoading.value = true;
   try {
     const response = await fetch("/api/daily-log/timers");
     const result = await response.json() as { timers?: unknown; error?: string };
@@ -565,6 +568,7 @@ async function loadTimers() {
       throw new Error("El servidor devolvió temporizadores con formato inválido.");
     }
     activeTimers.value = result.timers;
+    timerLastUpdatedAt.value = Date.now();
     timerError.value = "";
   } catch (cause) {
     console.error("Failed to load daily log timers:", cause);
@@ -573,15 +577,46 @@ async function loadTimers() {
       : "No se pudieron cargar los temporizadores.";
   } finally {
     timerRequestInProgress = false;
+    timerLoading.value = false;
   }
 }
 
+function formatTimerDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function getTimerElapsedSeconds(timer: VisitTimer) {
+  return Math.max(0, Math.floor((timerNow.value - Date.parse(timer.startedAt)) / 1000));
+}
+
+function formatTimerElapsed(timer: VisitTimer) {
+  return formatTimerDuration(getTimerElapsedSeconds(timer));
+}
+
+function getTimerProgress(timer: VisitTimer) {
+  const intervalSeconds = timer.intervalMinutes * 60;
+  return Math.min(100, Math.floor((getTimerElapsedSeconds(timer) / intervalSeconds) * 100));
+}
+
 function formatTimerRemaining(timer: VisitTimer) {
-  const seconds = Math.max(0, Math.ceil((Date.parse(timer.dueAt) - timerNow.value) / 1000));
-  if (seconds === 0) return "Alarma vencida";
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+  const remainingSeconds = Math.ceil((Date.parse(timer.dueAt) - timerNow.value) / 1000);
+  if (remainingSeconds <= 0) {
+    return `Vencido hace ${formatTimerDuration(Math.abs(remainingSeconds))}`;
+  }
+  return `${formatTimerDuration(remainingSeconds)} restantes`;
+}
+
+function formatTimerLastUpdated() {
+  if (timerLastUpdatedAt.value === null) return "Aún no se ha sincronizado";
+  return `Datos verificados a las ${new Date(timerLastUpdatedAt.value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })} · actualización automática cada 10 s`;
 }
 
 async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
@@ -600,6 +635,7 @@ async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
       throw new Error("El servidor devolvió temporizadores con formato inválido.");
     }
     activeTimers.value = result.timers;
+    timerLastUpdatedAt.value = Date.now();
   } catch (cause) {
     console.error("Failed to update daily log timer:", cause);
     timerError.value = cause instanceof Error
@@ -1455,7 +1491,18 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             <div>
               <span class="daily-log-panel-kicker">SEGUIMIENTO DE VISITAS</span>
               <h2 id="daily-log-timers-title">Temporizadores activos</h2>
+              <p class="daily-log-timer-sync" role="status" aria-live="polite">
+                {{ timerLoading ? "Verificando temporizadores..." : formatTimerLastUpdated() }}
+              </p>
             </div>
+            <button
+              type="button"
+              class="daily-log-secondary-button"
+              :disabled="timerLoading"
+              @click="loadTimers"
+            >
+              {{ timerLoading ? "Actualizando..." : "Actualizar ahora" }}
+            </button>
           </div>
           <label class="daily-log-kiosk-setting">
             <input
@@ -1473,6 +1520,9 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             {{ kioskSettingsMessage }}
           </p>
           <p v-if="timerError" class="daily-log-timer-error" role="alert">{{ timerError }}</p>
+          <p v-if="timerError && timerLastUpdatedAt !== null" class="daily-log-timer-message">
+            Se conserva la última lectura confirmada: {{ formatTimerLastUpdated() }}.
+          </p>
           <p v-if="activeTimers.length === 0" class="daily-log-timer-empty">
             No hay temporizadores activos para las visitas de hoy.
           </p>
@@ -1483,14 +1533,29 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               class="daily-log-timer-card"
               :class="{ 'is-due': Date.parse(timer.dueAt) <= timerNow }"
             >
-              <div class="daily-log-timer-person">
-                <strong>{{ timer.personName }}</strong>
-                <span>
-                  {{ timer.phase === "Llegada" ? "Esperando en recepción" : "Dentro de las instalaciones" }}
-                  · {{ timer.intervalMinutes }} min
-                </span>
+              <div class="daily-log-timer-details">
+                <div class="daily-log-timer-person">
+                  <strong>{{ timer.personName }}</strong>
+                  <span>
+                    {{ timer.phase === "Llegada" ? "Esperando en recepción" : "Dentro de las instalaciones" }}
+                    · Alarma cada {{ timer.intervalMinutes }} min
+                  </span>
+                </div>
+                <div
+                  class="daily-log-timer-progress"
+                  role="progressbar"
+                  :aria-label="`Tiempo transcurrido del temporizador de ${timer.personName}`"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  :aria-valuenow="getTimerProgress(timer)"
+                >
+                  <span :style="{ width: `${getTimerProgress(timer)}%` }"></span>
+                </div>
+                <div class="daily-log-timer-times">
+                  <span>En este estado <strong>{{ formatTimerElapsed(timer) }}</strong></span>
+                  <span>Temporizador <strong>{{ formatTimerRemaining(timer) }}</strong></span>
+                </div>
               </div>
-              <strong class="daily-log-timer-remaining">{{ formatTimerRemaining(timer) }}</strong>
               <div v-if="Date.parse(timer.dueAt) <= timerNow" class="daily-log-timer-actions">
                 <button
                   type="button"

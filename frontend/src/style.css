@@ -14261,6 +14261,12 @@ input:focus-visible {
   font-size: 1rem;
 }
 
+.daily-log-timer-sync {
+  margin: 4px 0 0;
+  color: var(--ds-text-muted);
+  font-size: 0.72rem;
+}
+
 .daily-log-timer-message,
 .daily-log-timer-error,
 .daily-log-timer-empty {
@@ -14313,8 +14319,8 @@ input:focus-visible {
 
 .daily-log-timer-card {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: flex-start;
+  gap: 16px;
   min-width: 0;
   padding: 11px 12px;
   border: 1px solid var(--ds-border);
@@ -14328,9 +14334,15 @@ input:focus-visible {
   box-shadow: 0 0 0 1px color-mix(in srgb, #d94b57 28%, transparent);
 }
 
-.daily-log-timer-person {
+.daily-log-timer-details {
   display: grid;
   flex: 1;
+  min-width: 0;
+  gap: 9px;
+}
+
+.daily-log-timer-person {
+  display: grid;
   min-width: 0;
   gap: 3px;
 }
@@ -14342,19 +14354,43 @@ input:focus-visible {
 }
 
 .daily-log-timer-person span,
-.daily-log-timer-remaining {
+.daily-log-timer-times {
   color: var(--ds-text-muted);
   font-size: 0.76rem;
 }
 
-.daily-log-timer-remaining {
-  min-width: 88px;
-  color: var(--ds-text);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
+.daily-log-timer-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ds-border);
 }
 
-.daily-log-timer-card.is-due .daily-log-timer-remaining {
+.daily-log-timer-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2689e8;
+  transition: width 300ms linear;
+}
+
+.daily-log-timer-card.is-due .daily-log-timer-progress span {
+  background: #d94b57;
+}
+
+.daily-log-timer-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.daily-log-timer-times strong {
+  margin-left: 4px;
+  color: var(--ds-text);
+}
+
+.daily-log-timer-card.is-due .daily-log-timer-times span:last-child strong {
   color: #b82739;
 }
 
@@ -14403,8 +14439,9 @@ input:focus-visible {
     width: 100%;
   }
 
-  .daily-log-timer-remaining {
-    text-align: left;
+  .daily-log-timer-times {
+    display: grid;
+    gap: 4px;
   }
 
   .daily-log-timer-actions {
