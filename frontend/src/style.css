@@ -934,6 +934,30 @@ input:focus-visible {
   color: #f08090;
 }
 
+.status-late {
+  border-color: #a76b1c;
+  background: rgb(173 103 20 / 22%);
+  color: #ffd18b;
+}
+
+.status-no-show {
+  border-color: #a83949;
+  background: rgb(173 31 54 / 20%);
+  color: #ff9aa7;
+}
+
+.agenda-reschedule-button {
+  border-color: #a76b1c;
+  background: #3a2a16;
+  color: #ffd18b;
+}
+
+.agenda-reschedule-button:hover {
+  border-color: #d39232;
+  background: #4a351b;
+  color: #fff1d7;
+}
+
 .qr-button,
 .row-menu {
   display: inline-grid;
@@ -12193,6 +12217,30 @@ input:focus-visible {
   color: #9f2d3a;
 }
 
+.dashboard-app[data-theme="light"] .status-late {
+  border-color: #e8ca91;
+  background: #fff8e9;
+  color: #8c5a12;
+}
+
+.dashboard-app[data-theme="light"] .status-no-show {
+  border-color: #e5b7bd;
+  background: #fff1f2;
+  color: #9f2d3a;
+}
+
+.dashboard-app[data-theme="light"] .agenda-reschedule-button {
+  border-color: #e8ca91;
+  background: #fff8e9;
+  color: #8c5a12;
+}
+
+.dashboard-app[data-theme="light"] .agenda-reschedule-button:hover {
+  border-color: #d6af68;
+  background: #fff1d2;
+  color: #70480e;
+}
+
 .dashboard-app[data-theme="light"] .qr-button,
 .dashboard-app[data-theme="light"] .row-menu {
   color: #42637d;
@@ -14261,6 +14309,20 @@ input:focus-visible {
   font-size: 1rem;
 }
 
+.daily-log-timer-count {
+  display: inline-grid;
+  min-width: 24px;
+  height: 24px;
+  margin-left: 5px;
+  place-items: center;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 999px;
+  background: var(--ds-surface-muted);
+  color: var(--ds-text-muted);
+  font-size: 0.72rem;
+  vertical-align: 2px;
+}
+
 .daily-log-timer-sync {
   margin: 4px 0 0;
   color: var(--ds-text-muted);
@@ -14317,15 +14379,44 @@ input:focus-visible {
   gap: 8px;
 }
 
+.daily-log-timer-list--1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.daily-log-timer-list--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.daily-log-timer-list--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.daily-log-timer-list--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .daily-log-timer-card {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 11px;
   min-width: 0;
   padding: 11px 12px;
   border: 1px solid var(--ds-border);
   border-radius: 9px;
   background: var(--ds-surface-muted);
+}
+
+.daily-log-timer-card.is-single-last-timer {
+  grid-column: 2 / span 2;
+}
+
+.daily-log-timer-card.is-first-of-two-last-timers {
+  grid-column-start: 2;
+}
+
+.daily-log-timer-card.is-second-of-two-last-timers {
+  grid-column-start: 3;
 }
 
 .daily-log-timer-card.is-due {
@@ -14397,11 +14488,13 @@ input:focus-visible {
 .daily-log-timer-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: stretch;
   gap: 7px;
+  margin-top: auto;
 }
 
 .daily-log-timer-actions button {
+  flex: 1 1 100%;
   min-height: 36px;
   padding: 7px 10px;
   border: 1px solid var(--ds-border-strong);
@@ -14422,6 +14515,38 @@ input:focus-visible {
 .daily-log-timer-heading button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.daily-log-timer-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+  color: var(--ds-text-muted);
+  font-size: 0.74rem;
+}
+
+.daily-log-timer-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.daily-log-timer-pagination button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 7px;
+  background: var(--ds-surface-muted);
+  color: var(--ds-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.daily-log-timer-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 @media (max-width: 760px) {
@@ -14450,5 +14575,30 @@ input:focus-visible {
 
   .daily-log-timer-actions button {
     flex: 1;
+  }
+
+  .daily-log-timer-list--2,
+  .daily-log-timer-list--3,
+  .daily-log-timer-list--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .daily-log-timer-card.is-single-last-timer,
+  .daily-log-timer-card.is-first-of-two-last-timers,
+  .daily-log-timer-card.is-second-of-two-last-timers {
+    grid-column: auto;
+  }
+
+  .daily-log-timer-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .daily-log-timer-list--2,
+  .daily-log-timer-list--3,
+  .daily-log-timer-list--4 {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -202,6 +202,8 @@ const hostVisitorName = ref("");
 const hostVisitorPhone = ref("");
 const hostVisitorEmail = ref("");
 const hostVisitors = ref<HostVisitor[]>([]);
+const appointmentBusinessPartners = ref<BusinessPartner[]>([]);
+const appointmentHostVisitors = ref<HostVisitor[]>([]);
 const qrDialogOpen = ref(false);
 const qrAppointment = ref<Appointment | null>(null);
 const qrExternalStaff = ref<ExternalStaff | null>(null);
@@ -784,7 +786,7 @@ const pageTitle = computed(() =>
 );
 const hostEligibleDepartments = computed(() => departments.value);
 const appointmentCompanyOptions = computed(() =>
-  [...businessPartners.value]
+  [...appointmentBusinessPartners.value]
     .filter((partner) => partner.type !== "Visitante")
     .sort((first, second) =>
     first.name.localeCompare(second.name, "es"),
@@ -806,7 +808,7 @@ const appointmentHostOptions = computed(() =>
 );
 const appointmentVisitorOptions = computed(() =>
   visitorCompanyId.value === hostVisitorCompanyOption
-    ? [...hostVisitors.value].sort((first, second) =>
+    ? [...appointmentHostVisitors.value].sort((first, second) =>
         first.fullName.localeCompare(second.fullName, "es"),
       )
     : externalStaff.value
@@ -1250,7 +1252,51 @@ function clearQrDispatch() {
   qrDispatchAppointment.value = null;
 }
 
-function openAppointmentDialog(appointment?: Appointment) {
+async function openAppointmentDialog(appointment?: Appointment) {
+  try {
+    const [partnersResponse, visitorsResponse] = await Promise.all([
+      fetch("/api/business-partners?scope=appointment"),
+      fetch("/api/host-visitors?scope=appointment"),
+    ]);
+    const [partnersResult, visitorsResult] = await Promise.all([
+      partnersResponse.json() as Promise<{
+        businessPartners?: BusinessPartner[];
+        error?: string;
+      }>,
+      visitorsResponse.json() as Promise<{
+        visitors?: HostVisitor[];
+        error?: string;
+      }>,
+    ]);
+    if (!partnersResponse.ok || !Array.isArray(partnersResult.businessPartners)) {
+      throw new Error(
+        partnersResult.error ?? "No se pudieron cargar tus empresas registradas.",
+      );
+    }
+    if (!visitorsResponse.ok || !Array.isArray(visitorsResult.visitors)) {
+      throw new Error(
+        visitorsResult.error ?? "No se pudieron cargar tus visitantes registrados.",
+      );
+    }
+    appointmentBusinessPartners.value = partnersResult.businessPartners;
+    appointmentHostVisitors.value = visitorsResult.visitors;
+  } catch (error) {
+    console.error("Failed to load appointment registration options:", error);
+    showToast(
+      error instanceof Error
+        ? error.message
+        : "No se pudieron cargar los registros para la cita.",
+    );
+    return;
+  }
+  if (
+    !currentUser.value.isAdmin &&
+    appointmentCompanyOptions.value.length === 0 &&
+    appointmentHostVisitors.value.length === 0
+  ) {
+    showToast("Registra primero una empresa o un visitante para agendar una cita.");
+    return;
+  }
   editingAppointmentId.value = appointment?.id ?? null;
   visitorDate.value = appointment?.date ?? selectedAppointmentDate.value;
   visitorTime.value = appointment?.time ?? "18:00";
@@ -1265,7 +1311,7 @@ function openAppointmentDialog(appointment?: Appointment) {
     ? hostVisitorCompanyOption
     : appointment
       ? appointment.businessPartnerId ??
-        businessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
+      appointmentBusinessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
         null
       : null;
   visitorHostLogin.value = isHost.value
@@ -1274,9 +1320,18 @@ function openAppointmentDialog(appointment?: Appointment) {
   appointmentDialogOpen.value = true;
 }
 
-function openHomeAppointmentDialog(date: string) {
-  openAppointmentDialog();
-  visitorDate.value = date;
+async function openHomeAppointmentDialog(date: string) {
+  await openAppointmentDialog();
+  if (appointmentDialogOpen.value) visitorDate.value = date;
+}
+
+async function openRescheduleAppointmentDialog(appointment: Appointment) {
+  appointmentDialogOpen.value = false;
+  await openAppointmentDialog(appointment);
+  if (!appointmentDialogOpen.value) return;
+  const nextDay = new Date();
+  nextDay.setDate(nextDay.getDate() + 1);
+  visitorDate.value = formatLocalDate(nextDay);
 }
 
 function changeAppointmentCompany() {
@@ -1627,7 +1682,7 @@ async function submitAppointment() {
   const isHostVisitor = visitorCompanyId.value === hostVisitorCompanyOption;
   const company = isHostVisitor
     ? undefined
-    : businessPartners.value.find((partner) => partner.id === visitorCompanyId.value);
+    : appointmentBusinessPartners.value.find((partner) => partner.id === visitorCompanyId.value);
   const host = isHost.value
     ? {
         login: currentUser.value.login,
@@ -1641,7 +1696,7 @@ async function submitAppointment() {
           (staff) => String(staff.id) === visitorSelection.value,
         );
   const selectedHostVisitor = isHostVisitor
-    ? hostVisitors.value.find((visitor) => String(visitor.id) === visitorSelection.value)
+    ? appointmentHostVisitors.value.find((visitor) => String(visitor.id) === visitorSelection.value)
     : undefined;
   const appointmentVisitorName =
     visitorSelection.value === otherAppointmentVisitor
@@ -2603,6 +2658,7 @@ async function removeBusinessPartner(id: number) {
         @update:page="appointmentsPage = $event"
         @create="openAppointmentDialog"
         @register-visitor="openHostVisitorDialog"
+        @reschedule="openRescheduleAppointmentDialog"
         @cancel="cancelAppointment"
         @open-qr="openQrDialog"
         @send-company-qrs="openCompanyQrDispatch"

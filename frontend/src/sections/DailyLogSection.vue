@@ -218,8 +218,8 @@ const dailyLogHelpSections = [
     title: "Visitas sin cita y registro manual",
     steps: [
       "Para registrar una llegada que no está en la agenda, pulsa Registrar movimiento y elige Personal externo, Visitante registrado o Captura manual. Completa los datos y guarda la llegada. Después selecciona ese registro para añadir la entrada y, más tarde, la salida.",
-      "Si la persona ya llenó su registro manual, pulsa Introducir código y escribe el folio de ocho dígitos. Revisa los datos y la identificación presentada; después autoriza o rechaza la visita.",
-      "Si no declaró artículos, al autorizar se registra también su entrada. Si declaró artículos, verifica cada uno y elige una sola opción en el checklist: permitir su ingreso o mantenerlo resguardado en recepción. Al salir, completa el checklist de salida y confirma la devolución de los artículos resguardados. Puedes agregar una observación opcional si hace falta.",
+      "Si la persona ya llenó su registro manual, pulsa Introducir código y escribe el folio de ocho dígitos. Con la autorización automática activada, el sistema autoriza el registro y anota solo la llegada; recepción debe registrar la entrada cuando la persona pase. Sin esa opción, revisa los datos y la identificación, y autoriza o rechaza manualmente.",
+      "Al autorizar manualmente una visita sin artículos, también se registra su entrada. Si declaró artículos, verifica cada uno y elige una sola opción en el checklist: permitir su ingreso o mantenerlo resguardado en recepción. Al salir, completa el checklist de salida y confirma la devolución de los artículos resguardados. Puedes agregar una observación opcional si hace falta.",
     ],
   },
   {
@@ -534,11 +534,24 @@ const orderedActiveTimers = computed(() =>
     first.dueAt.localeCompare(second.dueAt),
   ),
 );
+const timersPerPage = 8;
+const timersPage = ref(1);
+const timerPages = computed(() =>
+  Math.max(1, Math.ceil(orderedActiveTimers.value.length / timersPerPage)),
+);
+const paginatedTimers = computed(() => {
+  const start = (timersPage.value - 1) * timersPerPage;
+  return orderedActiveTimers.value.slice(start, start + timersPerPage);
+});
 const dueTimers = computed(() =>
   orderedActiveTimers.value.filter(
     (timer) => Date.parse(timer.dueAt) <= timerNow.value,
   ),
 );
+
+watch(timerPages, (pages) => {
+  if (timersPage.value > pages) timersPage.value = pages;
+});
 
 function isVisitTimer(value: unknown): value is VisitTimer {
   if (typeof value !== "object" || value === null) return false;
@@ -599,7 +612,12 @@ function formatTimerElapsed(timer: VisitTimer) {
 
 function getTimerProgress(timer: VisitTimer) {
   const intervalSeconds = timer.intervalMinutes * 60;
-  return Math.min(100, Math.floor((getTimerElapsedSeconds(timer) / intervalSeconds) * 100));
+  const intervalStartedAt = Date.parse(timer.dueAt) - intervalSeconds * 1000;
+  const intervalElapsedSeconds = Math.max(
+    0,
+    Math.floor((timerNow.value - intervalStartedAt) / 1000),
+  );
+  return Math.min(100, Math.floor((intervalElapsedSeconds / intervalSeconds) * 100));
 }
 
 function formatTimerRemaining(timer: VisitTimer) {
@@ -1490,9 +1508,15 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <div class="daily-log-timer-heading">
             <div>
               <span class="daily-log-panel-kicker">SEGUIMIENTO DE VISITAS</span>
-              <h2 id="daily-log-timers-title">Temporizadores activos</h2>
+              <h2 id="daily-log-timers-title">
+                Temporizadores activos
+                <span class="daily-log-timer-count">{{ activeTimers.length }}</span>
+              </h2>
               <p class="daily-log-timer-sync" role="status" aria-live="polite">
                 {{ timerLoading ? "Verificando temporizadores..." : formatTimerLastUpdated() }}
+              </p>
+              <p class="daily-log-timer-sync">
+                Recepción puede consultarlos; solo administración puede repetir o cancelar una alarma.
               </p>
             </div>
             <button
@@ -1513,7 +1537,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             />
             <span>
               <strong>Autorizar automáticamente visitas sin cita</strong>
-              <small>Al activarlo, el registro manual anotará la llegada y no esperará autorización de recepción. Si declara equipo, recepción aún debe completar su checklist.</small>
+              <small>Al activarlo, se autoriza el registro y se anota únicamente la llegada. No marca el ingreso a las instalaciones; recepción debe registrar la entrada cuando la persona pase. Si declara equipo, recepción debe completar su checklist.</small>
             </span>
           </label>
           <p v-if="kioskSettingsMessage" class="daily-log-timer-message" role="status">
@@ -1526,12 +1550,28 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <p v-if="activeTimers.length === 0" class="daily-log-timer-empty">
             No hay temporizadores activos para las visitas de hoy.
           </p>
-          <div v-else class="daily-log-timer-list" :aria-live="dueTimers.length ? 'assertive' : 'off'">
+          <div
+            v-else
+            class="daily-log-timer-list"
+            :class="[
+              `daily-log-timer-list--${Math.min(paginatedTimers.length, 4)}`,
+              {
+                'has-single-last-timer': paginatedTimers.length === 5,
+                'has-two-last-timers': paginatedTimers.length === 6,
+              },
+            ]"
+            :aria-live="dueTimers.length ? 'assertive' : 'off'"
+          >
             <article
-              v-for="timer in orderedActiveTimers"
+              v-for="(timer, index) in paginatedTimers"
               :key="timer.id"
               class="daily-log-timer-card"
-              :class="{ 'is-due': Date.parse(timer.dueAt) <= timerNow }"
+              :class="{
+                'is-due': Date.parse(timer.dueAt) <= timerNow,
+                'is-single-last-timer': paginatedTimers.length === 5 && index === 4,
+                'is-first-of-two-last-timers': paginatedTimers.length === 6 && index === 4,
+                'is-second-of-two-last-timers': paginatedTimers.length === 6 && index === 5,
+              }"
             >
               <div class="daily-log-timer-details">
                 <div class="daily-log-timer-person">
@@ -1556,7 +1596,10 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                   <span>Temporizador <strong>{{ formatTimerRemaining(timer) }}</strong></span>
                 </div>
               </div>
-              <div v-if="Date.parse(timer.dueAt) <= timerNow" class="daily-log-timer-actions">
+              <div
+                v-if="isAdmin && Date.parse(timer.dueAt) <= timerNow"
+                class="daily-log-timer-actions"
+              >
                 <button
                   type="button"
                   class="daily-log-secondary-button"
@@ -1576,6 +1619,31 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               </div>
             </article>
           </div>
+          <nav
+            v-if="activeTimers.length > timersPerPage"
+            class="daily-log-timer-pagination"
+            aria-label="Paginación de temporizadores activos"
+          >
+            <span>
+              Mostrando {{ (timersPage - 1) * timersPerPage + 1 }}–{{
+                Math.min(timersPage * timersPerPage, activeTimers.length)
+              }}
+              de {{ activeTimers.length }} personas
+            </span>
+            <div>
+              <button
+                type="button"
+                :disabled="timersPage === 1"
+                @click="timersPage -= 1"
+              >Anterior</button>
+              <strong>{{ timersPage }} / {{ timerPages }}</strong>
+              <button
+                type="button"
+                :disabled="timersPage === timerPages"
+                @click="timersPage += 1"
+              >Siguiente</button>
+            </div>
+          </nav>
         </section>
         <section class="daily-log-quick-panel" aria-labelledby="daily-log-quick-title">
           <div class="daily-log-quick-heading">

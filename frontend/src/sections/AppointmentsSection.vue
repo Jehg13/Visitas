@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import AppDownloadCard from "../components/AppDownloadCard.vue";
 import SectionHelpDialog from "./SectionHelpDialog.vue";
 
@@ -50,6 +50,8 @@ const props = defineProps<{
 }>();
 
 const helpOpen = ref(false);
+const clock = ref(Date.now());
+let attendanceClock: ReturnType<typeof setInterval> | undefined;
 type HelpAudience = "reception" | "host";
 const helpAudience = ref<HelpAudience>("reception");
 const effectiveHelpAudience = computed<HelpAudience>(() =>
@@ -64,6 +66,48 @@ const helpTitle = computed(() =>
     ? "Ayuda de la agenda para anfitriones"
     : "Ayuda de la agenda para recepción",
 );
+function getAttendanceStatus(appointment: Appointment) {
+  if (appointment.status !== "Pendiente") return null;
+  const now = new Date(clock.value);
+  const today = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+  if (appointment.date < today) return "No se presentó";
+  if (appointment.date > today) return null;
+  const [hours, minutes] = appointment.time.split(":").map(Number);
+  const scheduledAt = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    hours,
+    minutes,
+  ).getTime();
+  return scheduledAt <= clock.value ? "Tardía" : null;
+}
+
+function getAppointmentStatus(appointment: Appointment) {
+  return getAttendanceStatus(appointment) ?? appointment.status;
+}
+
+function getAppointmentStatusClass(appointment: Appointment) {
+  const attendanceStatus = getAttendanceStatus(appointment);
+  if (attendanceStatus === "No se presentó") return "status-no-show";
+  if (attendanceStatus === "Tardía") return "status-late";
+  return `status-${appointment.status.replace(" ", "-").toLowerCase()}`;
+}
+
+onMounted(() => {
+  attendanceClock = setInterval(() => {
+    clock.value = Date.now();
+  }, 30_000);
+});
+
+onBeforeUnmount(() => {
+  if (attendanceClock) clearInterval(attendanceClock);
+});
+
 const helpIntroduction = computed(() =>
   effectiveHelpAudience.value === "host"
     ? "Usa la agenda para programar tus visitas y preparar su acceso."
@@ -98,7 +142,7 @@ const appointmentHelpSections = computed(() =>
         },
         {
           title: "Entender los estados",
-          text: "Pendiente indica que la visita aún no se presenta; En proceso, que ya se registró su llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que la cita ya no se realizará.",
+          text: "Pendiente indica que aún no llega la hora de la cita; Tardía aparece cuando ya pasó la hora y no se registró su llegada; No se presentó aparece al día siguiente si no llegó. Como anfitrión, puedes usar Reagendar en las citas que no se presentaron. En proceso significa que ya se registró la llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que ya no se realizará.",
         },
       ]
     : [
@@ -120,7 +164,7 @@ const appointmentHelpSections = computed(() =>
         },
         {
           title: "Entender los estados",
-          text: "Pendiente indica que la visita aún no se presenta; En proceso, que ya se registró su llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que la cita ya no se realizará.",
+          text: "Pendiente indica que aún no llega la hora de la cita; Tardía aparece cuando ya pasó la hora y no se registró su llegada; No se presentó aparece al día siguiente si no llegó. En proceso significa que ya se registró la llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que ya no se realizará.",
         },
       ],
 );
@@ -131,6 +175,7 @@ const emit = defineEmits<{
   "update:page": [value: number];
   create: [];
   registerVisitor: [];
+  reschedule: [appointment: Appointment];
   cancel: [appointment: Appointment];
   openQr: [appointment: Appointment];
   sendCompanyQrs: [appointment: Appointment];
@@ -223,14 +268,20 @@ const emit = defineEmits<{
               <td>{{ appointment.company }}</td>
               <td>{{ appointment.host }}</td>
               <td>
-                <span class="status-pill" :class="`status-${appointment.status.replace(' ', '-').toLowerCase()}`">
-                  {{ appointment.status }}
+                <span class="status-pill" :class="getAppointmentStatusClass(appointment)">
+                  {{ getAppointmentStatus(appointment) }}
                 </span>
               </td>
               <td>
                 <div class="agenda-actions" :class="{ 'agenda-actions-readonly': !canManageAppointments }">
                   <button
-                    v-if="canManageAppointments && appointment.status !== 'Retirado' && appointment.status !== 'Cancelada'"
+                    v-if="canManageAppointments && isHost && getAttendanceStatus(appointment) === 'No se presentó'"
+                    class="staff-edit-button agenda-reschedule-button"
+                    type="button"
+                    @click="emit('reschedule', appointment)"
+                  >Reagendar</button>
+                  <button
+                    v-else-if="canManageAppointments && appointment.status !== 'Retirado' && appointment.status !== 'Cancelada'"
                     class="staff-edit-button"
                     type="button"
                     @click="emit('edit', appointment)"

@@ -965,7 +965,7 @@ async function submitRegistration() {
               : completedStatus === "registered"
                 ? carriesItems
                   ? "Tu visita quedó registrada sin esperar autorización. Permanece en recepción mientras revisan el equipo antes de ingresar."
-                  : "Tu visita quedó registrada y tu llegada fue autorizada automáticamente. Ya puedes continuar con la persona que visitas."
+                  : "Tu llegada quedó autorizada y registrada automáticamente. Esto no registra tu entrada a las instalaciones; presenta tu folio en recepción para que anoten tu ingreso cuando pases."
                 : completedStatus === "awaiting-entry-checklist"
                   ? "Recepción autorizó tu entrada. El checklist de equipo debe completarse antes de registrar el ingreso."
                   : carriesItems

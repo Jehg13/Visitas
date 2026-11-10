@@ -14,6 +14,10 @@ import {
   handleMobileAppReleaseRequest,
   isPublicMobileAppReleaseRequest,
 } from "./mobile-releases";
+import {
+  formatElapsedMinutes,
+  getVisitTimerIntervalMinutes,
+} from "./visit-timers";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
@@ -442,8 +446,8 @@ async function ensureTimersForActiveDailyLogVisits() {
   );
 
   for (const { movement, timerEntryId } of activeVisits) {
-    if (existingTimerEntryIds.has(timerEntryId)) continue;
-    const intervalMinutes = movement.event_type === "Llegada" ? 15 : 30;
+    if (movement.event_type === "Retiro" || existingTimerEntryIds.has(timerEntryId)) continue;
+    const intervalMinutes = getVisitTimerIntervalMinutes(movement.event_type);
     const startedAt = parseAppLocalDateTimeToUtc(
       movement.entry_date,
       movement.entry_time,
@@ -471,23 +475,61 @@ async function ensureTimersForActiveDailyLogVisits() {
   }
 }
 
+async function listHostMobileSubscriptions(hostName: string) {
+  const [matchingAccounts] = await getExternalUsersPool().execute<
+    (RowDataPacket & { login: string })[]
+  >(
+    `SELECT login FROM seg_users
+     WHERE LOWER(TRIM(login)) = LOWER(TRIM(?))
+        OR LOWER(TRIM(name)) = LOWER(TRIM(?))`,
+    [hostName, hostName],
+  );
+  const logins = [...new Set(matchingAccounts.map((account) => account.login))];
+  if (logins.length === 0) return [];
+
+  const [hostRows] = await pool.query<(RowDataPacket & { login: string })[]>(
+    `SELECT DISTINCT login FROM department_hosts
+     WHERE LOWER(TRIM(login)) IN (${logins.map(() => "?").join(", ")})`,
+    logins,
+  );
+  const hostLogins = hostRows.map((host) => host.login);
+  if (hostLogins.length === 0) return [];
+
+  const [subscriptions] = await pool.execute<(RowDataPacket & {
+    id: number;
+    fcm_token: string | null;
+  })[]>(
+    `SELECT id, fcm_token FROM notification_subscriptions
+     WHERE platform = 'mobile'
+       AND user_login IN (${hostLogins.map(() => "?").join(", ")})`,
+    hostLogins,
+  );
+  return subscriptions;
+}
+
 async function sendDueDailyLogTimerNotifications() {
   const firebaseMessaging = await getFirebaseMessaging();
   if (!firebaseMessaging) return;
 
   const [dueTimers] = await pool.query<(RowDataPacket & {
     id: number;
+    appointment_id: number | null;
     person_name: string;
     phase: "Llegada" | "Ingreso";
     interval_minutes: number;
+    started_at: string;
+    host_name: string | null;
   })[]>(
-    `SELECT id, person_name, phase, interval_minutes
-     FROM daily_log_timers
-     WHERE status = 'active'
-       AND notification_sent_at IS NULL
-       AND due_at <= UTC_TIMESTAMP()
-       AND visit_date = ?
-     ORDER BY due_at, id
+    `SELECT t.id, t.appointment_id, t.person_name, t.phase, t.interval_minutes,
+            DATE_FORMAT(t.started_at, '%Y-%m-%dT%H:%i:%s.000Z') AS started_at,
+            a.host_name
+     FROM daily_log_timers t
+     LEFT JOIN appointments a ON a.id = t.appointment_id AND a.deleted_at IS NULL
+     WHERE t.status = 'active'
+       AND t.notification_sent_at IS NULL
+       AND t.due_at <= UTC_TIMESTAMP()
+       AND t.visit_date = ?
+     ORDER BY t.due_at, t.id
      LIMIT 50`,
     [getAppDateTime().date],
   );
@@ -498,30 +540,66 @@ async function sendDueDailyLogTimerNotifications() {
      FROM accesos_secciones
      WHERE seccion IN ('recepcion', 'administrador')`,
   );
-  if (recipientRows.length === 0) {
-    await pool.execute(
-      `UPDATE daily_log_timers
-       SET notification_sent_at = UTC_TIMESTAMP()
-       WHERE status = 'active' AND notification_sent_at IS NULL AND due_at <= UTC_TIMESTAMP()
-         AND visit_date = ?`,
-      [getAppDateTime().date],
-    );
-    return;
-  }
   const recipients = recipientRows.map((row) => row.login);
-  const [subscriptionRows] = await pool.execute<(RowDataPacket & {
+  const receptionSubscriptions: (RowDataPacket & {
     id: number;
     platform: "mobile";
     fcm_token: string | null;
-  })[]>(
-    `SELECT id, platform, fcm_token
-     FROM notification_subscriptions
-     WHERE platform = 'mobile'
-       AND user_login IN (${recipients.map(() => "?").join(", ")})`,
-    recipients,
-  );
+  })[] = [];
+  if (recipients.length > 0) {
+    const [rows] = await pool.execute<(RowDataPacket & {
+      id: number;
+      platform: "mobile";
+      fcm_token: string | null;
+    })[]>(
+      `SELECT id, platform, fcm_token
+       FROM notification_subscriptions
+       WHERE platform = 'mobile'
+         AND user_login IN (${recipients.map(() => "?").join(", ")})`,
+      recipients,
+    );
+    receptionSubscriptions.push(...rows);
+  }
 
   for (const timer of dueTimers) {
+    const elapsedMinutes = Math.max(
+      timer.interval_minutes,
+      Math.floor((Date.now() - Date.parse(timer.started_at)) / 60_000),
+    );
+    const elapsed = formatElapsedMinutes(elapsedMinutes);
+    const title = timer.phase === "Llegada"
+      ? "Seguimiento de llegada"
+      : "Seguimiento de visita";
+    const receptionBody = timer.phase === "Llegada"
+      ? `${timer.person_name} lleva ${elapsed} esperando en recepción.`
+      : `${timer.person_name} lleva ${elapsed} dentro de las instalaciones.`;
+    const subscriptions = new Map<number, {
+      subscription: RowDataPacket & {
+        id: number;
+        fcm_token: string | null;
+      };
+      body: string;
+    }>();
+    for (const subscription of receptionSubscriptions) {
+      subscriptions.set(Number(subscription.id), {
+        subscription,
+        body: receptionBody,
+      });
+    }
+
+    if (timer.host_name?.trim()) {
+      const hostSubscriptions = await listHostMobileSubscriptions(timer.host_name);
+      const hostBody = timer.phase === "Llegada"
+        ? `${timer.person_name} lleva ${elapsed} esperando en recepción. Favor de dar indicaciones para su acceso.`
+        : `${timer.person_name} lleva ${elapsed} dentro de las instalaciones y espera tu atención. Atiéndelo cuanto antes.`;
+      for (const subscription of hostSubscriptions) {
+        subscriptions.set(Number(subscription.id), {
+          subscription,
+          body: hostBody,
+        });
+      }
+    }
+
     const [claimed] = await pool.execute<ResultSetHeader>(
       `UPDATE daily_log_timers
        SET notification_sent_at = UTC_TIMESTAMP()
@@ -531,13 +609,7 @@ async function sendDueDailyLogTimerNotifications() {
     );
     if (claimed.affectedRows === 0) continue;
 
-    const title = timer.phase === "Llegada"
-      ? "Seguimiento de llegada"
-      : "Seguimiento de visita";
-    const body = timer.phase === "Llegada"
-      ? `${timer.person_name} lleva ${timer.interval_minutes} minutos esperando en recepción.`
-      : `${timer.person_name} lleva ${timer.interval_minutes} minutos dentro de las instalaciones.`;
-    for (const subscription of subscriptionRows) {
+    for (const { subscription, body } of subscriptions.values()) {
       if (subscription.fcm_token) {
         try {
           await firebaseMessaging.send({
@@ -546,14 +618,14 @@ async function sendDueDailyLogTimerNotifications() {
             data: {
               timerId: String(timer.id),
               phase: timer.phase,
-              intervalMinutes: String(timer.interval_minutes),
+              elapsedMinutes: String(elapsedMinutes),
             },
             android: {
               priority: "high",
               notification: {
                 channelId: "visit_timer_alerts",
                 sound: "default",
-                tag: `daily-log-timer-${timer.id}`,
+                tag: `daily-log-timer-${timer.id}-${elapsedMinutes}`,
               },
             },
             apns: {
@@ -619,7 +691,7 @@ async function updateVisitTimerForMovement(
     return;
   }
 
-  const intervalMinutes = input.event === "Llegada" ? 15 : 30;
+  const intervalMinutes = getVisitTimerIntervalMinutes(input.event);
   const now = new Date();
   const startedAt = formatUtcSqlDateTime(now);
   const dueAt = formatUtcSqlDateTime(new Date(now.getTime() + intervalMinutes * 60_000));
@@ -727,7 +799,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
     );
     return;
   }
-  const intervalMinutes = latest.event_type === "Llegada" ? 15 : 30;
+  const intervalMinutes = getVisitTimerIntervalMinutes(latest.event_type);
   const now = new Date();
   const [timerRows] = await pool.execute<(RowDataPacket & {
     id: number;
@@ -1903,7 +1975,9 @@ async function handleVisitorKioskRequest(
           time,
           input.visitorName,
           `Registro manual · Folio ${folio} · ${
-            autoAuthorizePublicVisitors ? "Autorización automática" : "Pendiente de autorización"
+            autoAuthorizePublicVisitors
+              ? "Autorización automática · Solo llegada"
+              : "Pendiente de autorización"
           } · Motivo: ${input.visitReason}`,
           visitorRecordId,
         ],
@@ -1916,20 +1990,6 @@ async function handleVisitorKioskRequest(
         visitorRecordId,
         personName: input.visitorName,
       });
-      if (autoAuthorizePublicVisitors && !input.carriesItems) {
-        await writeVisitorKioskMovement(
-          connection,
-          {
-            folio,
-            visitor_record_id: visitorRecordId,
-            visitor_name: input.visitorName,
-            kiosk_items_present: false,
-          },
-          "Ingreso",
-          "autorregistro",
-          "Autorización automática",
-        );
-      }
       transactionStep = "guardar auditoría del registro";
       await connection.execute(
         `INSERT INTO visitor_kiosk_audit
@@ -1942,7 +2002,7 @@ async function handleVisitorKioskRequest(
               ? " Identificación entregada a recepción para resguardo."
               : "") +
             (autoAuthorizePublicVisitors
-              ? " Autorización de entrada automática habilitada por recepción."
+              ? " Autorización automática habilitada; solo se registró la llegada."
               : ""),
         ],
       );
@@ -1951,7 +2011,7 @@ async function handleVisitorKioskRequest(
           `INSERT INTO visitor_kiosk_audit
              (registration_id, action, actor_login, actor_name, details)
            VALUES (?, 'Visita autorizada automáticamente', NULL, 'Sistema',
-             'Autorización automática habilitada por recepción o administración.')`,
+               'Autorización automática habilitada; el ingreso se registra cuando la persona pase.')`,
           [registrationResult.insertId],
         );
       }
@@ -4684,7 +4744,12 @@ const server = Bun.serve({
           if (partnerId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
-          const ownerLogin = await hasHostOnlyAccess(user) ? user.login : undefined;
+          const appointmentScope = url.searchParams.get("scope") === "appointment";
+          const ownerLogin = !user.isAdmin && (
+            appointmentScope || await hasHostOnlyAccess(user)
+          )
+            ? user.login
+            : undefined;
           return Response.json({ businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) });
         }
         if (!(await canManageExternalModules(user))) {
@@ -4891,8 +4956,13 @@ const server = Bun.serve({
           if (!user.isAdmin && !hostOnlyAccess && !receptionAccess) {
             return Response.json({ error: "No tienes permiso para consultar visitantes registrados." }, { status: 403 });
           }
+          const appointmentScope = url.searchParams.get("scope") === "appointment";
           return Response.json({
-            visitors: await listHostVisitors(hostOnlyAccess ? user.login : undefined),
+            visitors: await listHostVisitors(
+              !user.isAdmin && (appointmentScope || hostOnlyAccess)
+                ? user.login
+                : undefined,
+            ),
           });
         }
         if (!user.isAdmin && !hostOnlyAccess) {
@@ -5163,8 +5233,8 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
-          return Response.json({ error: "No tienes permiso para administrar los temporizadores." }, { status: 403 });
+        if (!user.isAdmin) {
+          return Response.json({ error: "Solo administración puede modificar los temporizadores." }, { status: 403 });
         }
         const timerId = Number(dailyLogTimerPath[1]);
         if (!Number.isSafeInteger(timerId) || timerId < 1) {
@@ -5181,8 +5251,7 @@ const server = Bun.serve({
         }
         const update = body.action === "snooze"
           ? `UPDATE daily_log_timers
-             SET started_at = UTC_TIMESTAMP(),
-                 due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_minutes MINUTE),
+             SET due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_minutes MINUTE),
                  notification_sent_at = NULL
              WHERE id = ? AND visit_date = ? AND status = 'active'`
           : `UPDATE daily_log_timers
