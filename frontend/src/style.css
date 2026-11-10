@@ -829,27 +829,27 @@ input:focus-visible {
 
 .appointment-table th:nth-child(2),
 .appointment-table td:nth-child(2) {
-  width: 19%;
+  width: 17%;
 }
 
 .appointment-table th:nth-child(3),
 .appointment-table td:nth-child(3) {
-  width: 21%;
+  width: 19%;
 }
 
 .appointment-table th:nth-child(4),
 .appointment-table td:nth-child(4) {
-  width: 17%;
+  width: 15%;
 }
 
 .appointment-table th:nth-child(5),
 .appointment-table td:nth-child(5) {
-  width: 16%;
+  width: 14%;
 }
 
 .appointment-table th:nth-child(6),
 .appointment-table td:nth-child(6) {
-  width: 12%;
+  width: 20%;
   text-align: center;
 }
 
@@ -5787,6 +5787,12 @@ input:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.home-agenda-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 5px;
 }
 
 .agenda-qr-action {
