@@ -450,7 +450,30 @@ function closeAccountMenuOnEscape(event: KeyboardEvent) {
   if (event.key === "Escape") privateMenuOpen.value = false;
 }
 
+async function unregisterLegacyWebPush() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    for (const registration of registrations) {
+      const workers = [
+        registration.active,
+        registration.waiting,
+        registration.installing,
+      ];
+      if (!workers.some((worker) => worker?.scriptURL.endsWith("/visitas-notifications-sw.js"))) {
+        continue;
+      }
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) await subscription.unsubscribe();
+      await registration.unregister();
+    }
+  } catch (error) {
+    console.warn("No se pudo retirar el antiguo servicio de notificaciones web:", error);
+  }
+}
+
 onMounted(() => {
+  void unregisterLegacyWebPush();
   document.addEventListener("click", closeAccountMenuOnOutsideClick);
   document.addEventListener("keydown", closeAccountMenuOnEscape);
   if (currentUser.value.isAdmin || isReception.value) void loadDepartments();
@@ -1066,25 +1089,6 @@ function showToast(message: string, type: AppAlertType = "error", title?: string
 }
 
 async function logout() {
-  if ("serviceWorker" in navigator) {
-    try {
-      const registration = await navigator.serviceWorker.getRegistration("/");
-      const subscription = await registration?.pushManager.getSubscription();
-      if (subscription) {
-        const response = await fetch("/api/notifications/config", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ platform: "web", endpoint: subscription.endpoint }),
-        });
-        if (!response.ok) {
-          console.warn("No se pudo eliminar la suscripción web antes de cerrar sesión.");
-        }
-        await subscription.unsubscribe();
-      }
-    } catch (error) {
-      console.warn("No se pudo cerrar la suscripción de notificaciones web:", error);
-    }
-  }
   try {
     const response = await fetch("/api/auth/logout", { method: "POST" });
     if (!response.ok) {

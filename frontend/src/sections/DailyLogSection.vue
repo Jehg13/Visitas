@@ -95,10 +95,6 @@ type VisitTimer = {
   dueAt: string;
   status: "active";
 };
-type NotificationConfigResponse = {
-  webPushPublicKey?: string | null;
-  error?: string;
-};
 type VisitorKioskSettingsResponse = {
   autoAuthorizePublicVisitors?: boolean;
   error?: string;
@@ -149,8 +145,6 @@ const activeTimers = ref<VisitTimer[]>([]);
 const timerNow = ref(Date.now());
 const timerError = ref("");
 const timerActionId = ref<number | null>(null);
-const notificationSetupMessage = ref("");
-const notificationSetupBusy = ref(false);
 const autoAuthorizePublicVisitors = ref(false);
 const kioskSettingsLoading = ref(false);
 const kioskSettingsSaving = ref(false);
@@ -199,7 +193,6 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let timerPoller: ReturnType<typeof setInterval> | undefined;
 let timerClock: ReturnType<typeof setInterval> | undefined;
 let timerRequestInProgress = false;
-let webPushPublicKey: string | null = null;
 const dueNotificationKeys = new Set<string>();
 
 const dailyLogHelpSections = [
@@ -614,69 +607,6 @@ async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
       : "No se pudo actualizar el temporizador.";
   } finally {
     timerActionId.value = null;
-  }
-}
-
-function decodeVapidPublicKey(value: string) {
-  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-async function activateWebPushNotifications() {
-  if (notificationSetupBusy.value) return;
-  notificationSetupBusy.value = true;
-  notificationSetupMessage.value = "";
-  try {
-    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
-      throw new Error("Este navegador no admite notificaciones en segundo plano.");
-    }
-    const configResponse = await fetch("/api/notifications/config");
-    const config = await configResponse.json() as NotificationConfigResponse;
-    if (!configResponse.ok) {
-      throw new Error(config.error ?? "No se pudo cargar la configuración de notificaciones.");
-    }
-    if (!config.webPushPublicKey) {
-      throw new Error("Web Push no está configurado en el servidor.");
-    }
-    const permission = await Notification.requestPermission();
-    if (permission !== "granted") {
-      throw new Error("Permite las notificaciones de este sitio en la configuración del navegador.");
-    }
-    const registration = await navigator.serviceWorker.register("/visitas-notifications-sw.js");
-    const subscription = await registration.pushManager.getSubscription() ??
-      await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeVapidPublicKey(config.webPushPublicKey),
-      });
-    const subscriptionJson = subscription.toJSON();
-    if (!subscriptionJson.keys?.p256dh || !subscriptionJson.keys.auth) {
-      throw new Error("El navegador devolvió una suscripción incompleta.");
-    }
-    const saveResponse = await fetch("/api/notifications/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        platform: "web",
-        subscription: {
-          endpoint: subscription.endpoint,
-          keys: subscriptionJson.keys,
-        },
-      }),
-    });
-    const saved = await saveResponse.json() as { error?: string };
-    if (!saveResponse.ok) {
-      throw new Error(saved.error ?? "No se pudo activar el servicio de notificaciones.");
-    }
-    webPushPublicKey = config.webPushPublicKey;
-    notificationSetupMessage.value = "Las alarmas en segundo plano quedaron activadas en este navegador.";
-  } catch (cause) {
-    console.error("Failed to enable web timer notifications:", cause);
-    notificationSetupMessage.value = cause instanceof Error
-      ? cause.message
-      : "No se pudieron activar las notificaciones.";
-  } finally {
-    notificationSetupBusy.value = false;
   }
 }
 
@@ -1526,18 +1456,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               <span class="daily-log-panel-kicker">SEGUIMIENTO DE VISITAS</span>
               <h2 id="daily-log-timers-title">Temporizadores activos</h2>
             </div>
-            <button
-              class="daily-log-secondary-button"
-              type="button"
-              :disabled="notificationSetupBusy"
-              @click="activateWebPushNotifications"
-            >
-              {{ notificationSetupBusy ? "Activando..." : "Activar alarma en segundo plano" }}
-            </button>
           </div>
-          <p v-if="notificationSetupMessage" class="daily-log-timer-message" role="status">
-            {{ notificationSetupMessage }}
-          </p>
           <label class="daily-log-kiosk-setting">
             <input
               type="checkbox"

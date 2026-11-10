@@ -20,7 +20,6 @@ import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
-import * as webpush from "web-push";
 
 const port = Number(Bun.env.PORT ?? 3000);
 const appTimeZone = Bun.env.APP_TIME_ZONE?.trim() || "America/Mexico_City";
@@ -148,25 +147,6 @@ function formatUtcSqlDateTime(date: Date) {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
-function getWebPushPublicKey() {
-  const publicKey = Bun.env.WEB_PUSH_PUBLIC_KEY?.trim() ?? "";
-  const privateKey = Bun.env.WEB_PUSH_PRIVATE_KEY?.trim() ?? "";
-  if (Boolean(publicKey) !== Boolean(privateKey)) {
-    throw new Error("WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY must be configured together.");
-  }
-  if (!publicKey) return null;
-  const subject = Bun.env.WEB_PUSH_SUBJECT?.trim();
-  if (!subject) {
-    throw new Error("WEB_PUSH_SUBJECT is required when Web Push is enabled.");
-  }
-  webpush.setVapidDetails(
-    subject,
-    publicKey,
-    privateKey,
-  );
-  return publicKey;
-}
-
 function getFirebaseClientConfiguration() {
   const apiKey = Bun.env.FIREBASE_API_KEY?.trim() ?? "";
   const appId = Bun.env.FIREBASE_APP_ID?.trim() ?? "";
@@ -248,9 +228,8 @@ async function listActiveDailyLogTimers() {
 }
 
 async function sendDueDailyLogTimerNotifications() {
-  const webPushPublicKey = getWebPushPublicKey();
   const firebaseMessaging = getFirebaseMessaging();
-  if (!webPushPublicKey && !firebaseMessaging) return;
+  if (!firebaseMessaging) return;
 
   const [dueTimers] = await pool.query<(RowDataPacket & {
     id: number;
@@ -288,15 +267,13 @@ async function sendDueDailyLogTimerNotifications() {
   const recipients = recipientRows.map((row) => row.login);
   const [subscriptionRows] = await pool.execute<(RowDataPacket & {
     id: number;
-    platform: "web" | "mobile";
-    endpoint: string | null;
-    p256dh: string | null;
-    auth_secret: string | null;
+    platform: "mobile";
     fcm_token: string | null;
   })[]>(
-    `SELECT id, platform, endpoint, p256dh, auth_secret, fcm_token
+    `SELECT id, platform, fcm_token
      FROM notification_subscriptions
-     WHERE user_login IN (${recipients.map(() => "?").join(", ")})`,
+     WHERE platform = 'mobile'
+       AND user_login IN (${recipients.map(() => "?").join(", ")})`,
     recipients,
   );
 
@@ -316,47 +293,8 @@ async function sendDueDailyLogTimerNotifications() {
     const body = timer.phase === "Llegada"
       ? `${timer.person_name} lleva ${timer.interval_minutes} minutos esperando en recepción.`
       : `${timer.person_name} lleva ${timer.interval_minutes} minutos dentro de las instalaciones.`;
-    const webPayload = JSON.stringify({
-      title,
-      body,
-      icon: "/favicon.ico",
-      tag: `daily-log-timer-${timer.id}`,
-      requireInteraction: true,
-      vibrate: [400, 200, 400, 200, 800],
-      data: { timerId: Number(timer.id), url: "/bitacora" },
-      actions: [
-        { action: "snooze", title: `Repetir ${timer.interval_minutes} min` },
-        { action: "cancel", title: "Cancelar alarma" },
-      ],
-    });
-
     for (const subscription of subscriptionRows) {
-      if (subscription.platform === "web" && webPushPublicKey && subscription.endpoint) {
-        try {
-          await webpush.sendNotification(
-            {
-              endpoint: subscription.endpoint,
-              keys: {
-                p256dh: subscription.p256dh ?? "",
-                auth: subscription.auth_secret ?? "",
-              },
-            },
-            webPayload,
-          );
-        } catch (error) {
-          const statusCode =
-            isRecord(error) && typeof error.statusCode === "number" ? error.statusCode : null;
-          if (statusCode === 404 || statusCode === 410) {
-            await pool.execute("DELETE FROM notification_subscriptions WHERE id = ?", [subscription.id]);
-          } else {
-            console.error("Failed to deliver a web timer notification:", error);
-          }
-        }
-      } else if (
-        subscription.platform === "mobile" &&
-        firebaseMessaging &&
-        subscription.fcm_token
-      ) {
+      if (subscription.fcm_token) {
         try {
           await firebaseMessaging.send({
             token: subscription.fcm_token,
@@ -4865,7 +4803,6 @@ const server = Bun.serve({
               Bun.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64?.trim() &&
               getFirebaseClientConfiguration(),
             ),
-            webPushPublicKey: getWebPushPublicKey(),
           }, { headers: { "Cache-Control": "no-store" } });
         }
         let body: unknown;
@@ -4874,22 +4811,20 @@ const server = Bun.serve({
         } catch {
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
-        if (!isRecord(body) || (body.platform !== "web" && body.platform !== "mobile")) {
-          return Response.json({ error: "Selecciona una plataforma de notificación válida." }, { status: 400 });
+        if (!isRecord(body) || body.platform !== "mobile") {
+          return Response.json({ error: "Solo se admiten notificaciones en la aplicación móvil." }, { status: 400 });
         }
 
         if (request.method === "DELETE") {
-          const subscriptionValue =
-            body.platform === "mobile" ? body.token : body.endpoint;
           if (
-            typeof subscriptionValue !== "string" ||
-            subscriptionValue.trim().length < 20 ||
-            subscriptionValue.trim().length > 4096
+            typeof body.token !== "string" ||
+            body.token.trim().length < 20 ||
+            body.token.trim().length > 4096
           ) {
             return Response.json({ error: "La suscripción de notificaciones no es válida." }, { status: 400 });
           }
           const subscriptionKey = createHash("sha256")
-            .update(`${body.platform}:${subscriptionValue.trim()}`)
+            .update(`mobile:${body.token.trim()}`)
             .digest("hex");
           await pool.execute(
             "DELETE FROM notification_subscriptions WHERE user_login = ? AND subscription_key = ?",
@@ -4899,68 +4834,27 @@ const server = Bun.serve({
         }
 
         let subscriptionKey: string;
-        let endpoint: string | null = null;
-        let p256dh: string | null = null;
-        let authSecret: string | null = null;
         let fcmToken: string | null = null;
-        if (body.platform === "mobile") {
-          if (
-            typeof body.token !== "string" ||
-            body.token.trim().length < 20 ||
-            body.token.trim().length > 4096
-          ) {
-            return Response.json({ error: "El token de notificaciones móviles no es válido." }, { status: 400 });
-          }
-          if (!getFirebaseClientConfiguration() || !getFirebaseMessaging()) {
-            return Response.json({ error: "Firebase no está configurado para notificaciones móviles." }, { status: 503 });
-          }
-          fcmToken = body.token.trim();
-          subscriptionKey = createHash("sha256").update(`mobile:${fcmToken}`).digest("hex");
-        } else {
-          if (
-            !isRecord(body.subscription) ||
-            typeof body.subscription.endpoint !== "string" ||
-            !isRecord(body.subscription.keys) ||
-            typeof body.subscription.keys.p256dh !== "string" ||
-            typeof body.subscription.keys.auth !== "string"
-          ) {
-            return Response.json({ error: "La suscripción de notificaciones web no es válida." }, { status: 400 });
-          }
-          let parsedEndpoint: URL;
-          try {
-            parsedEndpoint = new URL(body.subscription.endpoint);
-          } catch {
-            return Response.json({ error: "La suscripción de notificaciones web no es válida." }, { status: 400 });
-          }
-          if (
-            parsedEndpoint.protocol !== "https:" ||
-            body.subscription.endpoint.length > 2048 ||
-            body.subscription.keys.p256dh.length > 255 ||
-            body.subscription.keys.auth.length > 255
-          ) {
-            return Response.json({ error: "La suscripción de notificaciones web no es válida." }, { status: 400 });
-          }
-          if (!getWebPushPublicKey()) {
-            return Response.json({ error: "Web Push no está configurado en el servidor." }, { status: 503 });
-          }
-          endpoint = body.subscription.endpoint;
-          p256dh = body.subscription.keys.p256dh;
-          authSecret = body.subscription.keys.auth;
-          subscriptionKey = createHash("sha256").update(`web:${endpoint}`).digest("hex");
+        if (
+          typeof body.token !== "string" ||
+          body.token.trim().length < 20 ||
+          body.token.trim().length > 4096
+        ) {
+          return Response.json({ error: "El token de notificaciones móviles no es válido." }, { status: 400 });
         }
+        if (!getFirebaseClientConfiguration() || !getFirebaseMessaging()) {
+          return Response.json({ error: "Firebase no está configurado para notificaciones móviles." }, { status: 503 });
+        }
+        fcmToken = body.token.trim();
+        subscriptionKey = createHash("sha256").update(`mobile:${fcmToken}`).digest("hex");
         await pool.execute(
           `INSERT INTO notification_subscriptions
              (user_login, platform, subscription_key, endpoint, p256dh, auth_secret, fcm_token)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE user_login = VALUES(user_login), endpoint = VALUES(endpoint),
-             p256dh = VALUES(p256dh), auth_secret = VALUES(auth_secret), fcm_token = VALUES(fcm_token)`,
+           VALUES (?, 'mobile', ?, NULL, NULL, NULL, ?)
+           ON DUPLICATE KEY UPDATE user_login = VALUES(user_login), fcm_token = VALUES(fcm_token)`,
           [
             user.login,
-            body.platform,
             subscriptionKey,
-            endpoint,
-            p256dh,
-            authSecret,
             fcmToken,
           ],
         );

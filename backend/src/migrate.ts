@@ -31,6 +31,10 @@ const visitorKioskSettingsMigrationUrl = new URL(
   "../../database/init/010_create_visitor_kiosk_settings.sql",
   import.meta.url,
 );
+const mobileOnlyNotificationsMigrationUrl = new URL(
+  "../../database/init/011_mobile_only_notification_subscriptions.sql",
+  import.meta.url,
+);
 const initialMobileAppUrl = new URL("../../initial-mobile-app.apk", import.meta.url);
 
 async function migrate() {
@@ -43,6 +47,7 @@ async function migrate() {
     mobileAppReleasesMigrationUrl,
     visitTimersNotificationsMigrationUrl,
     visitorKioskSettingsMigrationUrl,
+    mobileOnlyNotificationsMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));

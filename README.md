@@ -310,12 +310,11 @@ respaldos antes de cualquier cambio de esquema.
 
 ## Notificaciones de temporizadores
 
-Las alarmas en segundo plano requieren HTTPS, permiso de notificaciones del
-navegador y configuración de Web Push y Firebase Cloud Messaging. Genera claves
-VAPID para el servidor con `bunx web-push generate-vapid-keys` y configura
-`WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` y un `WEB_PUSH_SUBJECT` real en
-`.env.production`. En Firebase, habilita Cloud Messaging y configura en el
-servidor `FIREBASE_API_KEY`, `FIREBASE_APP_ID`,
+Las alarmas en segundo plano se envían únicamente a la aplicación móvil mediante
+Firebase Cloud Messaging; la versión web muestra los temporizadores mientras
+Bitácora está abierta, pero no registra service workers ni suscripciones Web
+Push. En Firebase, habilita Cloud Messaging y configura en el servidor
+`FIREBASE_API_KEY`, `FIREBASE_APP_ID`,
 `FIREBASE_MESSAGING_SENDER_ID` y `FIREBASE_PROJECT_ID`. Guarda la cuenta de
 servicio de Firebase como `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64`; no la
 incluyas en Git ni la compartas por el chat.
@@ -324,8 +323,8 @@ La aplicación móvil debe compilarse con las opciones Firebase correspondientes
 al mismo proyecto. Sin esos secretos/configuración, los temporizadores siguen
 sincronizados y visibles mientras recepción usa la app, pero las notificaciones
 push en segundo plano no se entregan. Cada dispositivo de recepción debe
-autorizar las notificaciones en la app o en el navegador; el permiso se registra
-por cuenta para dirigirle las alarmas.
+autorizar las notificaciones en la aplicación; el token FCM se registra por
+cuenta para dirigirle las alarmas.
 
 ## Comandos
 
