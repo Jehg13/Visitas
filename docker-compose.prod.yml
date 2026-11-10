@@ -24,7 +24,6 @@ x-backend-environment: &backend-environment
   FIREBASE_APP_ID: ${FIREBASE_APP_ID:-}
   FIREBASE_MESSAGING_SENDER_ID: ${FIREBASE_MESSAGING_SENDER_ID:-}
   FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
-  FIREBASE_SERVICE_ACCOUNT_JSON_BASE64: ${FIREBASE_SERVICE_ACCOUNT_JSON_BASE64:-}
 
 services:
   web:
@@ -54,6 +53,8 @@ services:
     restart: unless-stopped
     environment:
       <<: *backend-environment
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL:-}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY:-}
     volumes:
       - app_releases:/app/backend/app-releases
     expose:

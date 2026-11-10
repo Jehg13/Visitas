@@ -192,27 +192,23 @@ function getFirebaseClientConfiguration() {
   return { apiKey, appId, messagingSenderId, projectId };
 }
 
-function getFirebaseMessaging() {
-  const credentialJson = Bun.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64?.trim();
-  if (!credentialJson) return null;
+async function getFirebaseMessaging() {
+  const projectId = Bun.env.FIREBASE_PROJECT_ID?.trim();
+  const clientEmail = Bun.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const privateKey = Bun.env.FIREBASE_PRIVATE_KEY?.trim();
+  if (!projectId || !clientEmail || !privateKey) return null;
   const existingApp = getApps().find((app) => app.name === "visitas-timer-notifications");
   if (existingApp) return getMessaging(existingApp);
 
-  const parsedCredential: unknown = JSON.parse(
-    Buffer.from(credentialJson, "base64").toString("utf8"),
-  );
-  if (
-    !isRecord(parsedCredential) ||
-    typeof parsedCredential.project_id !== "string" ||
-    typeof parsedCredential.client_email !== "string" ||
-    typeof parsedCredential.private_key !== "string"
-  ) {
-    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 is not a valid Firebase service account.");
-  }
+  const normalizedPrivateKey = privateKey.replace(/\\n/g, "\n");
   const app = initializeApp(
     {
-      credential: cert(parsedCredential as Parameters<typeof cert>[0]),
-      projectId: parsedCredential.project_id,
+      credential: cert({
+        projectId,
+        clientEmail,
+        privateKey: normalizedPrivateKey,
+      }),
+      projectId,
     },
     "visitas-timer-notifications",
   );
@@ -221,7 +217,7 @@ function getFirebaseMessaging() {
 
 async function sendAppointmentStatusNotification(appointmentId: number) {
   try {
-    const firebaseMessaging = getFirebaseMessaging();
+    const firebaseMessaging = await getFirebaseMessaging();
     if (!firebaseMessaging) return;
 
     const [appointments] = await pool.execute<(RowDataPacket & {
@@ -476,7 +472,7 @@ async function ensureTimersForActiveDailyLogVisits() {
 }
 
 async function sendDueDailyLogTimerNotifications() {
-  const firebaseMessaging = getFirebaseMessaging();
+  const firebaseMessaging = await getFirebaseMessaging();
   if (!firebaseMessaging) return;
 
   const [dueTimers] = await pool.query<(RowDataPacket & {
@@ -555,7 +551,7 @@ async function sendDueDailyLogTimerNotifications() {
             android: {
               priority: "high",
               notification: {
-                channelId: "visit_timers",
+                channelId: "visit_timer_alerts",
                 sound: "default",
                 tag: `daily-log-timer-${timer.id}`,
               },
@@ -5058,7 +5054,8 @@ const server = Bun.serve({
           return Response.json({
             firebase: getFirebaseClientConfiguration(),
             mobilePushEnabled: Boolean(
-              Bun.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64?.trim() &&
+              Bun.env.FIREBASE_CLIENT_EMAIL?.trim() &&
+              Bun.env.FIREBASE_PRIVATE_KEY?.trim() &&
               getFirebaseClientConfiguration(),
             ),
           }, { headers: { "Cache-Control": "no-store" } });
@@ -5100,7 +5097,10 @@ const server = Bun.serve({
         ) {
           return Response.json({ error: "El token de notificaciones móviles no es válido." }, { status: 400 });
         }
-        if (!getFirebaseClientConfiguration() || !getFirebaseMessaging()) {
+        if (
+          !getFirebaseClientConfiguration() ||
+          !(await getFirebaseMessaging())
+        ) {
           return Response.json({ error: "Firebase no está configurado para notificaciones móviles." }, { status: 503 });
         }
         fcmToken = body.token.trim();

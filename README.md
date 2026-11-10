@@ -335,9 +335,12 @@ Firebase Cloud Messaging; la versión web muestra los temporizadores mientras
 Bitácora está abierta, pero no registra service workers ni suscripciones Web
 Push. En Firebase, habilita Cloud Messaging y configura en el servidor
 `FIREBASE_API_KEY`, `FIREBASE_APP_ID`,
-`FIREBASE_MESSAGING_SENDER_ID` y `FIREBASE_PROJECT_ID`. Guarda la cuenta de
-servicio de Firebase como `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64`; no la
-incluyas en Git ni la compartas por el chat.
+`FIREBASE_MESSAGING_SENDER_ID` y `FIREBASE_PROJECT_ID`. Firebase Admin se
+autentica en el servicio `api` mediante `FIREBASE_CLIENT_EMAIL` y
+`FIREBASE_PRIVATE_KEY`, usando el `FIREBASE_PROJECT_ID` existente. Guarda ambas
+como secretos de runtime en Coolify. La clave PEM puede guardarse con saltos de
+línea reales o como una sola línea con `\n`; el backend normaliza el segundo
+formato. No se monta ni copia ningún archivo de credenciales.
 
 La aplicación móvil debe compilarse con las opciones Firebase correspondientes
 al mismo proyecto. Sin esos secretos/configuración, los temporizadores siguen
@@ -354,11 +357,11 @@ de la cita con una cuenta habilitada como anfitrión; si no existe esa cuenta o 
 hay un dispositivo registrado, la cita se guarda normalmente pero no se entrega
 una notificación.
 
-Esta configuración se realiza una sola vez por entorno: guarda las cinco
-variables Firebase como variables persistentes de runtime en Coolify (no como
-valores temporales de un comando o de una vista previa). La aplicación
-usa esas variables en el servicio `api` mediante el bloque compartido del
-Compose. Los despliegues normales no deben borrarlas ni regenerarlas. El archivo
+Esta configuración se realiza una sola vez por entorno: guarda los valores
+Firebase y las dos credenciales Admin como variables persistentes/protegidas en
+Coolify, no como valores temporales de un comando o de una vista previa. Compose
+inyecta `FIREBASE_CLIENT_EMAIL` y `FIREBASE_PRIVATE_KEY` solo en el contenedor
+`api`; los despliegues normales no deben borrarlas ni regenerarlas. El archivo
 `google-services.json` de Android está versionado en
 `RecepMovil/android/app` y se incorpora en cada APK; nunca agregues al proyecto
 móvil el JSON privado de Firebase Admin SDK.
