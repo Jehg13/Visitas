@@ -13,6 +13,21 @@ retirar cualquier ruta anterior. El versionado ayuda con la compatibilidad de
 clientes, pero la disponibilidad durante un deploy depende también de la
 estrategia de despliegue del servidor.
 
+`/api/v1` es una ruta compatible para el contrato actual, no una segunda copia
+del servidor: agregar otro prefijo por sí solo no deja la versión anterior
+atendiendo durante un reinicio o un deploy. Mientras se migra una aplicación
+móvil, el backend debe seguir aceptando su contrato anterior. Los despliegues
+graduales sin interrupción requieren que la infraestructura mantenga dos
+instancias y cambie el tráfico después de validar la nueva.
+
+Para recuperarse de una interrupción breve, los clientes reintentan hasta tres
+veces las lecturas `GET`/`HEAD` si falla la conexión o reciben `502`, `503` o
+`504`. No reenvían automáticamente escrituras (`POST`, `PATCH`, `PUT` o
+`DELETE`), para evitar duplicar citas, visitas u otras acciones. Los eventos en
+tiempo real se reconectan y la app móvil conserva la consulta periódica como
+respaldo. Esto ayuda a recuperarse cuando la API vuelve, pero no evita el corte
+durante el cual el servidor no está disponible.
+
 Los dashboards de administración, recepción y anfitriones ofrecen las descargas
 Android para celulares y tablets. El administrador publica nuevas versiones desde
 su menú de usuario, en **Aplicación móvil**, sin subir archivos directamente al
@@ -325,6 +340,20 @@ sincronizados y visibles mientras recepción usa la app, pero las notificaciones
 push en segundo plano no se entregan. Cada dispositivo de recepción debe
 autorizar las notificaciones en la aplicación; el token FCM se registra por
 cuenta para dirigirle las alarmas.
+
+Esta configuración se realiza una sola vez por entorno: guarda las cinco
+variables Firebase como variables persistentes de runtime en Coolify (no como
+valores temporales de un comando o de una vista previa). La aplicación
+usa esas variables en el servicio `api` mediante el bloque compartido del
+Compose. Los despliegues normales no deben borrarlas ni regenerarlas. El archivo
+`google-services.json` de Android está versionado en
+`RecepMovil/android/app` y se incorpora en cada APK; nunca agregues al proyecto
+móvil el JSON privado de Firebase Admin SDK.
+
+Las actualizaciones habituales no requieren volver a configurar Firebase.
+Cada APK nuevo sí debe compilarse y publicarse para distribuir los cambios de
+la app; las migraciones de base de datos se ejecutan antes de iniciar la API
+con el servicio `migrate` del Compose de producción.
 
 ## Comandos
 
