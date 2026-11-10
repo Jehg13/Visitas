@@ -5097,11 +5097,25 @@ const server = Bun.serve({
         ) {
           return Response.json({ error: "El token de notificaciones móviles no es válido." }, { status: 400 });
         }
-        if (
-          !getFirebaseClientConfiguration() ||
-          !(await getFirebaseMessaging())
-        ) {
-          return Response.json({ error: "Firebase no está configurado para notificaciones móviles." }, { status: 503 });
+        const missingFirebaseVariables = [
+          ["FIREBASE_PROJECT_ID", Bun.env.FIREBASE_PROJECT_ID],
+          ["FIREBASE_API_KEY", Bun.env.FIREBASE_API_KEY],
+          ["FIREBASE_APP_ID", Bun.env.FIREBASE_APP_ID],
+          ["FIREBASE_MESSAGING_SENDER_ID", Bun.env.FIREBASE_MESSAGING_SENDER_ID],
+          ["FIREBASE_CLIENT_EMAIL", Bun.env.FIREBASE_CLIENT_EMAIL],
+          ["FIREBASE_PRIVATE_KEY", Bun.env.FIREBASE_PRIVATE_KEY],
+        ]
+          .filter(([, value]) => !value?.trim())
+          .map(([name]) => name);
+        if (missingFirebaseVariables.length > 0) {
+          return Response.json({
+            error: `Firebase no está configurado para notificaciones móviles. Variables faltantes: ${missingFirebaseVariables.join(", ")}.`,
+          }, { status: 503 });
+        }
+        if (!(await getFirebaseMessaging())) {
+          return Response.json({
+            error: "Firebase Admin no pudo inicializarse con la configuración del servidor.",
+          }, { status: 503 });
         }
         fcmToken = body.token.trim();
         subscriptionKey = createHash("sha256").update(`mobile:${fcmToken}`).digest("hex");
