@@ -601,6 +601,13 @@ async function sendDueDailyLogTimerNotifications() {
       }
     }
 
+    const deliverableSubscriptions = [...subscriptions.values()].flatMap(
+      (item) => item.subscription.fcm_token
+        ? [{ ...item, token: item.subscription.fcm_token }]
+        : [],
+    );
+    if (deliverableSubscriptions.length === 0) continue;
+
     const [claimed] = await pool.execute<ResultSetHeader>(
       `UPDATE daily_log_timers
        SET notification_sent_at = UTC_TIMESTAMP()
@@ -610,41 +617,111 @@ async function sendDueDailyLogTimerNotifications() {
     );
     if (claimed.affectedRows === 0) continue;
 
-    for (const { subscription, body } of subscriptions.values()) {
-      if (subscription.fcm_token) {
-        try {
-          await firebaseMessaging.send({
-            token: subscription.fcm_token,
-            notification: { title, body },
-            data: {
-              timerId: String(timer.id),
-              phase: timer.phase,
-              elapsedMinutes: String(elapsedMinutes),
+    let successfulDeliveries = 0;
+    for (const { subscription, body, token } of deliverableSubscriptions) {
+      try {
+        await firebaseMessaging.send({
+          token,
+          notification: { title, body },
+          data: {
+            timerId: String(timer.id),
+            phase: timer.phase,
+            elapsedMinutes: String(elapsedMinutes),
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "visit_timer_alerts",
+              sound: "default",
+              tag: `daily-log-timer-${timer.id}-${elapsedMinutes}`,
             },
-            android: {
-              priority: "high",
-              notification: {
-                channelId: "visit_timer_alerts",
-                sound: "default",
-                tag: `daily-log-timer-${timer.id}-${elapsedMinutes}`,
-              },
-            },
-            apns: {
-              payload: { aps: { sound: "default" } },
-            },
-          });
-        } catch (error) {
-          const errorCode = isRecord(error) && typeof error.code === "string" ? error.code : "";
-          if (
-            errorCode === "messaging/registration-token-not-registered" ||
-            errorCode === "messaging/invalid-registration-token"
-          ) {
-            await pool.execute("DELETE FROM notification_subscriptions WHERE id = ?", [subscription.id]);
-          } else {
-            console.error("Failed to deliver a mobile timer notification:", error);
-          }
+          },
+          apns: {
+            payload: { aps: { sound: "default" } },
+          },
+        });
+        successfulDeliveries++;
+      } catch (error) {
+        const errorCode = isRecord(error) && typeof error.code === "string" ? error.code : "";
+        if (
+          errorCode === "messaging/registration-token-not-registered" ||
+          errorCode === "messaging/invalid-registration-token"
+        ) {
+          await pool.execute("DELETE FROM notification_subscriptions WHERE id = ?", [subscription.id]);
+        } else {
+          console.error("Failed to deliver a mobile timer notification:", error);
         }
       }
+    }
+    if (successfulDeliveries === 0) {
+      await pool.execute(
+        `UPDATE daily_log_timers
+         SET notification_sent_at = NULL
+         WHERE id = ? AND status = 'active' AND due_at <= UTC_TIMESTAMP()`,
+        [timer.id],
+      );
+    }
+  }
+}
+
+async function sendOutstandingDailyLogTimerNotifications(token: string) {
+  const firebaseMessaging = await getFirebaseMessaging();
+  if (!firebaseMessaging) return;
+
+  const [timers] = await pool.query<(RowDataPacket & {
+    id: number;
+    person_name: string;
+    phase: "Llegada" | "Ingreso";
+    interval_minutes: number;
+    started_at: string;
+  })[]>(
+    `SELECT id, person_name, phase, interval_minutes,
+            DATE_FORMAT(started_at, '%Y-%m-%dT%H:%i:%s.000Z') AS started_at
+     FROM daily_log_timers
+     WHERE status = 'active' AND notification_sent_at IS NOT NULL
+       AND due_at <= UTC_TIMESTAMP() AND visit_date = ?
+     ORDER BY due_at, id
+     LIMIT 50`,
+    [getAppDateTime().date],
+  );
+
+  for (const timer of timers) {
+    const elapsedMinutes = Math.max(
+      timer.interval_minutes,
+      Math.floor((Date.now() - Date.parse(timer.started_at)) / 60_000),
+    );
+    const elapsed = formatElapsedMinutes(elapsedMinutes);
+    const body = timer.phase === "Llegada"
+      ? `${timer.person_name} lleva ${elapsed} esperando en recepción.`
+      : `${timer.person_name} lleva ${elapsed} dentro de las instalaciones.`;
+    try {
+      await firebaseMessaging.send({
+        token,
+        notification: {
+          title: timer.phase === "Llegada"
+            ? "Seguimiento de llegada"
+            : "Seguimiento de visita",
+          body,
+        },
+        data: {
+          timerId: String(timer.id),
+          phase: timer.phase,
+          elapsedMinutes: String(elapsedMinutes),
+        },
+        android: {
+          priority: "high",
+          notification: {
+            channelId: "visit_timer_alerts",
+            sound: "default",
+            tag: `daily-log-timer-${timer.id}-${elapsedMinutes}`,
+          },
+        },
+        apns: {
+          payload: { aps: { sound: "default" } },
+        },
+      });
+    } catch (error) {
+      console.error("Failed to deliver an outstanding mobile timer notification:", error);
     }
   }
 }
@@ -5182,9 +5259,11 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
+        let canReceiveReceptionNotifications = false;
         if (request.method !== "DELETE") {
-          const canReceiveNotifications = user.isAdmin ||
-            await hasSectionAccess(user, "recepcion") ||
+          canReceiveReceptionNotifications = user.isAdmin ||
+            await hasSectionAccess(user, "recepcion");
+          const canReceiveNotifications = canReceiveReceptionNotifications ||
             await hasHostOnlyAccess(user);
           if (!canReceiveNotifications) {
             return Response.json(
@@ -5262,6 +5341,16 @@ const server = Bun.serve({
         }
         fcmToken = body.token.trim();
         subscriptionKey = createHash("sha256").update(`mobile:${fcmToken}`).digest("hex");
+        const [existingSubscriptions] = await pool.execute<(RowDataPacket & {
+          user_login: string;
+        })[]>(
+          `SELECT user_login FROM notification_subscriptions
+           WHERE subscription_key = ? LIMIT 1`,
+          [subscriptionKey],
+        );
+        const isNewSubscription =
+          existingSubscriptions.length === 0 ||
+          existingSubscriptions[0].user_login !== user.login;
         await pool.execute(
           `INSERT INTO notification_subscriptions
              (user_login, platform, subscription_key, endpoint, p256dh, auth_secret, fcm_token)
@@ -5273,6 +5362,13 @@ const server = Bun.serve({
             fcmToken,
           ],
         );
+        if (isNewSubscription && canReceiveReceptionNotifications) {
+          try {
+            await sendOutstandingDailyLogTimerNotifications(fcmToken);
+          } catch (error) {
+            console.error("Failed to deliver outstanding mobile timer notifications:", error);
+          }
+        }
         return Response.json({ message: "Las notificaciones móviles quedaron activadas." }, {
           status: 201,
         });

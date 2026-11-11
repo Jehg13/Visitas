@@ -347,7 +347,9 @@ al mismo proyecto. Sin esos secretos/configuración, los temporizadores siguen
 sincronizados y visibles mientras recepción usa la app, pero las notificaciones
 push en segundo plano no se entregan. Cada dispositivo de recepción debe
 autorizar las notificaciones en la aplicación; el token FCM se registra por
-cuenta para dirigirle las alarmas.
+cuenta al iniciar sesión y dirige las alarmas de los temporizadores. Si un
+dispositivo de recepción se registra cuando ya hay temporizadores vencidos, la
+API también le entrega los avisos pendientes de las visitas que siguen activas.
 
 Las cuentas de anfitrión también reciben notificaciones móviles cuando se agenda
 una cita para ellas y cuando su estado cambia a llegada, ingreso, salida o
