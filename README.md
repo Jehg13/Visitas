@@ -160,6 +160,12 @@ bitácora inicia un temporizador de 15 minutos al registrar la llegada y uno de
 30 minutos al registrar el ingreso. Proveedores y contratistas quedan
 excluidos. Cada temporizador puede cancelarse o posponerse por el mismo
 intervalo.
+En las citas de contratistas, recepción también puede marcar individualmente a
+un empleado como "No asistió" o corregir esa marca si llega después. La
+inasistencia queda en un historial separado y no crea movimientos ni inicia
+temporizadores; al registrar su llegada, el historial guarda la corrección.
+El despliegue de producción debe ejecutar `bun run db:migrate` antes de iniciar
+la API para crear la tabla de asistencia.
 
 El autorregistro público está disponible en `/registro` y no requiere una
 cuenta de visitante. El formulario guarda de forma transaccional el visitante,

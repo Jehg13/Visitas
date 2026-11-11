@@ -12683,6 +12683,29 @@ input:focus-visible {
   color: #a3cef3;
 }
 
+.daily-log-table-status.is-no-asistio {
+  border-color: #9a5d36;
+  background: #39291f;
+  color: #ffc18d;
+}
+
+.daily-log-employee-summary {
+  margin: 0;
+  color: #a8c0d3;
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.daily-log-selection-action.is-absence {
+  border-color: #9a5d36;
+  background: #50311f;
+  color: #ffcfaa;
+}
+
+.daily-log-selection-action.is-absence:hover:not(:disabled) {
+  background: #674027;
+}
+
 .daily-log-table-qr {
   padding: 4px 7px;
   border: 1px solid #315b7a;
@@ -13419,6 +13442,26 @@ input:focus-visible {
   border-color: #b6d9c8;
   background: #eaf6ef;
   color: #226344;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-table-status.is-no-asistio {
+  border-color: #e9c5a5;
+  background: #fff4e9;
+  color: #8d4a19;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-employee-summary {
+  color: #536b80;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-selection-action.is-absence {
+  border-color: #d7ad87;
+  background: #fff3e8;
+  color: #854414;
+}
+
+.dashboard-app[data-theme="light"] .daily-log-selection-action.is-absence:hover:not(:disabled) {
+  background: #ffe8d5;
 }
 
 

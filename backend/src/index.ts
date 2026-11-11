@@ -5996,6 +5996,16 @@ const server = Bun.serve({
         const movementConnection = await pool.getConnection();
         try {
           await movementConnection.beginTransaction();
+          if (
+            input.event === "Llegada" &&
+            input.appointmentId !== null &&
+            externalStaffId !== null
+          ) {
+            await movementConnection.execute(
+              "SELECT id FROM appointments WHERE id = ? FOR UPDATE",
+              [input.appointmentId],
+            );
+          }
           const [movementResult] = await movementConnection.execute<ResultSetHeader>(
             `INSERT INTO daily_log_entries
                (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
@@ -6023,6 +6033,28 @@ const server = Bun.serve({
               visitorRecordId: visitorId,
               personName,
             });
+          }
+          if (
+            input.event === "Llegada" &&
+            input.appointmentId !== null &&
+            externalStaffId !== null
+          ) {
+            const [attendanceRows] = await movementConnection.execute<(RowDataPacket & {
+              event_type: "No asistió" | "Llegó" | "Corrección";
+            })[]>(
+              `SELECT event_type FROM appointment_employee_attendance
+               WHERE appointment_id = ? AND external_staff_id = ?
+               ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+              [input.appointmentId, externalStaffId],
+            );
+            if (attendanceRows[0]?.event_type === "No asistió") {
+              await movementConnection.execute(
+                `INSERT INTO appointment_employee_attendance
+                   (appointment_id, external_staff_id, event_type, recorded_by_login)
+                 VALUES (?, ?, 'Llegó', ?)`,
+                [input.appointmentId, externalStaffId, user.login],
+              );
+            }
           }
           await movementConnection.commit();
         } catch (error) {
@@ -6729,6 +6761,154 @@ const server = Bun.serve({
       }
     }
 
+    const appointmentEmployeeAttendancePath = url.pathname.match(
+      /^\/api\/appointments\/(\d+)\/employees\/(\d+)\/attendance$/,
+    );
+    if (appointmentEmployeeAttendancePath && request.method === "POST") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+          return Response.json({ error: "No tienes permiso para modificar la asistencia." }, { status: 403 });
+        }
+        const appointmentId = Number(appointmentEmployeeAttendancePath[1]);
+        const externalStaffId = Number(appointmentEmployeeAttendancePath[2]);
+        if (
+          !Number.isSafeInteger(appointmentId) ||
+          appointmentId < 1 ||
+          !Number.isSafeInteger(externalStaffId) ||
+          externalStaffId < 1
+        ) {
+          return Response.json({ error: "La cita o el empleado seleccionado no es válido." }, { status: 400 });
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (!isRecord(body) || (body.action !== "absent" && body.action !== "restore")) {
+          return Response.json({ error: "Selecciona si el empleado no asistió o si deseas corregir el registro." }, { status: 400 });
+        }
+
+        const connection = await pool.getConnection();
+        try {
+          await connection.beginTransaction();
+          const [appointments] = await connection.execute<(RowDataPacket & {
+            visit_date: string;
+            status: string;
+            partner_type: string | null;
+            business_partner_id: number | null;
+          })[]>(
+            `SELECT DATE_FORMAT(a.visit_date, '%Y-%m-%d') AS visit_date, a.status,
+                    a.business_partner_id, bp.partner_type
+             FROM appointments a
+             LEFT JOIN business_partners bp ON bp.id = a.business_partner_id
+             WHERE a.id = ? AND a.deleted_at IS NULL
+             LIMIT 1 FOR UPDATE`,
+            [appointmentId],
+          );
+          const appointment = appointments[0];
+          if (!appointment) {
+            await connection.rollback();
+            return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
+          }
+          if (appointment.partner_type !== "Contratista" || appointment.business_partner_id === null) {
+            await connection.rollback();
+            return Response.json({ error: "La asistencia individual solo se administra para citas de contratistas." }, { status: 409 });
+          }
+          if (appointment.visit_date !== getAppDateTime().date) {
+            await connection.rollback();
+            return Response.json({ error: "La asistencia individual solo se puede actualizar el día de la cita." }, { status: 409 });
+          }
+          if (appointment.status === "Cancelada" || appointment.status === "Retirado") {
+            await connection.rollback();
+            return Response.json({ error: "No se puede actualizar la asistencia de una cita cancelada o finalizada." }, { status: 409 });
+          }
+
+          const [employees] = await connection.execute<(RowDataPacket & {
+            id: number;
+            full_name: string;
+          })[]>(
+            `SELECT id, full_name FROM external_staff
+             WHERE id = ? AND business_partner_id = ?
+             LIMIT 1 FOR UPDATE`,
+            [externalStaffId, appointment.business_partner_id],
+          );
+          const employee = employees[0];
+          if (!employee) {
+            await connection.rollback();
+            return Response.json({ error: "El empleado no pertenece a la empresa de esta cita." }, { status: 404 });
+          }
+
+          const [movementRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT id FROM daily_log_entries
+             WHERE appointment_id = ?
+               AND (
+                 external_staff_id = ? OR
+                 (external_staff_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?)))
+               )
+               AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
+             LIMIT 1`,
+            [appointmentId, externalStaffId, employee.full_name],
+          );
+          const [attendanceRows] = await connection.execute<(RowDataPacket & {
+            event_type: "No asistió" | "Llegó" | "Corrección";
+          })[]>(
+            `SELECT event_type FROM appointment_employee_attendance
+             WHERE appointment_id = ? AND external_staff_id = ?
+             ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+            [appointmentId, externalStaffId],
+          );
+          const latestAttendance = attendanceRows[0]?.event_type;
+
+          if (body.action === "absent") {
+            if (movementRows.length > 0) {
+              await connection.rollback();
+              return Response.json({ error: "Este empleado ya tiene movimientos de llegada; actualiza su estado desde la bitácora." }, { status: 409 });
+            }
+            if (latestAttendance === "No asistió") {
+              await connection.rollback();
+              return Response.json({ message: "El empleado ya está marcado como no asistió." });
+            }
+            await connection.execute(
+              `INSERT INTO appointment_employee_attendance
+                 (appointment_id, external_staff_id, event_type, recorded_by_login)
+               VALUES (?, ?, 'No asistió', ?)`,
+              [appointmentId, externalStaffId, user.login],
+            );
+          } else {
+            if (latestAttendance !== "No asistió") {
+              await connection.rollback();
+              return Response.json({ error: "El empleado ya no tiene una ausencia pendiente de corregir." }, { status: 409 });
+            }
+            await connection.execute(
+              `INSERT INTO appointment_employee_attendance
+                 (appointment_id, external_staff_id, event_type, recorded_by_login)
+               VALUES (?, ?, 'Corrección', ?)`,
+              [appointmentId, externalStaffId, user.login],
+            );
+          }
+          await connection.commit();
+          return Response.json({
+            message: body.action === "absent"
+              ? "El empleado quedó marcado como no asistió."
+              : "Se corrigió la asistencia del empleado.",
+          });
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
+        }
+      } catch (error) {
+        console.error("Failed to update appointment employee attendance:", error);
+        return Response.json({ error: "No se pudo actualizar la asistencia del empleado." }, { status: 500 });
+      }
+    }
+
     const appointmentEmployeesPath = url.pathname.match(/^\/api\/appointments\/(\d+)\/employees$/);
     if (appointmentEmployeesPath && request.method === "GET") {
       try {
@@ -6779,11 +6959,19 @@ const server = Bun.serve({
                       AND movement.event_type IN ('Llegada', 'Ingreso', 'Retiro')
                     ORDER BY movement.entry_date DESC, movement.entry_time DESC, movement.id DESC
                     LIMIT 1
-                  ) AS latest_event
+                  ) AS latest_event,
+                  (
+                    SELECT attendance.event_type
+                    FROM appointment_employee_attendance attendance
+                    WHERE attendance.appointment_id = ?
+                      AND attendance.external_staff_id = staff.id
+                    ORDER BY attendance.id DESC
+                    LIMIT 1
+                  ) AS latest_attendance_event
            FROM external_staff staff
            WHERE staff.business_partner_id = ?
            ORDER BY staff.full_name, staff.id`,
-          [appointmentId, businessPartnerId],
+          [appointmentId, appointmentId, businessPartnerId],
         );
         return Response.json({
           employees: employees.map((employee) => ({
@@ -6795,7 +6983,9 @@ const server = Bun.serve({
                 ? "Retirado"
                 : employee.latest_event === "Llegada"
                   ? "En proceso"
-                  : "Pendiente",
+                  : employee.latest_attendance_event === "No asistió"
+                    ? "No asistió"
+                    : "Pendiente",
           })),
         });
       } catch (error) {

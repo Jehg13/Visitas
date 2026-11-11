@@ -45,7 +45,7 @@ type Appointment = {
   equipmentChecklistRequired?: boolean;
   equipmentEntryChecklistComplete?: boolean;
 };
-type AppointmentEmployeeStatus = "Pendiente" | "En proceso" | "Dentro" | "Retirado";
+type AppointmentEmployeeStatus = "Pendiente" | "En proceso" | "Dentro" | "Retirado" | "No asistió";
 type AppointmentEmployee = {
   id: number;
   fullName: string;
@@ -184,6 +184,7 @@ const employeeRosterLoading = ref(false);
 const employeeRosterError = ref("");
 const employeeRosterAppointmentId = ref<number | null>(null);
 const employeeMovementId = ref<number | null>(null);
+const employeeAttendanceAction = ref<"absent" | "restore" | null>(null);
 const dialogOpen = ref(false);
 const helpOpen = ref(false);
 const logPersonType = ref<SubjectType>("appointment");
@@ -1153,11 +1154,32 @@ async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro"
 
 function employeeMovements(employee: AppointmentEmployee): ("Llegada" | "Ingreso" | "Retiro")[] {
   if (selectedEntryIsReadOnly.value) return [];
-  if (employee.status === "Pendiente") return ["Llegada"];
+  if (employee.status === "Pendiente" || employee.status === "No asistió") return ["Llegada"];
   if (employee.status === "En proceso") return ["Ingreso", "Retiro"];
   if (employee.status === "Dentro") return ["Retiro"];
   return [];
 }
+
+function canManageEmployeeAttendance(appointment: Appointment, employee: AppointmentEmployee) {
+  return !selectedEntryIsReadOnly.value &&
+    appointment.partnerType === "Contratista" &&
+    appointment.date === getLocalDate() &&
+    !["Cancelada", "Retirado"].includes(appointment.status) &&
+    (employee.status === "Pendiente" || employee.status === "No asistió");
+}
+
+function employeeStatusClass(status: AppointmentEmployeeStatus) {
+  return status === "No asistió" ? "no-asistio" : status.toLocaleLowerCase().replace(" ", "-");
+}
+
+const employeeAttendanceSummary = computed(() => {
+  const arrived = appointmentEmployees.value.filter((employee) =>
+    ["En proceso", "Dentro", "Retirado"].includes(employee.status),
+  ).length;
+  const absent = appointmentEmployees.value.filter((employee) => employee.status === "No asistió").length;
+  const pending = appointmentEmployees.value.filter((employee) => employee.status === "Pendiente").length;
+  return `Llegaron ${arrived} de ${appointmentEmployees.value.length} · ${absent} no asistieron · ${pending} pendientes`;
+});
 
 async function loadAppointmentEmployees(appointment: Appointment) {
   const currentRequest = ++employeeRosterRequestVersion;
@@ -1175,7 +1197,7 @@ async function loadAppointmentEmployees(appointment: Appointment) {
       result.employees.some((employee) =>
         !Number.isSafeInteger(employee.id) ||
         typeof employee.fullName !== "string" ||
-        !["Pendiente", "En proceso", "Dentro", "Retirado"].includes(employee.status),
+        !["Pendiente", "En proceso", "Dentro", "Retirado", "No asistió"].includes(employee.status),
       )
     ) {
       throw new Error("El servidor devolvió una lista de empleados inválida.");
@@ -1255,6 +1277,52 @@ async function saveEmployeeMovement(
     notifyUser(cause instanceof Error ? cause.message : "No se pudo registrar el movimiento del empleado.");
   } finally {
     employeeMovementId.value = null;
+  }
+}
+
+async function updateEmployeeAttendance(
+  appointment: Appointment,
+  employee: AppointmentEmployee,
+  action: "absent" | "restore",
+) {
+  if (
+    employeeMovementId.value !== null ||
+    quickActionAppointmentId.value !== null ||
+    quickActionEntryId.value !== null ||
+    !canManageEmployeeAttendance(appointment, employee)
+  ) return;
+  const confirmed = await confirmUser(
+    action === "absent"
+      ? `¿Confirmas que ${employee.fullName} no asistió a esta cita?`
+      : `¿Quitar la marca de inasistencia de ${employee.fullName}?`,
+    action === "absent" ? "Sí, no asistió" : "Quitar marca",
+    action === "absent" ? "Confirmar inasistencia" : "Corregir asistencia",
+    action === "absent" ? "warning" : "info",
+  );
+  if (!confirmed) return;
+
+  employeeMovementId.value = employee.id;
+  employeeAttendanceAction.value = action;
+  employeeRosterError.value = "";
+  try {
+    const response = await fetch(
+      `/api/appointments/${appointment.id}/employees/${employee.id}/attendance`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      },
+    );
+    const result = await response.json() as { message?: string; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "No se pudo actualizar la asistencia del empleado.");
+    notifyUser(result.message ?? "Se actualizó la asistencia.", "success");
+    await loadAppointmentEmployees(appointment);
+  } catch (cause) {
+    console.error("Failed to update appointment employee attendance:", cause);
+    notifyUser(cause instanceof Error ? cause.message : "No se pudo actualizar la asistencia del empleado.");
+  } finally {
+    employeeMovementId.value = null;
+    employeeAttendanceAction.value = null;
   }
 }
 
@@ -2095,6 +2163,9 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 <p v-else-if="appointmentEmployees.length === 0" class="daily-log-quick-empty">
                   No hay empleados externos registrados para esta empresa.
                 </p>
+                <p v-else class="daily-log-employee-summary">
+                  {{ employeeAttendanceSummary }}
+                </p>
                 <article
                   v-for="employee in appointmentEmployees"
                   :key="employee.id"
@@ -2103,7 +2174,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 >
                   <div class="daily-log-employee-heading">
                     <strong>{{ employee.fullName }}</strong>
-                    <span class="daily-log-table-status" :class="`is-${employee.status.toLowerCase().replace(' ', '-')}`">
+                    <span class="daily-log-table-status" :class="`is-${employeeStatusClass(employee.status)}`">
                       {{ employee.status }}
                     </span>
                   </div>
@@ -2122,6 +2193,29 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                       @click="selectedAppointment && saveEmployeeMovement(selectedAppointment, employee, movement)"
                     >
                       {{ employeeMovementId === employee.id ? "Guardando…" : movement === "Llegada" ? "Registrar llegada" : movement === "Ingreso" ? "Registrar entrada" : "Registrar salida" }}
+                    </button>
+                    <button
+                      v-if="selectedAppointment && canManageEmployeeAttendance(selectedAppointment, employee)"
+                      class="daily-log-selection-action is-absence"
+                      type="button"
+                      :disabled="
+                        employeeMovementId !== null ||
+                        quickActionAppointmentId !== null ||
+                        quickActionEntryId !== null
+                      "
+                      @click="updateEmployeeAttendance(
+                        selectedAppointment,
+                        employee,
+                        employee.status === 'No asistió' ? 'restore' : 'absent'
+                      )"
+                    >
+                      {{
+                        employeeMovementId === employee.id
+                          ? "Guardando…"
+                          : employee.status === "No asistió"
+                            ? "Quitar no asistió"
+                            : "No asistió"
+                      }}
                     </button>
                   </div>
                   <p v-else-if="selectedEntryIsReadOnly" class="daily-log-selection-complete">
