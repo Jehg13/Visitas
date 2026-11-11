@@ -884,6 +884,7 @@ async function updateVisitTimerForMovement(
 }
 
 async function reconcileVisitTimerAfterMovementDeletion(
+  connection: DatabaseConnection,
   deletedMovement: {
     date: string;
     appointmentId: number | null;
@@ -906,7 +907,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
           sql: "appointment_id IS NULL AND visitor_record_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
           params: [deletedMovement.personName],
         };
-  const [latestRows] = await pool.execute<(RowDataPacket & {
+  const [latestRows] = await connection.execute<(RowDataPacket & {
     id: number;
     event_type: "Llegada" | "Ingreso" | "Retiro";
     external_staff_id: number | null;
@@ -932,7 +933,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
     latest.partner_type === "Proveedor" ||
     (latest.partner_type !== "Visitante" && latest.visitor_record_id === null)
   ) {
-    await pool.execute(
+    await connection.execute(
       `UPDATE daily_log_timers
        SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
        WHERE visit_date = ? AND status = 'active' AND ${scope.sql}`,
@@ -941,7 +942,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
     return;
   }
   if (latest.event_type === "Retiro") {
-    await pool.execute(
+    await connection.execute(
       `UPDATE daily_log_timers
        SET status = 'completed', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
        WHERE visit_date = ? AND status = 'active' AND ${scope.sql}`,
@@ -951,7 +952,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
   }
   const intervalMinutes = getVisitTimerIntervalMinutes(latest.event_type);
   const now = new Date();
-  const [timerRows] = await pool.execute<(RowDataPacket & {
+  const [timerRows] = await connection.execute<(RowDataPacket & {
     id: number;
     status: "active" | "canceled" | "completed";
   })[]>(
@@ -967,7 +968,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
   const startedAt = formatUtcSqlDateTime(now);
   const dueAt = formatUtcSqlDateTime(new Date(now.getTime() + intervalMinutes * 60_000));
   if (timer) {
-    await pool.execute(
+    await connection.execute(
       `UPDATE daily_log_timers
        SET visit_entry_id = ?, phase = ?, interval_minutes = ?, status = 'active',
            started_at = ?, due_at = ?, notification_sent_at = NULL
@@ -976,7 +977,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
     );
     return;
   }
-  await pool.execute(
+  await connection.execute(
     `INSERT INTO daily_log_timers
        (visit_date, appointment_id, visitor_record_id, visit_entry_id, person_name, phase,
         interval_minutes, started_at, due_at)
@@ -3262,22 +3263,25 @@ async function getDailyLogSummary(fromDate: string, toDate: string) {
   };
 }
 
-async function getAppointmentStatusFromMovements(appointmentId: number) {
-  const [appointmentRows] = await pool.execute<RowDataPacket[]>(
+async function getAppointmentStatusFromMovements(
+  connection: DatabaseConnection,
+  appointmentId: number,
+) {
+  const [appointmentRows] = await connection.execute<RowDataPacket[]>(
     "SELECT business_partner_id FROM appointments WHERE id = ? LIMIT 1",
     [appointmentId],
   );
   const businessPartnerId = appointmentRows[0]?.business_partner_id;
 
   if (businessPartnerId !== null && businessPartnerId !== undefined) {
-    const [staffRows] = await pool.execute<RowDataPacket[]>(
+    const [staffRows] = await connection.execute<RowDataPacket[]>(
       `SELECT id, full_name
        FROM external_staff
        WHERE business_partner_id = ?`,
       [businessPartnerId],
     );
     if (staffRows.length > 0) {
-      const [movementRows] = await pool.execute<RowDataPacket[]>(
+      const [movementRows] = await connection.execute<RowDataPacket[]>(
         `SELECT external_staff_id, person_name, event_type
          FROM daily_log_entries
          WHERE appointment_id = ?
@@ -3315,7 +3319,7 @@ async function getAppointmentStatusFromMovements(appointmentId: number) {
     }
   }
 
-  const [latestRows] = await pool.execute<RowDataPacket[]>(
+  const [latestRows] = await connection.execute<RowDataPacket[]>(
     `SELECT event_type
      FROM daily_log_entries
      WHERE appointment_id = ?
@@ -5660,53 +5664,93 @@ const server = Bun.serve({
           if (entryId === null) {
             return Response.json({ error: "Indica el movimiento que deseas eliminar." }, { status: 400 });
           }
-          const [entriesToDelete] = await pool.execute<RowDataPacket[]>(
-            `SELECT appointment_id,
-                    visitor_record_id, external_staff_id, person_name, event_type,
-                    DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
-             FROM daily_log_entries WHERE id = ? LIMIT 1`,
-            [entryId],
-          );
-          if (!entriesToDelete[0]) {
-            return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
-          }
-          if (
-            !user.isAdmin &&
-            String(entriesToDelete[0].entry_date) < getAppDateTime().date
-          ) {
-            return Response.json(
-              { error: "Los movimientos de días anteriores son de solo lectura." },
-              { status: 403 },
+          const deletionConnection = await pool.getConnection();
+          let linkedAppointmentId: number | null = null;
+          let shouldNotifyAppointment = false;
+          try {
+            await deletionConnection.beginTransaction();
+            const [appointmentRows] = await deletionConnection.execute<RowDataPacket[]>(
+              "SELECT appointment_id FROM daily_log_entries WHERE id = ? LIMIT 1",
+              [entryId],
             );
-          }
-          const linkedAppointmentId =
-            entriesToDelete[0].appointment_id === null
+            if (!appointmentRows[0]) {
+              await deletionConnection.rollback();
+              return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+            }
+            if (appointmentRows[0].appointment_id !== null) {
+              await deletionConnection.execute(
+                "SELECT id FROM appointments WHERE id = ? FOR UPDATE",
+                [Number(appointmentRows[0].appointment_id)],
+              );
+            }
+            const [entriesToDelete] = await deletionConnection.execute<RowDataPacket[]>(
+              `SELECT appointment_id,
+                      visitor_record_id, external_staff_id, person_name, event_type,
+                      DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
+               FROM daily_log_entries WHERE id = ? LIMIT 1 FOR UPDATE`,
+              [entryId],
+            );
+            const entryToDelete = entriesToDelete[0];
+            if (!entryToDelete) {
+              await deletionConnection.rollback();
+              return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+            }
+            if (
+              !user.isAdmin &&
+              String(entryToDelete.entry_date) < getAppDateTime().date
+            ) {
+              await deletionConnection.rollback();
+              return Response.json(
+                { error: "Los movimientos de días anteriores son de solo lectura." },
+                { status: 403 },
+              );
+            }
+
+            linkedAppointmentId = entryToDelete.appointment_id === null
               ? null
-              : Number(entriesToDelete[0].appointment_id);
-          const [result] = await pool.execute<ResultSetHeader>(
-            "DELETE FROM daily_log_entries WHERE id = ?",
-            [entryId],
-          );
-          if (result.affectedRows === 0) {
-            return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
-          }
-          if (["Llegada", "Ingreso", "Retiro"].includes(String(entriesToDelete[0].event_type))) {
-            await reconcileVisitTimerAfterMovementDeletion({
-              date: String(entriesToDelete[0].entry_date),
-              appointmentId: linkedAppointmentId,
-              visitorRecordId: entriesToDelete[0].visitor_record_id === null
-                ? null
-                : Number(entriesToDelete[0].visitor_record_id),
-              personName: String(entriesToDelete[0].person_name),
-            });
-          }
-          if (linkedAppointmentId !== null) {
-            const appointmentStatus =
-              await getAppointmentStatusFromMovements(linkedAppointmentId);
-            await pool.execute(
-              "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
-              [appointmentStatus, linkedAppointmentId],
+              : Number(entryToDelete.appointment_id);
+            await deletionConnection.execute(
+              "DELETE FROM daily_log_timers WHERE visit_entry_id = ?",
+              [entryId],
             );
+            const [result] = await deletionConnection.execute<ResultSetHeader>(
+              "DELETE FROM daily_log_entries WHERE id = ?",
+              [entryId],
+            );
+            if (result.affectedRows === 0) {
+              await deletionConnection.rollback();
+              return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+            }
+            if (["Llegada", "Ingreso", "Retiro"].includes(String(entryToDelete.event_type))) {
+              await reconcileVisitTimerAfterMovementDeletion(deletionConnection, {
+                date: String(entryToDelete.entry_date),
+                appointmentId: linkedAppointmentId,
+                visitorRecordId: entryToDelete.visitor_record_id === null
+                  ? null
+                  : Number(entryToDelete.visitor_record_id),
+                personName: String(entryToDelete.person_name),
+              });
+            }
+            if (linkedAppointmentId !== null) {
+              const appointmentStatus = await getAppointmentStatusFromMovements(
+                deletionConnection,
+                linkedAppointmentId,
+              );
+              const [statusUpdate] = await deletionConnection.execute<ResultSetHeader>(
+                "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
+                [appointmentStatus, linkedAppointmentId],
+              );
+              shouldNotifyAppointment = statusUpdate.affectedRows > 0;
+            }
+            await deletionConnection.commit();
+          } catch (error) {
+            await deletionConnection.rollback();
+            throw error;
+          } finally {
+            deletionConnection.release();
+          }
+          if (shouldNotifyAppointment && linkedAppointmentId !== null) {
+            void sendAppointmentStatusNotification(linkedAppointmentId);
           }
           publishRealtimeUpdate();
           return Response.json({ message: "El movimiento se eliminó." });
@@ -5760,6 +5804,7 @@ const server = Bun.serve({
         let businessPartnerId: number | null = null;
         let partnerType: "Contratista" | "Proveedor" | "Visitante" | null = null;
         let externalStaffId = input.externalStaffId;
+        let linkedAppointmentStatus: string | null = null;
         let visitorId = input.visitorRecordId;
         if (input.appointmentId !== null) {
           const [matches] = await pool.execute<AppointmentRow[]>(
@@ -5777,6 +5822,7 @@ const server = Bun.serve({
           if (!appointment) {
             return Response.json({ error: "La cita vinculada ya no existe." }, { status: 404 });
           }
+          linkedAppointmentStatus = appointment.status;
           if (
             !user.isAdmin &&
             isMovementEvent &&
@@ -5786,9 +5832,6 @@ const server = Bun.serve({
               { error: "Las citas de días anteriores no admiten nuevos movimientos desde la bitácora." },
               { status: 403 },
             );
-          }
-          if (appointment.status === "Cancelada" || appointment.status === "Retirado") {
-            return Response.json({ error: "No se puede registrar movimiento para una cita cancelada o finalizada." }, { status: 409 });
           }
           personName = appointment.visitor_name;
           businessPartnerId = appointment.business_partner_id === null
@@ -5857,6 +5900,12 @@ const server = Bun.serve({
             [businessPartnerId, personName],
           );
           if (matches[0]) externalStaffId = Number(matches[0].id);
+        }
+        if (
+          linkedAppointmentStatus === "Cancelada" ||
+          (linkedAppointmentStatus === "Retirado" && externalStaffId === null)
+        ) {
+          return Response.json({ error: "No se puede registrar movimiento para una cita cancelada o finalizada." }, { status: 409 });
         }
         if ((input.event === "Ingreso" || input.event === "Retiro") && visitorId !== null) {
           const [kioskRegistrations] = await pool.execute<RowDataPacket[]>(
@@ -6052,10 +6101,10 @@ const server = Bun.serve({
           input.date === currentBusinessDate &&
           (input.appointmentId !== null || externalStaffId === null);
         const movementConnection = await pool.getConnection();
+        let shouldNotifyAppointment = false;
         try {
           await movementConnection.beginTransaction();
           if (
-            input.event === "Llegada" &&
             input.appointmentId !== null &&
             externalStaffId !== null
           ) {
@@ -6114,6 +6163,20 @@ const server = Bun.serve({
               );
             }
           }
+          if (
+            input.appointmentId !== null &&
+            (input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro")
+          ) {
+            const appointmentStatus = await getAppointmentStatusFromMovements(
+              movementConnection,
+              input.appointmentId,
+            );
+            const [statusUpdate] = await movementConnection.execute<ResultSetHeader>(
+              "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
+              [appointmentStatus, input.appointmentId],
+            );
+            shouldNotifyAppointment = statusUpdate.affectedRows > 0;
+          }
           await movementConnection.commit();
         } catch (error) {
           await movementConnection.rollback();
@@ -6121,19 +6184,8 @@ const server = Bun.serve({
         } finally {
           movementConnection.release();
         }
-        if (
-          input.appointmentId !== null &&
-          (input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro")
-        ) {
-          const appointmentStatus =
-            await getAppointmentStatusFromMovements(input.appointmentId);
-          const [statusUpdate] = await pool.execute<ResultSetHeader>(
-            "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
-            [appointmentStatus, input.appointmentId],
-          );
-          if (statusUpdate.affectedRows > 0) {
-            void sendAppointmentStatusNotification(input.appointmentId);
-          }
+        if (shouldNotifyAppointment && input.appointmentId !== null) {
+          void sendAppointmentStatusNotification(input.appointmentId);
         }
         publishRealtimeUpdate();
         return Response.json({ message: "El movimiento se registró.", personName }, { status: 201 });
