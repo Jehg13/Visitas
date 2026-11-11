@@ -1,5 +1,6 @@
 const retryableServiceStatuses = new Set([502, 503, 504]);
 const maxReadAttempts = 3;
+const apiPrefix = "/api/v2";
 
 function getRequestMethod(
   input: RequestInfo | URL,
@@ -22,7 +23,7 @@ export function apiFetch(
 ): Promise<Response> {
   const url =
     typeof input === "string" && input.startsWith("/api/")
-      ? `/api/v1/${input.slice("/api/".length)}`
+      ? `${apiPrefix}/${input.slice("/api/".length)}`
       : input;
   const retrySafe = ["GET", "HEAD"].includes(getRequestMethod(input, init));
   const signal =
@@ -67,7 +68,7 @@ export function apiFetch(
 
 export function apiEventSource(path: string): EventSource {
   const versionedPath = path.startsWith("/api/")
-    ? `/api/v1/${path.slice("/api/".length)}`
+    ? `${apiPrefix}/${path.slice("/api/".length)}`
     : path;
   return new EventSource(versionedPath);
 }

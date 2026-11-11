@@ -72,6 +72,78 @@ html {
   line-height: 1.6;
 }
 
+.web-update-banner {
+  position: fixed;
+  z-index: 1100;
+  top: 16px;
+  left: 50%;
+  display: flex;
+  width: min(720px, calc(100vw - 32px));
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px;
+  transform: translateX(-50%);
+  border: 1px solid rgb(88 168 255 / 48%);
+  border-radius: 14px;
+  background: #102744;
+  box-shadow: 0 16px 44px rgb(0 0 0 / 30%);
+  color: #e8edf5;
+}
+
+.web-update-banner__message {
+  display: grid;
+  gap: 3px;
+  font-size: 0.88rem;
+}
+
+.web-update-banner__message span {
+  color: #b8c8dd;
+  font-size: 0.8rem;
+}
+
+.web-update-banner__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.web-update-banner__actions button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.web-update-banner__later {
+  padding: 0 10px;
+  background: transparent;
+  color: #c6d5e8;
+}
+
+.web-update-banner__reload {
+  padding: 0 13px;
+  background: #2689e8;
+  color: white;
+}
+
+@media (max-width: 560px) {
+  .web-update-banner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .web-update-banner__actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
 body {
   overflow-x: hidden;
   min-width: 260px;

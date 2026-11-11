@@ -9,7 +9,8 @@ import {
   resolveCorsOrigin,
 } from "./cors";
 import { sessionCookieAttributes } from "./session-cookie";
-import { normalizeApiPath } from "./api-version";
+import { getApiVersion, normalizeApiPath } from "./api-version";
+import { handleApiV2Request } from "./api-v2";
 import {
   handleMobileAppReleaseRequest,
   isPublicMobileAppReleaseRequest,
@@ -4361,6 +4362,7 @@ const server = Bun.serve({
   maxRequestBodySize: 160 * 1024 * 1024,
   async fetch(request, server) {
     const url = new URL(request.url);
+    const apiVersion = getApiVersion(url.pathname);
     url.pathname = normalizeApiPath(url.pathname);
     const requestOrigin = request.headers.get("origin");
     const allowLocalhostWildcard = Bun.env.NODE_ENV !== "production";
@@ -4399,6 +4401,13 @@ const server = Bun.serve({
         Response.json({ error: "Inicia sesión para continuar." }, { status: 401 }),
         corsOrigin,
       );
+    }
+
+    if (apiVersion === 2) {
+      const versionedResponse = await handleApiV2Request(request, url);
+      if (versionedResponse) {
+        return addCorsHeaders(versionedResponse, corsOrigin);
+      }
     }
 
     if (request.method === "GET" && url.pathname === "/api/events") {

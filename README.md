@@ -4,21 +4,24 @@ Aplicación con Vue 3, TypeScript, Vue Router y Pinia para el frontend, Bun y Ty
 
 ## API
 
-Los clientes web y móvil usan la API en `/api/v1`. Durante la transición, el
-backend conserva también las rutas `/api` sin versión para que las instalaciones
-anteriores de la aplicación móvil sigan funcionando. La versión `v1` actualmente
-dirige a los mismos controladores y contratos que las rutas heredadas; los
-cambios incompatibles futuros deben publicarse en una versión nueva antes de
-retirar cualquier ruta anterior. El versionado ayuda con la compatibilidad de
-clientes, pero la disponibilidad durante un deploy depende también de la
-estrategia de despliegue del servidor.
+La web usa `/api/v2`; las aplicaciones móviles instaladas continúan usando
+`/api/v1`, en el mismo servicio HTTPS. Las rutas `/api/v1` y `/api` conservan
+los controladores existentes. Las solicitudes `/api/v2` pasan primero por
+`backend/src/api-v2.ts`; si esa versión no define la ruta, se usa el controlador
+compartido como fallback de compatibilidad. Los cambios exclusivos de v2 deben
+implementarse en `api-v2.ts` para no alterar el comportamiento de v1.
 
-`/api/v1` es una ruta compatible para el contrato actual, no una segunda copia
-del servidor: agregar otro prefijo por sí solo no deja la versión anterior
-atendiendo durante un reinicio o un deploy. Mientras se migra una aplicación
-móvil, el backend debe seguir aceptando su contrato anterior. Los despliegues
-graduales sin interrupción requieren que la infraestructura mantenga dos
-instancias y cambie el tráfico después de validar la nueva.
+El versionado de endpoints conserva el contrato de los clientes, pero por sí
+solo no evita una interrupción durante el reinicio del servicio. El Compose de
+producción todavía tiene un solo servicio de API; un despliegue blue-green sin
+interrupción en Coolify requeriría mantener dos instancias y cambiar el tráfico
+después de validar la nueva.
+
+Cada compilación web genera `app-version.json`. Las pestañas abiertas consultan
+ese archivo sin caché cada minuto y, si detectan otro build, muestran un aviso
+para recargar. La recarga actualiza solo la web y conserva los assets
+versionados; la sección **Aplicación móvil → Versiones** continúa publicando
+exclusivamente APKs.
 
 Para recuperarse de una interrupción breve, los clientes reintentan hasta tres
 veces las lecturas `GET`/`HEAD` si falla la conexión o reciben `502`, `503` o
