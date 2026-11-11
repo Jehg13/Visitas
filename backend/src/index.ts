@@ -1247,6 +1247,7 @@ type AppointmentInput = {
   businessPartnerId: number | null;
   visitorRecordId: number | null;
   hostName: string;
+  hostLogin: string | null;
   date: string;
   time: string;
 };
@@ -2672,7 +2673,16 @@ async function handleVisitorKioskRequest(
 
 function parseAppointment(value: unknown): AppointmentInput | null {
   if (!isRecord(value)) return null;
-  const { visitorName, visitorEmail, businessPartnerId, visitorRecordId, hostName, date, time } = value;
+  const {
+    visitorName,
+    visitorEmail,
+    businessPartnerId,
+    visitorRecordId,
+    hostName,
+    hostLogin,
+    date,
+    time,
+  } = value;
   const validOptionalId = (id: unknown) =>
     id === null || id === undefined || (
       typeof id === "number" && Number.isSafeInteger(id) && id > 0
@@ -2692,6 +2702,10 @@ function parseAppointment(value: unknown): AppointmentInput | null {
     (parsedBusinessPartnerId !== null && parsedVisitorRecordId !== null) ||
     typeof hostName !== "string" || !hostName.trim() || hostName.trim().length > 180 ||
     hasUnsafeControlCharacters(hostName) ||
+    (hostLogin !== undefined && (
+      typeof hostLogin !== "string" || !hostLogin.trim() ||
+      hostLogin.trim().length > 255 || hasUnsafeControlCharacters(hostLogin)
+    )) ||
     typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
     typeof time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)
   ) {
@@ -2707,9 +2721,39 @@ function parseAppointment(value: unknown): AppointmentInput | null {
     businessPartnerId: parsedBusinessPartnerId,
     visitorRecordId: parsedVisitorRecordId,
     hostName: hostName.trim(),
+    hostLogin: typeof hostLogin === "string" ? hostLogin.trim() : null,
     date,
     time,
   };
+}
+
+async function resolveAppointmentHostName(input: AppointmentInput): Promise<string | null> {
+  if (input.hostLogin === null) return input.hostName;
+
+  const [hosts] = await pool.execute<(RowDataPacket & { name: string })[]>(
+    "SELECT name FROM department_hosts WHERE login = ? LIMIT 1",
+    [input.hostLogin],
+  );
+  if (!hosts[0]) return null;
+
+  const [owners] = input.visitorRecordId !== null
+    ? await pool.execute<(RowDataPacket & { owner_login: string | null })[]>(
+        `SELECT registered_by_login AS owner_login
+         FROM general_visitors
+         WHERE id = ?
+         LIMIT 1`,
+        [input.visitorRecordId],
+      )
+    : await pool.execute<(RowDataPacket & { owner_login: string | null })[]>(
+        `SELECT created_by_login AS owner_login
+         FROM business_partners
+         WHERE id = ?
+         LIMIT 1`,
+        [input.businessPartnerId],
+      );
+  if (owners[0]?.owner_login !== input.hostLogin) return null;
+
+  return hosts[0].name;
 }
 
 function parseHostVisitor(value: unknown): HostVisitorInput | null {
@@ -2834,7 +2878,11 @@ function parseDailyLogInput(value: unknown): DailyLogInput | null {
   };
 }
 
-async function listBusinessPartners(ownerLogin?: string, includeRegistrant = true) {
+async function listBusinessPartners(
+  ownerLogin?: string,
+  includeRegistrant = true,
+  includeRegistrantLogin = false,
+) {
   const [rows] = await pool.execute<BusinessPartnerRow[]>(
     `SELECT id, name, description, rfc, category, subject, visitor_record_id,
             employee_count, partner_type, is_active, created_by_login, created_by_name
@@ -2859,6 +2907,7 @@ async function listBusinessPartners(ownerLogin?: string, includeRegistrant = tru
           : row.created_by_login
         : "Registro manual"
       : "",
+    ...(includeRegistrantLogin ? { registeredByLogin: row.created_by_login } : {}),
     status: row.partner_type === "Visitante"
       ? "No aplica" as const
       : row.is_active ? "Activa" as const : "Inactiva" as const,
@@ -2880,14 +2929,15 @@ async function listGeneralVisitors() {
   }));
 }
 
-async function listHostVisitors(ownerLogin?: string) {
+async function listHostVisitors(ownerLogin?: string, includeRegistrantLogin = false) {
   const [rows] = await pool.execute<(RowDataPacket & {
     id: number;
     full_name: string;
     phone: string;
     email: string;
+    registered_by_login: string | null;
   })[]>(
-    `SELECT id, full_name, phone, email
+    `SELECT id, full_name, phone, email, registered_by_login
      FROM general_visitors
      WHERE registered_by_login IS NOT NULL
        ${ownerLogin === undefined ? "" : "AND registered_by_login = ?"}
@@ -2899,6 +2949,7 @@ async function listHostVisitors(ownerLogin?: string) {
     fullName: row.full_name,
     phone: row.phone,
     email: row.email,
+    ...(includeRegistrantLogin ? { registeredByLogin: row.registered_by_login } : {}),
   }));
 }
 
@@ -4986,7 +5037,13 @@ const server = Bun.serve({
           )
             ? user.login
             : undefined;
-          return Response.json({ businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) });
+          return Response.json({
+            businessPartners: await listBusinessPartners(
+              ownerLogin,
+              user.isAdmin,
+              appointmentScope,
+            ),
+          });
         }
         if (!(await canManageExternalModules(user))) {
           return Response.json({ error: "No tienes permiso para modificar contratistas y proveedores." }, { status: 403 });
@@ -5198,6 +5255,7 @@ const server = Bun.serve({
               !user.isAdmin && (appointmentScope || hostOnlyAccess)
                 ? user.login
                 : undefined,
+              appointmentScope,
             ),
           });
         }
@@ -7342,6 +7400,14 @@ const server = Bun.serve({
                 { status: 400 },
               );
             }
+            const resolvedHostName = await resolveAppointmentHostName(appointment);
+            if (resolvedHostName === null) {
+              return Response.json(
+                { error: "El anfitrión seleccionado no registró esta empresa o visitante." },
+                { status: 400 },
+              );
+            }
+            appointment.hostName = resolvedHostName;
             const details = await resolveAppointmentDetails(
               appointment,
               hasHostAccess && !user.isAdmin ? user.login : undefined,
@@ -7476,6 +7542,14 @@ const server = Bun.serve({
               { status: 400 },
             );
           }
+          const resolvedHostName = await resolveAppointmentHostName(appointment);
+          if (resolvedHostName === null) {
+            return Response.json(
+              { error: "El anfitrión seleccionado no registró esta empresa o visitante." },
+              { status: 400 },
+            );
+          }
+          appointment.hostName = resolvedHostName;
           const details = await resolveAppointmentDetails(
             appointment,
             hasHostAccess && !user.isAdmin ? user.login : undefined,

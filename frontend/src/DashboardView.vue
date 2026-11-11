@@ -3,6 +3,10 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch 
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import { apiEventSource, apiFetch as fetch } from "./api";
+import {
+  isSameAppointmentPartner,
+  isSameAppointmentVisitor,
+} from "./appointment-host-ownership";
 import { confirmUser, notifyUser, type AppAlertType } from "./notifications";
 import { useAuthStore } from "./stores/auth";
 import { useDashboardStore } from "./stores/dashboard";
@@ -44,6 +48,7 @@ type HostVisitor = {
   fullName: string;
   phone: string;
   email: string;
+  registeredByLogin?: string | null;
 };
 
 function isProgrammerRole(role: string | null) {
@@ -827,6 +832,32 @@ const appointmentCompanyOptions = computed(() =>
     first.name.localeCompare(second.name, "es"),
   ),
 );
+const selectedAppointmentPartner = computed(() =>
+  appointmentBusinessPartners.value.find((partner) => partner.id === visitorCompanyId.value),
+);
+const matchingAppointmentPartners = computed(() => {
+  const selected = selectedAppointmentPartner.value;
+  return selected
+    ? appointmentBusinessPartners.value.filter((partner) =>
+        isSameAppointmentPartner(partner, selected),
+      )
+    : [];
+});
+const selectedAppointmentHostVisitor = computed(() =>
+  visitorCompanyId.value === hostVisitorCompanyOption
+    ? appointmentHostVisitors.value.find(
+        (visitor) => String(visitor.id) === visitorSelection.value,
+      )
+    : undefined,
+);
+const matchingAppointmentHostVisitors = computed(() => {
+  const selected = selectedAppointmentHostVisitor.value;
+  return selected
+    ? appointmentHostVisitors.value.filter((visitor) =>
+        isSameAppointmentVisitor(visitor, selected),
+      )
+    : [];
+});
 const appointmentHostOptions = computed(() =>
   isHost.value
     ? [{
@@ -839,7 +870,20 @@ const appointmentHostOptions = computed(() =>
         phone: "",
         accessRoles: [],
       }]
-    : [...hosts.value].sort((first, second) => first.name.localeCompare(second.name, "es")),
+    : (() => {
+        const ownerLogins = new Set(
+          visitorCompanyId.value === hostVisitorCompanyOption
+            ? matchingAppointmentHostVisitors.value
+                .map((visitor) => visitor.registeredByLogin)
+                .filter((login): login is string => Boolean(login))
+            : matchingAppointmentPartners.value
+                .map((partner) => partner.registeredByLogin)
+                .filter((login): login is string => Boolean(login)),
+        );
+        return hosts.value
+          .filter((host) => ownerLogins.has(host.login))
+          .sort((first, second) => first.name.localeCompare(second.name, "es"));
+      })(),
 );
 const appointmentVisitorOptions = computed(() =>
   visitorCompanyId.value === hostVisitorCompanyOption
@@ -850,6 +894,41 @@ const appointmentVisitorOptions = computed(() =>
         .filter((staff) => staff.businessPartnerId === visitorCompanyId.value)
         .sort((first, second) => first.fullName.localeCompare(second.fullName, "es")),
 );
+function getAppointmentHostLabel(login: string | null | undefined) {
+  if (!login) return "Sin anfitrión asociado";
+  return hosts.value.find((host) => host.login === login)?.name ?? login;
+}
+function getAppointmentPartnerLabel(partner: BusinessPartner) {
+  const duplicateOwners = appointmentBusinessPartners.value
+    .filter((matchingPartner) => isSameAppointmentPartner(matchingPartner, partner))
+    .filter((matchingPartner) => matchingPartner.registeredByLogin)
+    .map((matchingPartner) => matchingPartner.registeredByLogin);
+  const hasMultipleOwners = new Set(duplicateOwners).size > 1;
+  return `${partner.name} · ${partner.type}${
+    currentUser.value.isAdmin && hasMultipleOwners
+      ? ` · ${getAppointmentHostLabel(partner.registeredByLogin)}`
+      : ""
+  }`;
+}
+function getAppointmentVisitorLabel(visitor: HostVisitor) {
+  const duplicateOwners = appointmentHostVisitors.value
+    .filter((matchingVisitor) => isSameAppointmentVisitor(matchingVisitor, visitor))
+    .filter((matchingVisitor) => matchingVisitor.registeredByLogin)
+    .map((matchingVisitor) => matchingVisitor.registeredByLogin);
+  const hasMultipleOwners = new Set(duplicateOwners).size > 1;
+  return `${visitor.fullName}${
+    currentUser.value.isAdmin && hasMultipleOwners
+      ? ` · ${getAppointmentHostLabel(visitor.registeredByLogin)}`
+      : ""
+  }`;
+}
+function getSelectedAppointmentHostVisitor() {
+  const selected = selectedAppointmentHostVisitor.value;
+  if (!selected) return undefined;
+  return matchingAppointmentHostVisitors.value.find(
+    (visitor) => visitor.registeredByLogin === visitorHostLogin.value,
+  );
+}
 const filteredHosts = computed(() => {
   const query = hostSearch.value.trim().toLocaleLowerCase();
   if (!query) return hosts.value;
@@ -1360,9 +1439,12 @@ async function openAppointmentDialog(appointment?: Appointment) {
       appointmentBusinessPartners.value.find((partner) => partner.name === appointment.company)?.id ??
         null
       : null;
-  visitorHostLogin.value = isHost.value
+  const preferredHostLogin = isHost.value
     ? currentUser.value.login
     : hosts.value.find((host) => host.name === appointment?.host)?.login ?? "";
+  visitorHostLogin.value = preferredHostLogin;
+  updateAppointmentHostSelection(preferredHostLogin);
+  changeAppointmentHost();
   appointmentDialogOpen.value = true;
 }
 
@@ -1385,6 +1467,8 @@ function changeAppointmentCompany() {
   visitorSelection.value = "";
   visitorName.value = "";
   visitorEmail.value = "";
+  updateAppointmentHostSelection();
+  changeAppointmentHost();
 }
 
 function changeAppointmentVisitor() {
@@ -1398,6 +1482,34 @@ function changeAppointmentVisitor() {
   );
   visitorName.value = visitor?.fullName ?? "";
   visitorEmail.value = visitor?.email ?? "";
+  if (visitorCompanyId.value === hostVisitorCompanyOption) {
+    updateAppointmentHostSelection();
+  }
+}
+
+function updateAppointmentHostSelection(preferredLogin?: string) {
+  if (isHost.value) {
+    visitorHostLogin.value = currentUser.value.login;
+    return;
+  }
+  const options = appointmentHostOptions.value;
+  visitorHostLogin.value = preferredLogin && options.some((host) => host.login === preferredLogin)
+    ? preferredLogin
+    : options.length === 1
+      ? options[0].login
+      : "";
+}
+
+function changeAppointmentHost() {
+  if (isHost.value || visitorCompanyId.value === hostVisitorCompanyOption) return;
+  const partner = matchingAppointmentPartners.value.find(
+    (candidate) => candidate.registeredByLogin === visitorHostLogin.value,
+  );
+  if (!partner || partner.id === visitorCompanyId.value) return;
+  visitorCompanyId.value = partner.id;
+  visitorSelection.value = "";
+  visitorName.value = "";
+  visitorEmail.value = "";
 }
 
 function openHostVisitorDialog() {
@@ -1730,12 +1842,9 @@ async function submitAppointment() {
   const company = isHostVisitor
     ? undefined
     : appointmentBusinessPartners.value.find((partner) => partner.id === visitorCompanyId.value);
-  const host = isHost.value
-    ? {
-        login: currentUser.value.login,
-        name: currentUser.value.name?.trim() || currentUser.value.login,
-      }
-    : hosts.value.find((candidate) => candidate.login === visitorHostLogin.value);
+  const host = appointmentHostOptions.value.find(
+    (candidate) => candidate.login === visitorHostLogin.value,
+  );
   const selectedVisitor =
     isHostVisitor || visitorSelection.value === otherAppointmentVisitor
       ? null
@@ -1743,7 +1852,7 @@ async function submitAppointment() {
           (staff) => String(staff.id) === visitorSelection.value,
         );
   const selectedHostVisitor = isHostVisitor
-    ? appointmentHostVisitors.value.find((visitor) => String(visitor.id) === visitorSelection.value)
+    ? getSelectedAppointmentHostVisitor()
     : undefined;
   const appointmentVisitorName =
     visitorSelection.value === otherAppointmentVisitor
@@ -1781,6 +1890,7 @@ async function submitAppointment() {
         businessPartnerId: company?.id ?? null,
         visitorRecordId: selectedHostVisitor?.id ?? null,
         hostName: host.name,
+        hostLogin: host.login,
         date: visitorDate.value,
         time: visitorTime.value,
         reschedule: isRescheduling,
@@ -2886,7 +2996,7 @@ async function removeBusinessPartner(id: number) {
                 :key="company.id"
                 :value="company.id"
               >
-                {{ company.name }} · {{ company.type }}
+                {{ getAppointmentPartnerLabel(company) }}
               </option>
             </select>
           </label>
@@ -2895,7 +3005,12 @@ async function removeBusinessPartner(id: number) {
             <select
               v-model="visitorSelection"
               required
-              :disabled="visitorCompanyId === null"
+              :disabled="
+                visitorCompanyId === null ||
+                (visitorCompanyId !== hostVisitorCompanyOption &&
+                  (!appointmentHostOptions.length ||
+                    (appointmentHostOptions.length > 1 && !visitorHostLogin)))
+              "
               @change="changeAppointmentVisitor"
             >
               <option value="" disabled>
@@ -2906,7 +3021,7 @@ async function removeBusinessPartner(id: number) {
                 :key="person.id"
                 :value="String(person.id)"
               >
-                {{ person.fullName }}
+                {{ getAppointmentVisitorLabel(person) }}
               </option>
               <option
                 v-if="visitorCompanyId !== hostVisitorCompanyOption"
@@ -2938,7 +3053,12 @@ async function removeBusinessPartner(id: number) {
           </label>
           <label>
             Anfitrión
-            <select v-model="visitorHostLogin" required :disabled="isHost">
+            <select
+              v-model="visitorHostLogin"
+              required
+              :disabled="isHost || appointmentHostOptions.length <= 1"
+              @change="changeAppointmentHost"
+            >
               <option value="" disabled>Selecciona un anfitrión</option>
               <option
                 v-for="host in appointmentHostOptions"
@@ -2950,6 +3070,29 @@ async function removeBusinessPartner(id: number) {
                   : `${host.name} · ${departments.find((department) => department.id === host.departmentId)?.name ?? "Sin departamento"}` }}
               </option>
             </select>
+            <span
+              v-if="
+                !isHost &&
+                visitorCompanyId !== null &&
+                (visitorCompanyId !== hostVisitorCompanyOption || visitorSelection) &&
+                appointmentHostOptions.length === 0
+              "
+              class="appointment-field-hint"
+            >
+              Este registro no está asociado a un anfitrión. No se puede agendar hasta seleccionar una empresa o visitante registrado por un anfitrión.
+            </span>
+            <span
+              v-else-if="appointmentHostOptions.length > 1 && !visitorHostLogin"
+              class="appointment-field-hint"
+            >
+              Este registro está asociado a varios anfitriones. Selecciona a quién se asignará la cita.
+            </span>
+            <span
+              v-else-if="!isHost && appointmentHostOptions.length === 1"
+              class="appointment-field-hint"
+            >
+              Asignado automáticamente al anfitrión que registró la empresa o visitante.
+            </span>
           </label>
           <label v-if="visitorSelection === otherAppointmentVisitor" class="appointment-form-full">
             Correo del visitante

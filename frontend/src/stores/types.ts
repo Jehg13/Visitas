@@ -88,6 +88,7 @@ export type BusinessPartner = {
   type: BusinessPartnerType;
   status: BusinessPartnerStatus;
   registeredBy: string;
+  registeredByLogin?: string | null;
 };
 
 export type GeneralVisitor = {
