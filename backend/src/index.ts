@@ -5327,11 +5327,11 @@ const server = Bun.serve({
              SET due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_minutes MINUTE),
                  notification_sent_at = NULL
              WHERE id = ? AND visit_date = ? AND status = 'active'
-               AND due_at <= UTC_TIMESTAMP()`
+               AND ${user.isAdmin ? "1 = 1" : "due_at <= UTC_TIMESTAMP()"}`
           : `UPDATE daily_log_timers
              SET status = 'canceled', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
              WHERE id = ? AND visit_date = ? AND status = 'active'
-               AND phase = 'Ingreso'`;
+               AND ${user.isAdmin ? "1 = 1" : "phase = 'Ingreso'"}`;
         const [result] = await pool.execute<ResultSetHeader>(
           update,
           [timerId, getAppDateTime().date],
@@ -5355,10 +5355,10 @@ const server = Bun.serve({
           if (matches[0].visit_date !== getAppDateTime().date) {
             return Response.json({ error: "Solo puedes modificar temporizadores del día actual." }, { status: 409 });
           }
-          if (body.action === "snooze" && Date.parse(matches[0].due_at) > Date.now()) {
+          if (!user.isAdmin && body.action === "snooze" && Date.parse(matches[0].due_at) > Date.now()) {
             return Response.json({ error: "Solo puedes repetir un temporizador cuando ya venció." }, { status: 409 });
           }
-          if (body.action === "cancel" && matches[0].phase !== "Ingreso") {
+          if (!user.isAdmin && body.action === "cancel" && matches[0].phase !== "Ingreso") {
             return Response.json({ error: "Solo puedes cancelar el temporizador cuando la visita ya está dentro." }, { status: 409 });
           }
           return Response.json({ error: "El temporizador cambió y ya no se puede actualizar. Actualiza la lista e inténtalo de nuevo." }, { status: 409 });

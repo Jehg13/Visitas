@@ -12282,6 +12282,22 @@ input:focus-visible {
   color: #214e6b;
 }
 
+.dashboard-app[data-theme="light"] .external-qr-dispatch-note {
+  border-color: #bfd9ec;
+  background: linear-gradient(120deg, #f1f8fd, #eaf3fa);
+  color: #47627b;
+}
+
+.dashboard-app[data-theme="light"] .external-qr-dispatch-note strong {
+  color: #1d405c;
+}
+
+.dashboard-app[data-theme="light"] .external-qr-link-recipient {
+  border-color: #b7d9e8;
+  background: #eaf6fb;
+  color: #28627c;
+}
+
 .dashboard-app[data-theme="light"] .external-type-pill {
   border-color: #cbd9e4;
   background: #f1f6f9;

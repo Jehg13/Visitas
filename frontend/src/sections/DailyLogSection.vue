@@ -114,7 +114,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   movementSaved: [];
-  openQr: [appointment: Appointment];
+  openQr: [appointment: Appointment, externalStaffId?: number];
 }>();
 
 const today = ref(getLocalDate());
@@ -398,7 +398,12 @@ function appointmentForEntry(entry: LogEntry) {
 
 function openEntryQr(entry: LogEntry) {
   const appointment = appointmentForEntry(entry);
-  if (appointment) emit("openQr", appointment);
+  if (!appointment) return;
+  if (entry.externalStaffId !== null) {
+    emit("openQr", appointment, entry.externalStaffId);
+    return;
+  }
+  emit("openQr", appointment);
 }
 
 function getLocalDate() {
@@ -669,7 +674,7 @@ function formatTimerLastUpdated() {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-  })} · actualización automática cada 10 s`;
+  })}`;
 }
 
 async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
@@ -1568,11 +1573,11 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 Temporizadores activos
                 <span class="daily-log-timer-count">{{ activeTimers.length }}</span>
               </h2>
-              <p class="daily-log-timer-sync" role="status" aria-live="polite">
-                {{ timerLoading ? "Verificando temporizadores..." : formatTimerLastUpdated() }}
+              <p v-if="timerLoading" class="daily-log-timer-sync" role="status" aria-live="polite">
+                Verificando temporizadores...
               </p>
               <p class="daily-log-timer-sync">
-                Recepción y administración pueden repetir una alarma vencida; cancelar solo está disponible cuando la visita ya ingresó.
+                Administración puede repetir o cancelar en cualquier fase. Recepción puede repetir al vencer la alarma y cancelar cuando la visita ya ingresó.
               </p>
             </div>
             <button
@@ -1664,10 +1669,11 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 </div>
               </div>
               <div
-                v-if="(isAdmin || isReception) && Date.parse(timer.dueAt) <= timerNow"
+                v-if="isAdmin || (isReception && (Date.parse(timer.dueAt) <= timerNow || timer.phase === 'Ingreso'))"
                 class="daily-log-timer-actions"
               >
                 <button
+                  v-if="isAdmin || Date.parse(timer.dueAt) <= timerNow"
                   type="button"
                   class="daily-log-secondary-button"
                   :disabled="timerActionId !== null"
@@ -1676,7 +1682,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                   {{ timerActionId === timer.id ? "Guardando..." : `Repetir ${timer.intervalMinutes} min` }}
                 </button>
                 <button
-                  v-if="timer.phase === 'Ingreso'"
+                  v-if="isAdmin || timer.phase === 'Ingreso'"
                   type="button"
                   class="daily-log-danger-button"
                   :disabled="timerActionId !== null"

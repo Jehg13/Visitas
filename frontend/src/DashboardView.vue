@@ -1159,14 +1159,24 @@ async function createAppointmentQr(appointment: Appointment, staff?: ExternalSta
   });
 }
 
-async function openQrDialog(appointment: Appointment) {
-  qrExternalStaff.value = null;
+async function openQrDialog(appointment: Appointment, externalStaffId?: number) {
+  const staff = externalStaffId === undefined
+    ? undefined
+    : externalStaff.value.find(({ id }) => id === externalStaffId);
+  if (
+    externalStaffId !== undefined &&
+    (!staff || staff.businessPartnerId !== appointment.businessPartnerId)
+  ) {
+    showToast("No se encontró el empleado asociado a esta cita.");
+    return;
+  }
+  qrExternalStaff.value = staff ?? null;
   qrAppointment.value = appointment;
   qrDataUrl.value = "";
   qrGenerating.value = true;
   qrDialogOpen.value = true;
   try {
-    qrDataUrl.value = await createAppointmentQr(appointment);
+    qrDataUrl.value = await createAppointmentQr(appointment, staff);
   } catch (error) {
     console.error("Failed to generate appointment QR:", error);
     showToast("No se pudo generar el código QR de esta cita.");
