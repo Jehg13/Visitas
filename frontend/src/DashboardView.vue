@@ -191,11 +191,15 @@ const currentRoleLabel = computed(() =>
       ? "Recepción"
       : "Anfitrión",
 );
+const lateAppointmentCheckClock = ref(Date.now());
+const lateAppointmentNoticeKeys = new Set<string>();
+let lateAppointmentNoticePoller: ReturnType<typeof setInterval> | undefined;
 const drawerOpen = ref(false);
 const privateMenuOpen = ref(false);
 const accountMenuRef = ref<HTMLElement | null>(null);
 const appointmentDialogOpen = ref(false);
 const editingAppointmentId = ref<number | null>(null);
+const reschedulingAppointmentId = ref<number | null>(null);
 const hostVisitorDialogOpen = ref(false);
 const hostVisitorSaving = ref(false);
 const hostVisitorName = ref("");
@@ -273,6 +277,33 @@ const businessPartnerSubject = ref("");
 const businessPartnerEmployeeCount = ref(1);
 const businessPartnerType = ref<BusinessPartnerType>("Contratista");
 const businessPartnerStatus = ref<BusinessPartnerStatus>("Activa");
+
+watch([appointments, lateAppointmentCheckClock, isHost], () => {
+  if (!isHost.value) return;
+  const now = new Date(lateAppointmentCheckClock.value);
+  const today = formatLocalDate(now);
+  for (const appointment of appointments.value) {
+    if (appointment.status !== "Pendiente" || appointment.date !== today) continue;
+    const [hours, minutes] = appointment.time.split(":").map(Number);
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) continue;
+    const scheduledAt = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      hours,
+      minutes,
+    ).getTime();
+    if (scheduledAt > now.getTime()) continue;
+    const key = `${appointment.id}:${appointment.date}:${appointment.time}`;
+    if (lateAppointmentNoticeKeys.has(key)) continue;
+    lateAppointmentNoticeKeys.add(key);
+    showToast(
+      `La visita de ${appointment.visitor}, programada a las ${appointment.time}, aún no registra su llegada. La cita ya está tardía.`,
+      "warning",
+      "Cita tardía",
+    );
+  }
+}, { deep: true, immediate: true });
 
 watch(allowedDashboardSections, (sections) => {
   if (!sections.includes(activeSection.value)) {
@@ -476,6 +507,9 @@ async function unregisterLegacyWebPush() {
 
 onMounted(() => {
   void unregisterLegacyWebPush();
+  lateAppointmentNoticePoller = setInterval(() => {
+    lateAppointmentCheckClock.value = Date.now();
+  }, 30_000);
   document.addEventListener("click", closeAccountMenuOnOutsideClick);
   document.addEventListener("keydown", closeAccountMenuOnEscape);
   if (currentUser.value.isAdmin || isReception.value) void loadDepartments();
@@ -501,6 +535,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (lateAppointmentNoticePoller) clearInterval(lateAppointmentNoticePoller);
   document.removeEventListener("click", closeAccountMenuOnOutsideClick);
   document.removeEventListener("keydown", closeAccountMenuOnEscape);
   realtimeEvents?.close();
@@ -1297,6 +1332,7 @@ async function openAppointmentDialog(appointment?: Appointment) {
     showToast("Registra primero una empresa o un visitante para agendar una cita.");
     return;
   }
+  reschedulingAppointmentId.value = null;
   editingAppointmentId.value = appointment?.id ?? null;
   visitorDate.value = appointment?.date ?? selectedAppointmentDate.value;
   visitorTime.value = appointment?.time ?? "18:00";
@@ -1329,6 +1365,7 @@ async function openRescheduleAppointmentDialog(appointment: Appointment) {
   appointmentDialogOpen.value = false;
   await openAppointmentDialog(appointment);
   if (!appointmentDialogOpen.value) return;
+  reschedulingAppointmentId.value = appointment.id;
   const nextDay = new Date();
   nextDay.setDate(nextDay.getDate() + 1);
   visitorDate.value = formatLocalDate(nextDay);
@@ -1721,6 +1758,8 @@ async function submitAppointment() {
   appointmentSaving.value = true;
   try {
     const appointmentId = editingAppointmentId.value;
+    const isRescheduling = appointmentId !== null &&
+      reschedulingAppointmentId.value === appointmentId;
     const response = await fetch(
       appointmentId === null ? "/api/appointments" : `/api/appointments/${appointmentId}`,
       {
@@ -1734,6 +1773,7 @@ async function submitAppointment() {
         hostName: host.name,
         date: visitorDate.value,
         time: visitorTime.value,
+        reschedule: isRescheduling,
       }),
       },
     );
@@ -1743,22 +1783,39 @@ async function submitAppointment() {
       error?: string;
     };
     if (!response.ok) {
-      showToast(result.error ?? "No se pudo registrar la cita.");
+      showToast(
+        result.error ?? (isRescheduling ? "No se pudo reagendar la cita." : "No se pudo guardar la cita."),
+        "error",
+        isRescheduling ? "No se pudo reagendar la cita" : "No se pudo guardar la cita",
+      );
       return;
     }
     if (!Array.isArray(result.appointments)) {
       console.error("La API devolvió una lista de citas con formato inválido.");
-      showToast("La cita se guardó, pero no se pudo actualizar la agenda.");
+      showToast(
+        isRescheduling
+          ? "La cita se reagendó, pero no se pudo actualizar la agenda."
+          : "La cita se guardó, pero no se pudo actualizar la agenda.",
+        "error",
+        isRescheduling ? "Cita reagendada" : "Cita guardada",
+      );
       return;
     }
     appointments.value = result.appointments;
     appointmentDialogOpen.value = false;
     editingAppointmentId.value = null;
+    reschedulingAppointmentId.value = null;
     selectedAppointmentDate.value = visitorDate.value;
     showToast(
-      result.message ?? (appointmentId === null ? "La cita se guardó en la agenda." : "La cita se actualizó en la agenda."),
+      result.message ?? (
+        isRescheduling
+          ? "La cita se reagendó y quedó nuevamente pendiente."
+          : appointmentId === null
+            ? "La cita se guardó en la agenda."
+            : "La cita se actualizó en la agenda."
+      ),
       "success",
-      appointmentId === null ? "Cita registrada" : "Cita actualizada",
+      isRescheduling ? "Cita reagendada" : appointmentId === null ? "Cita registrada" : "Cita actualizada",
     );
     visitorName.value = "";
     visitorEmail.value = "";
@@ -2750,6 +2807,7 @@ async function removeBusinessPartner(id: number) {
         :initial-range="dailyLogInitialRange"
         :theme="dashboardTheme"
         :is-admin="currentUser.isAdmin"
+        :is-reception="isReception"
         :appointments="appointments"
         :appointments-loading="appointmentLoading"
         :external-staff="externalStaff"

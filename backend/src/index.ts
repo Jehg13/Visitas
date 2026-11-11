@@ -508,6 +508,7 @@ async function listHostMobileSubscriptions(hostName: string) {
 }
 
 async function sendDueDailyLogTimerNotifications() {
+  await ensureTimersForActiveDailyLogVisits();
   const firebaseMessaging = await getFirebaseMessaging();
   if (!firebaseMessaging) return;
 
@@ -642,6 +643,78 @@ async function sendDueDailyLogTimerNotifications() {
           } else {
             console.error("Failed to deliver a mobile timer notification:", error);
           }
+        }
+      }
+    }
+  }
+}
+
+async function sendDueAppointmentLateNotifications() {
+  const firebaseMessaging = await getFirebaseMessaging();
+  if (!firebaseMessaging) return;
+
+  const { date, time } = getAppDateTime();
+  const [appointments] = await pool.query<(RowDataPacket & {
+    id: number;
+    visitor_name: string;
+    visit_time: string;
+    host_name: string;
+  })[]>(
+    `SELECT id, visitor_name, TIME_FORMAT(visit_time, '%H:%i') AS visit_time, host_name
+     FROM appointments
+     WHERE visit_date = ? AND visit_time <= ?
+       AND status = 'Pendiente' AND deleted_at IS NULL
+       AND late_notified_at IS NULL
+     ORDER BY visit_time, id
+     LIMIT 50`,
+    [date, time],
+  );
+
+  for (const appointment of appointments) {
+    const [claimed] = await pool.execute<ResultSetHeader>(
+      `UPDATE appointments
+       SET late_notified_at = UTC_TIMESTAMP()
+       WHERE id = ? AND status = 'Pendiente' AND deleted_at IS NULL
+         AND late_notified_at IS NULL AND visit_date = ? AND visit_time <= ?`,
+      [appointment.id, date, time],
+    );
+    if (claimed.affectedRows === 0) continue;
+
+    const subscriptions = await listHostMobileSubscriptions(appointment.host_name);
+    for (const subscription of subscriptions) {
+      if (!subscription.fcm_token) continue;
+      try {
+        await firebaseMessaging.send({
+          token: subscription.fcm_token,
+          notification: {
+            title: "Cita tardía",
+            body: `La cita de ${appointment.visitor_name} estaba programada a las ${appointment.visit_time} y aún no registra su llegada.`,
+          },
+          data: {
+            appointmentId: String(appointment.id),
+            eventType: "late",
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "visit_timer_alerts",
+              sound: "default",
+              tag: `appointment-late-${appointment.id}`,
+            },
+          },
+          apns: {
+            payload: { aps: { sound: "default" } },
+          },
+        });
+      } catch (error) {
+        const errorCode = isRecord(error) && typeof error.code === "string" ? error.code : "";
+        if (
+          errorCode === "messaging/registration-token-not-registered" ||
+          errorCode === "messaging/invalid-registration-token"
+        ) {
+          await pool.execute("DELETE FROM notification_subscriptions WHERE id = ?", [subscription.id]);
+        } else {
+          console.error("Failed to deliver a late appointment notification:", error);
         }
       }
     }
@@ -1005,7 +1078,7 @@ function appointmentSnapshot(row: AppointmentRow): AppointmentSnapshot {
 async function recordAppointmentHistory(
   connection: DatabaseConnection,
   appointmentId: number,
-  action: "Creada" | "Actualizada" | "Cancelada" | "Eliminada",
+  action: "Creada" | "Actualizada" | "Cancelada" | "Eliminada" | "Reagendada",
   user: AuthenticatedUser,
   snapshot: AppointmentSnapshot,
   details: string,
@@ -5233,8 +5306,8 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!user.isAdmin) {
-          return Response.json({ error: "Solo administración puede modificar los temporizadores." }, { status: 403 });
+        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+          return Response.json({ error: "Solo recepción o administración puede modificar los temporizadores." }, { status: 403 });
         }
         const timerId = Number(dailyLogTimerPath[1]);
         if (!Number.isSafeInteger(timerId) || timerId < 1) {
@@ -5253,22 +5326,42 @@ const server = Bun.serve({
           ? `UPDATE daily_log_timers
              SET due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_minutes MINUTE),
                  notification_sent_at = NULL
-             WHERE id = ? AND visit_date = ? AND status = 'active'`
+             WHERE id = ? AND visit_date = ? AND status = 'active'
+               AND due_at <= UTC_TIMESTAMP()`
           : `UPDATE daily_log_timers
              SET status = 'canceled', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
-             WHERE id = ? AND visit_date = ? AND status = 'active'`;
+             WHERE id = ? AND visit_date = ? AND status = 'active'
+               AND phase = 'Ingreso'`;
         const [result] = await pool.execute<ResultSetHeader>(
           update,
           [timerId, getAppDateTime().date],
         );
         if (result.affectedRows === 0) {
-          const [matches] = await pool.execute<RowDataPacket[]>(
-            "SELECT id FROM daily_log_timers WHERE id = ? AND status = 'active' LIMIT 1",
+          const [matches] = await pool.execute<(RowDataPacket & {
+            visit_date: string;
+            phase: "Llegada" | "Ingreso";
+            due_at: string;
+          })[]>(
+            `SELECT DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date, phase,
+                    DATE_FORMAT(due_at, '%Y-%m-%dT%H:%i:%s.000Z') AS due_at
+             FROM daily_log_timers
+             WHERE id = ? AND status = 'active'
+             LIMIT 1`,
             [timerId],
           );
-          return matches.length === 0
-            ? Response.json({ error: "El temporizador ya no está activo." }, { status: 404 })
-            : Response.json({ error: "Solo puedes modificar temporizadores del día actual." }, { status: 409 });
+          if (matches.length === 0) {
+            return Response.json({ error: "El temporizador ya no está activo." }, { status: 404 });
+          }
+          if (matches[0].visit_date !== getAppDateTime().date) {
+            return Response.json({ error: "Solo puedes modificar temporizadores del día actual." }, { status: 409 });
+          }
+          if (body.action === "snooze" && Date.parse(matches[0].due_at) > Date.now()) {
+            return Response.json({ error: "Solo puedes repetir un temporizador cuando ya venció." }, { status: 409 });
+          }
+          if (body.action === "cancel" && matches[0].phase !== "Ingreso") {
+            return Response.json({ error: "Solo puedes cancelar el temporizador cuando la visita ya está dentro." }, { status: 409 });
+          }
+          return Response.json({ error: "El temporizador cambió y ya no se puede actualizar. Actualiza la lista e inténtalo de nuevo." }, { status: 409 });
         }
         publishRealtimeUpdate();
         return Response.json({ timers: await listActiveDailyLogTimers() });
@@ -6887,6 +6980,10 @@ const server = Bun.serve({
             }
             void sendAppointmentStatusNotification(targetAppointmentId);
           } else {
+            const isReschedule = isRecord(body) && body.reschedule === true;
+            if (isReschedule && !user.isAdmin && !hasHostAccess) {
+              return Response.json({ error: "Solo el anfitrión puede reagendar esta cita." }, { status: 403 });
+            }
             const appointment = parseAppointment(body);
             if (!appointment) {
               return Response.json(
@@ -6936,9 +7033,16 @@ const server = Bun.serve({
                 await connection.rollback();
                 return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
               }
-              if (previousRow.status === "Cancelada" || previousRow.status === "Retirado") {
+              if (
+                previousRow.status === "Retirado" ||
+                (previousRow.status === "Cancelada" && !isReschedule)
+              ) {
                 await connection.rollback();
-                return Response.json({ error: "No se puede editar una cita cancelada o retirada." }, { status: 409 });
+                return Response.json({
+                  error: previousRow.status === "Cancelada"
+                    ? "Para reactivar una cita cancelada, usa la opción Reagendar."
+                    : "No se puede editar una cita retirada.",
+                }, { status: 409 });
               }
               const previousSnapshot = appointmentSnapshot(previousRow);
               const currentSnapshot: AppointmentSnapshot = {
@@ -6951,6 +7055,7 @@ const server = Bun.serve({
                 email: details.visitorEmail,
                 company: details.companyName,
                 host: user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
+                status: isReschedule ? "Pendiente" : previousSnapshot.status,
               };
               const changedFields: string[] = [];
               if (previousSnapshot.date !== currentSnapshot.date) changedFields.push("fecha");
@@ -6960,6 +7065,7 @@ const server = Bun.serve({
               if (previousSnapshot.businessPartnerId !== currentSnapshot.businessPartnerId) changedFields.push("empresa");
               if (previousSnapshot.visitorRecordId !== currentSnapshot.visitorRecordId) changedFields.push("visitante registrado");
               if (previousSnapshot.host !== currentSnapshot.host) changedFields.push("anfitrión");
+              if (previousSnapshot.status !== currentSnapshot.status) changedFields.push("estado");
               if (changedFields.length === 0) {
                 await connection.rollback();
                 return Response.json({
@@ -6973,7 +7079,8 @@ const server = Bun.serve({
               await connection.execute(
                 `UPDATE appointments
                  SET business_partner_id = ?, visitor_record_id = ?, visit_date = ?, visit_time = ?,
-                     visitor_name = ?, visitor_email = ?, company_name = ?, host_name = ?
+                     visitor_name = ?, visitor_email = ?, company_name = ?, host_name = ?,
+                     status = ?, late_notified_at = IF(?, NULL, late_notified_at)
                  WHERE id = ? AND deleted_at IS NULL`,
                 [
                   details.businessPartnerId,
@@ -6984,16 +7091,22 @@ const server = Bun.serve({
                   details.visitorEmail,
                   details.companyName,
                   currentSnapshot.host,
+                  currentSnapshot.status,
+                  isReschedule ||
+                    previousSnapshot.date !== currentSnapshot.date ||
+                    previousSnapshot.time !== currentSnapshot.time,
                   targetAppointmentId,
                 ],
               );
               await recordAppointmentHistory(
                 connection,
                 targetAppointmentId,
-                "Actualizada",
+                isReschedule ? "Reagendada" : "Actualizada",
                 user,
                 currentSnapshot,
-                `Se actualizaron: ${changedFields.join(", ")}.`,
+                isReschedule
+                  ? `Cita reagendada. Cambios: ${changedFields.join(", ")}.`
+                  : `Se actualizaron: ${changedFields.join(", ")}.`,
                 previousSnapshot,
               );
               await connection.commit();
@@ -7818,10 +7931,16 @@ setInterval(() => {
   void sendDueDailyLogTimerNotifications().catch((error: unknown) => {
     console.error("Failed to process due daily log timer notifications:", error);
   });
+  void sendDueAppointmentLateNotifications().catch((error: unknown) => {
+    console.error("Failed to process late appointment notifications:", error);
+  });
 }, 10_000);
 
 void sendDueDailyLogTimerNotifications().catch((error: unknown) => {
   console.error("Failed to process due daily log timer notifications:", error);
+});
+void sendDueAppointmentLateNotifications().catch((error: unknown) => {
+  console.error("Failed to process late appointment notifications:", error);
 });
 
 void Promise.resolve()

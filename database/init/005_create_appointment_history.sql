@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS appointment_history (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   appointment_id BIGINT UNSIGNED NOT NULL,
-  action ENUM('Creada', 'Actualizada', 'Cancelada', 'Eliminada') NOT NULL,
+  action ENUM('Creada', 'Actualizada', 'Cancelada', 'Eliminada', 'Reagendada') NOT NULL,
   actor_login VARCHAR(255) NOT NULL,
   actor_name VARCHAR(255) NOT NULL,
   created_by_login VARCHAR(255) NULL,

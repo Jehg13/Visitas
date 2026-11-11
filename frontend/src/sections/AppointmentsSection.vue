@@ -142,7 +142,7 @@ const appointmentHelpSections = computed(() =>
         },
         {
           title: "Entender los estados",
-          text: "Pendiente indica que aún no llega la hora de la cita; Tardía aparece cuando ya pasó la hora y no se registró su llegada; No se presentó aparece al día siguiente si no llegó. Como anfitrión, puedes usar Reagendar en las citas que no se presentaron. En proceso significa que ya se registró la llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que ya no se realizará.",
+          text: "Pendiente indica que aún no llega la hora de la cita; Tardía aparece y se avisa cuando ya pasó la hora sin registrar su llegada; No se presentó aparece al día siguiente si no llegó. Como anfitrión, puedes usar Reagendar en citas tardías, no presentadas o canceladas. En proceso significa que ya se registró la llegada; Dentro, que ingresó; Retirado, que terminó su visita; y Cancelada, que ya no se realizará.",
         },
       ]
     : [
@@ -275,7 +275,7 @@ const emit = defineEmits<{
               <td>
                 <div class="agenda-actions" :class="{ 'agenda-actions-readonly': !canManageAppointments }">
                   <button
-                    v-if="canManageAppointments && isHost && getAttendanceStatus(appointment) === 'No se presentó'"
+                    v-if="canManageAppointments && isHost && (appointment.status === 'Cancelada' || ['Tardía', 'No se presentó'].includes(getAttendanceStatus(appointment) ?? ''))"
                     class="staff-edit-button agenda-reschedule-button"
                     type="button"
                     @click="emit('reschedule', appointment)"

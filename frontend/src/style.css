@@ -14431,6 +14431,22 @@ input:focus-visible {
   box-shadow: 0 0 0 1px color-mix(in srgb, #d94b57 28%, transparent);
 }
 
+.daily-log-timer-overdue {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, #d94b57 42%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, #d94b57 10%, var(--ds-surface));
+  color: color-mix(in srgb, #d33f50 78%, var(--ds-text));
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.daily-log-timer-overdue strong {
+  font-size: 0.76rem;
+}
+
 .daily-log-timer-details {
   display: grid;
   flex: 1;

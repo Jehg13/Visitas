@@ -102,6 +102,7 @@ type VisitorKioskSettingsResponse = {
 
 const props = defineProps<{
   isAdmin: boolean;
+  isReception: boolean;
   appointments: Appointment[];
   appointmentsLoading: boolean;
   externalStaff: ExternalStaff[];
@@ -549,6 +550,28 @@ const dueTimers = computed(() =>
   ),
 );
 
+watch(dueTimers, (timers) => {
+  const newlyDueTimers: VisitTimer[] = [];
+  for (const timer of timers) {
+    const key = `${timer.id}:${timer.dueAt}`;
+    if (dueNotificationKeys.has(key)) continue;
+    dueNotificationKeys.add(key);
+    newlyDueTimers.push(timer);
+  }
+  if (newlyDueTimers.length === 0) return;
+  const message = newlyDueTimers.map((timer) => {
+    const location = timer.phase === "Llegada"
+      ? "esperando en recepción"
+      : "dentro de las instalaciones";
+    return `${timer.personName} lleva ${formatTimerElapsedWords(timer)} ${location}`;
+  }).join("; ");
+  notifyUser(
+    `${message}.`,
+    "warning",
+    newlyDueTimers.length === 1 ? "Tiempo de espera excedido" : "Visitas con tiempo excedido",
+  );
+}, { deep: true });
+
 watch(timerPages, (pages) => {
   if (timersPage.value > pages) timersPage.value = pages;
 });
@@ -610,6 +633,18 @@ function formatTimerElapsed(timer: VisitTimer) {
   return formatTimerDuration(getTimerElapsedSeconds(timer));
 }
 
+function formatTimerElapsedWords(timer: VisitTimer) {
+  const totalMinutes = Math.floor(getTimerElapsedSeconds(timer) / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) {
+    return minutes > 0
+      ? `${hours} ${hours === 1 ? "hora" : "horas"} y ${minutes} ${minutes === 1 ? "minuto" : "minutos"}`
+      : `${hours} ${hours === 1 ? "hora" : "horas"}`;
+  }
+  return `${totalMinutes} ${totalMinutes === 1 ? "minuto" : "minutos"}`;
+}
+
 function getTimerProgress(timer: VisitTimer) {
   const intervalSeconds = timer.intervalMinutes * 60;
   const intervalStartedAt = Date.parse(timer.dueAt) - intervalSeconds * 1000;
@@ -639,6 +674,15 @@ function formatTimerLastUpdated() {
 
 async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
   if (timerActionId.value !== null) return;
+  const confirmed = await confirmUser(
+    action === "snooze"
+      ? `¿Repetir la alarma de ${timer.personName} por ${timer.intervalMinutes} minutos?`
+      : `¿Cancelar el temporizador de ${timer.personName}? La visita ya se encuentra dentro de las instalaciones.`,
+    action === "snooze" ? "Repetir temporizador" : "Cancelar temporizador",
+    action === "snooze" ? "Repetir alarma vencida" : "Cancelar temporizador",
+    "warning",
+  );
+  if (!confirmed) return;
   timerActionId.value = timer.id;
   timerError.value = "";
   try {
@@ -654,11 +698,23 @@ async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
     }
     activeTimers.value = result.timers;
     timerLastUpdatedAt.value = Date.now();
+    notifyUser(
+      action === "snooze"
+        ? `Se repitió la alarma de ${timer.personName} por ${timer.intervalMinutes} minutos.`
+        : `Se canceló el temporizador de ${timer.personName}.`,
+      "success",
+      action === "snooze" ? "Temporizador repetido" : "Temporizador cancelado",
+    );
   } catch (cause) {
     console.error("Failed to update daily log timer:", cause);
     timerError.value = cause instanceof Error
       ? cause.message
       : "No se pudo actualizar el temporizador.";
+    notifyUser(
+      timerError.value,
+      "error",
+      action === "snooze" ? "No se pudo repetir el temporizador" : "No se pudo cancelar el temporizador",
+    );
   } finally {
     timerActionId.value = null;
   }
@@ -1516,7 +1572,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 {{ timerLoading ? "Verificando temporizadores..." : formatTimerLastUpdated() }}
               </p>
               <p class="daily-log-timer-sync">
-                Recepción puede consultarlos; solo administración puede repetir o cancelar una alarma.
+                Recepción y administración pueden repetir una alarma vencida; cancelar solo está disponible cuando la visita ya ingresó.
               </p>
             </div>
             <button
@@ -1560,7 +1616,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 'has-two-last-timers': paginatedTimers.length === 6,
               },
             ]"
-            :aria-live="dueTimers.length ? 'assertive' : 'off'"
+            aria-live="off"
           >
             <article
               v-for="(timer, index) in paginatedTimers"
@@ -1582,6 +1638,17 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                   </span>
                 </div>
                 <div
+                  v-if="Date.parse(timer.dueAt) <= timerNow"
+                  class="daily-log-timer-overdue"
+                  role="status"
+                >
+                  <strong>Tiempo excedido</strong>
+                  <span>
+                    Lleva {{ formatTimerElapsedWords(timer) }}
+                    {{ timer.phase === "Llegada" ? "esperando en recepción" : "dentro de las instalaciones" }}.
+                  </span>
+                </div>
+                <div
                   class="daily-log-timer-progress"
                   role="progressbar"
                   :aria-label="`Tiempo transcurrido del temporizador de ${timer.personName}`"
@@ -1597,7 +1664,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 </div>
               </div>
               <div
-                v-if="isAdmin && Date.parse(timer.dueAt) <= timerNow"
+                v-if="(isAdmin || isReception) && Date.parse(timer.dueAt) <= timerNow"
                 class="daily-log-timer-actions"
               >
                 <button
@@ -1609,12 +1676,13 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                   {{ timerActionId === timer.id ? "Guardando..." : `Repetir ${timer.intervalMinutes} min` }}
                 </button>
                 <button
+                  v-if="timer.phase === 'Ingreso'"
                   type="button"
                   class="daily-log-danger-button"
                   :disabled="timerActionId !== null"
                   @click="updateTimer(timer, 'cancel')"
                 >
-                  Cancelar alarma
+                  Cancelar temporizador
                 </button>
               </div>
             </article>

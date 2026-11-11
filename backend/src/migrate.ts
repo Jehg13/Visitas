@@ -78,6 +78,21 @@ async function migrate() {
     for (const statement of statements) {
       await connection.query(statement);
     }
+    const [appointmentHistoryActionColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_TYPE
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'appointment_history'
+         AND COLUMN_NAME = 'action'`,
+    );
+    if (
+      appointmentHistoryActionColumns.length > 0 &&
+      !String(appointmentHistoryActionColumns[0].COLUMN_TYPE).includes("'Reagendada'")
+    ) {
+      await connection.query(
+        "ALTER TABLE appointment_history MODIFY action ENUM('Creada', 'Actualizada', 'Cancelada', 'Eliminada', 'Reagendada') NOT NULL",
+      );
+    }
     const [visitorOwnerColumns] = await connection.query<RowDataPacket[]>(
       `SELECT COLUMN_NAME
        FROM INFORMATION_SCHEMA.COLUMNS
@@ -398,6 +413,18 @@ async function migrate() {
     if (appointmentOwnerColumns.length === 0) {
       await connection.query(
         "ALTER TABLE appointments ADD COLUMN created_by_login VARCHAR(255) NULL AFTER registered_by",
+      );
+    }
+    const [appointmentLateNotificationColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'appointments'
+         AND COLUMN_NAME = 'late_notified_at'`,
+    );
+    if (appointmentLateNotificationColumns.length === 0) {
+      await connection.query(
+        "ALTER TABLE appointments ADD COLUMN late_notified_at DATETIME NULL AFTER status",
       );
     }
     const [unassignedAppointments] = await connection.query<RowDataPacket[]>(

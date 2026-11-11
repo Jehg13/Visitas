@@ -56,7 +56,7 @@ type TrendSeries = { key: MovementKey; label: string; color: string };
 type AppointmentHistoryItem = {
   id: number;
   appointmentId: number;
-  action: "Creada" | "Actualizada" | "Cancelada" | "Eliminada";
+  action: "Creada" | "Actualizada" | "Cancelada" | "Eliminada" | "Reagendada";
   actorName: string;
   date: string;
   time: string;

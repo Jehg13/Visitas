@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS appointments (
   host_name VARCHAR(180) NOT NULL,
   status ENUM('Dentro', 'En proceso', 'Pendiente', 'Retirado', 'Cancelada')
     NOT NULL DEFAULT 'Pendiente',
+  late_notified_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
