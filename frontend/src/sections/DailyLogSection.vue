@@ -281,9 +281,7 @@ const selectedEntryStatus = computed(() => {
 });
 const selectedPersonStatus = computed(() => {
   if (selectedQuickAppointment.value) return quickAppointmentStatus(selectedQuickAppointment.value);
-  return selectedEntryAppointment.value
-    ? quickAppointmentStatus(selectedEntryAppointment.value)
-    : selectedEntryStatus.value;
+  return selectedEntryStatus.value;
 });
 const selectedPersonName = computed(() =>
   selectedQuickAppointment.value?.visitor ?? selectedEntry.value?.person ?? "",
@@ -1092,10 +1090,6 @@ function selectEntry(entry: LogEntry) {
 async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro") {
   const entry = selectedEntry.value;
   if (!entry || quickActionEntryId.value !== null || !selectedAvailableMovements.value.includes(event)) return;
-  if (selectedEntryAppointment.value) {
-    await saveQuickMovement(event, selectedEntryAppointment.value, entry.id);
-    return;
-  }
 
   const operationDate = getLocalDate();
   today.value = operationDate;
@@ -1139,6 +1133,9 @@ async function saveSelectedEntryMovement(event: "Llegada" | "Ingreso" | "Retiro"
     page.value = 1;
     await loadEntries();
     const refreshedEntry = entries.value.find((candidate) =>
+      candidate.appointmentId === entry.appointmentId &&
+      candidate.externalStaffId === entry.externalStaffId &&
+      candidate.visitorRecordId === entry.visitorRecordId &&
       candidate.person.trim().toLocaleLowerCase("es") === entry.person.trim().toLocaleLowerCase("es") &&
       candidate.event === event,
     );
@@ -1641,9 +1638,6 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 Temporizadores activos
                 <span class="daily-log-timer-count">{{ activeTimers.length }}</span>
               </h2>
-              <p v-if="timerLoading" class="daily-log-timer-sync" role="status" aria-live="polite">
-                Verificando temporizadores...
-              </p>
               <p class="daily-log-timer-sync">
                 Administración puede repetir o cancelar en cualquier fase. Recepción puede repetir al vencer la alarma y cancelar cuando la visita ya ingresó.
               </p>
@@ -1654,7 +1648,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               :disabled="timerLoading"
               @click="loadTimers"
             >
-              {{ timerLoading ? "Actualizando..." : "Actualizar ahora" }}
+              Actualizar ahora
             </button>
           </div>
           <label class="daily-log-kiosk-setting">

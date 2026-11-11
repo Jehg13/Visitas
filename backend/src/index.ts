@@ -3057,7 +3057,8 @@ function dailyLogRecordsCte(includeRecorder: boolean) {
            d.event_type, d.person_name,
            ${includeRecorder ? "d.recorded_by_name" : "NULL"} AS recorded_by_name,
            d.details,
-           d.appointment_id, d.external_staff_id, d.visitor_record_id,
+           d.appointment_id, COALESCE(d.external_staff_id, s.id) AS external_staff_id,
+           d.visitor_record_id,
            CASE
              WHEN d.details LIKE 'Registro manual · Folio %' THEN COALESCE(
                (
@@ -3259,6 +3260,78 @@ async function getDailyLogSummary(fromDate: string, toDate: string) {
     pendingArrivals: Number(pendingRows[0]?.pending_count ?? 0),
     exits: Number(countRows[0]?.exit_count ?? 0),
   };
+}
+
+async function getAppointmentStatusFromMovements(appointmentId: number) {
+  const [appointmentRows] = await pool.execute<RowDataPacket[]>(
+    "SELECT business_partner_id FROM appointments WHERE id = ? LIMIT 1",
+    [appointmentId],
+  );
+  const businessPartnerId = appointmentRows[0]?.business_partner_id;
+
+  if (businessPartnerId !== null && businessPartnerId !== undefined) {
+    const [staffRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT id, full_name
+       FROM external_staff
+       WHERE business_partner_id = ?`,
+      [businessPartnerId],
+    );
+    if (staffRows.length > 0) {
+      const [movementRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT external_staff_id, person_name, event_type
+         FROM daily_log_entries
+         WHERE appointment_id = ?
+           AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
+         ORDER BY entry_date DESC, entry_time DESC, id DESC`,
+        [appointmentId],
+      );
+      const latestByStaff = new Map<number, string>();
+      for (const movement of movementRows) {
+        const movementStaffId = movement.external_staff_id === null
+          ? null
+          : Number(movement.external_staff_id);
+        const staff = movementStaffId === null
+          ? staffRows.find(
+              (row) =>
+                String(row.full_name).trim().toLocaleLowerCase() ===
+                String(movement.person_name).trim().toLocaleLowerCase(),
+            )
+          : staffRows.find((row) => Number(row.id) === movementStaffId);
+        if (staff && !latestByStaff.has(Number(staff.id))) {
+          latestByStaff.set(Number(staff.id), String(movement.event_type));
+        }
+      }
+
+      const latestEvents = [...latestByStaff.values()];
+      if (latestEvents.includes("Ingreso")) return "Dentro";
+      if (
+        latestEvents.length === staffRows.length &&
+        latestEvents.every((event) => event === "Retiro")
+      ) {
+        return "Retirado";
+      }
+      if (latestEvents.length > 0) return "En proceso";
+      return "Pendiente";
+    }
+  }
+
+  const [latestRows] = await pool.execute<RowDataPacket[]>(
+    `SELECT event_type
+     FROM daily_log_entries
+     WHERE appointment_id = ?
+       AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
+     ORDER BY entry_date DESC, entry_time DESC, id DESC
+     LIMIT 1`,
+    [appointmentId],
+  );
+  const latestEvent = latestRows[0]?.event_type;
+  return latestEvent === "Ingreso"
+    ? "Dentro"
+    : latestEvent === "Retiro"
+      ? "Retirado"
+      : latestEvent === "Llegada"
+        ? "En proceso"
+        : "Pendiente";
 }
 
 async function getDailyLogDateRange() {
@@ -5628,23 +5701,8 @@ const server = Bun.serve({
             });
           }
           if (linkedAppointmentId !== null) {
-            const [latestRows] = await pool.execute<RowDataPacket[]>(
-              `SELECT event_type
-               FROM daily_log_entries
-               WHERE appointment_id = ?
-                 AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
-               ORDER BY entry_date DESC, entry_time DESC, id DESC
-               LIMIT 1`,
-              [linkedAppointmentId],
-            );
-            const latestEvent = latestRows[0]?.event_type;
-            const appointmentStatus = latestEvent === "Ingreso"
-              ? "Dentro"
-              : latestEvent === "Retiro"
-                ? "Retirado"
-                : latestEvent === "Llegada"
-                  ? "En proceso"
-                  : "Pendiente";
+            const appointmentStatus =
+              await getAppointmentStatusFromMovements(linkedAppointmentId);
             await pool.execute(
               "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
               [appointmentStatus, linkedAppointmentId],
@@ -6067,62 +6125,8 @@ const server = Bun.serve({
           input.appointmentId !== null &&
           (input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro")
         ) {
-          let totalEmployees = 0;
-          let insideCount = 0;
-          let retiredCount = 0;
-          if (businessPartnerId !== null) {
-            const [staffRows] = await pool.execute<RowDataPacket[]>(
-              `SELECT id, full_name
-               FROM external_staff
-               WHERE business_partner_id = ?`,
-              [businessPartnerId],
-            );
-            const [movementRows] = await pool.execute<RowDataPacket[]>(
-              `SELECT external_staff_id, person_name, event_type
-               FROM daily_log_entries
-               WHERE appointment_id = ?
-                 AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
-               ORDER BY entry_date DESC, entry_time DESC, id DESC`,
-              [input.appointmentId],
-            );
-            const latestByStaff = new Map<number, string>();
-            for (const movement of movementRows) {
-              const movementStaffId = movement.external_staff_id === null
-                ? null
-                : Number(movement.external_staff_id);
-              const staff = movementStaffId === null
-                ? staffRows.find(
-                    (row) =>
-                      String(row.full_name).trim().toLocaleLowerCase() ===
-                      String(movement.person_name).trim().toLocaleLowerCase(),
-                  )
-                : staffRows.find((row) => Number(row.id) === movementStaffId);
-              if (staff && !latestByStaff.has(Number(staff.id))) {
-                latestByStaff.set(Number(staff.id), String(movement.event_type));
-              }
-            }
-            totalEmployees = staffRows.length;
-            insideCount = [...latestByStaff.values()].filter(
-              (event) => event === "Ingreso",
-            ).length;
-            retiredCount = [...latestByStaff.values()].filter(
-              (event) => event === "Retiro",
-            ).length;
-          }
-          let appointmentStatus: "Dentro" | "En proceso" | "Retirado";
-          if (totalEmployees > 0) {
-            appointmentStatus = insideCount > 0
-              ? "Dentro"
-              : retiredCount === totalEmployees
-                ? "Retirado"
-                : "En proceso";
-          } else {
-            appointmentStatus = input.event === "Ingreso"
-              ? "Dentro"
-              : input.event === "Llegada"
-                ? "En proceso"
-                : "Retirado";
-          }
+          const appointmentStatus =
+            await getAppointmentStatusFromMovements(input.appointmentId);
           const [statusUpdate] = await pool.execute<ResultSetHeader>(
             "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
             [appointmentStatus, input.appointmentId],
