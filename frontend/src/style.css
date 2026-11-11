@@ -14624,3 +14624,112 @@ input:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.dashboard-app {
+  width: 100%;
+  min-width: 0;
+}
+
+.dashboard-main,
+.dashboard-main > *,
+.dashboard-main :is(.panel, .workspace-panel, .workspace-grid, .dashboard-panels) {
+  min-width: 0;
+}
+
+.dashboard-main > * {
+  max-width: 100%;
+}
+
+.dashboard-main :is(.table-scroll, [class*="table-scroll"]) {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dashboard-main :is(
+  .dashboard-heading,
+  .workspace-heading,
+  .workspace-heading-actions,
+  .panel-heading,
+  .panel-actions,
+  .directory-toolbar,
+  .agenda-toolbar,
+  .daily-log-header,
+  .daily-log-header-actions,
+  .daily-log-filters,
+  .equipment-toolbar,
+  .access-toolbar
+) {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.dashboard-main :is(input, select, textarea) {
+  max-width: 100%;
+}
+
+@media (max-width: 940px) {
+  .dashboard-main {
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard-main {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .dashboard-heading {
+    align-items: flex-start;
+  }
+
+  .dashboard-heading > :first-child {
+    min-width: 0;
+    flex: 1 1 220px;
+  }
+
+  .dashboard-main :is(.workspace-heading, .panel-heading) {
+    align-items: flex-start;
+  }
+
+  .dashboard-main :is(.workspace-heading-actions, .panel-actions) {
+    max-width: 100%;
+  }
+
+  .dashboard-main :is(.workspace-form, .appointment-form, .equipment-check-grid) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .dashboard-main {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .dashboard-heading {
+    gap: 8px;
+  }
+
+  .dashboard-heading > :first-child {
+    flex-basis: 100%;
+  }
+
+  .dashboard-heading h1 {
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-main :is(.workspace-form, .appointment-form, .equipment-check-grid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-main :is(.workspace-heading-actions, .panel-actions) {
+    width: 100%;
+  }
+
+  .dashboard-main :is(.workspace-heading-actions, .panel-actions) > button {
+    max-width: 100%;
+  }
+}
