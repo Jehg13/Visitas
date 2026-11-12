@@ -14511,25 +14511,33 @@ input:focus-visible {
   color: #d33f50;
 }
 
+.daily-log-timer-search {
+  display: block;
+  width: min(100%, 340px);
+}
+
+.daily-log-timer-search input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 7px;
+  background: var(--ds-surface-muted);
+  color: var(--ds-text);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.daily-log-timer-search input:focus-visible {
+  outline: 2px solid #58a8ff;
+  outline-offset: 1px;
+}
+
 .daily-log-timer-list {
   display: grid;
-  gap: 8px;
-}
-
-.daily-log-timer-list--1 {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.daily-log-timer-list--2 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.daily-log-timer-list--3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.daily-log-timer-list--4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .daily-log-timer-card {
@@ -14542,18 +14550,6 @@ input:focus-visible {
   border: 1px solid var(--ds-border);
   border-radius: 9px;
   background: var(--ds-surface-muted);
-}
-
-.daily-log-timer-card.is-single-last-timer {
-  grid-column: 2 / span 2;
-}
-
-.daily-log-timer-card.is-first-of-two-last-timers {
-  grid-column-start: 2;
-}
-
-.daily-log-timer-card.is-second-of-two-last-timers {
-  grid-column-start: 3;
 }
 
 .daily-log-timer-card.is-due {
@@ -14730,16 +14726,8 @@ input:focus-visible {
     flex: 1;
   }
 
-  .daily-log-timer-list--2,
-  .daily-log-timer-list--3,
-  .daily-log-timer-list--4 {
+  .daily-log-timer-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .daily-log-timer-card.is-single-last-timer,
-  .daily-log-timer-card.is-first-of-two-last-timers,
-  .daily-log-timer-card.is-second-of-two-last-timers {
-    grid-column: auto;
   }
 
   .daily-log-timer-pagination {
@@ -14749,9 +14737,7 @@ input:focus-visible {
 }
 
 @media (max-width: 480px) {
-  .daily-log-timer-list--2,
-  .daily-log-timer-list--3,
-  .daily-log-timer-list--4 {
+  .daily-log-timer-list {
     grid-template-columns: minmax(0, 1fr);
   }
 }

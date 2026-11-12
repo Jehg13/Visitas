@@ -5796,9 +5796,16 @@ const server = Bun.serve({
             return Response.json({ error: "Indica el movimiento que deseas eliminar." }, { status: 400 });
           }
           const deletionConnection = await pool.getConnection();
-          let linkedAppointmentId: number | null = null;
-          let shouldNotifyAppointment = false;
+          const linkedAppointmentIds = new Set<number>();
+          const appointmentIdsToNotify = new Set<number>();
           let timerWarning = false;
+          let timerScope: {
+            date: string;
+            appointmentId: number | null;
+            visitorRecordId: number | null;
+            personName: string;
+            eventType: string;
+          } | null = null;
           try {
             await deletionConnection.beginTransaction();
             const [appointmentRows] = await deletionConnection.execute<RowDataPacket[]>(
@@ -5807,7 +5814,7 @@ const server = Bun.serve({
             );
             if (!appointmentRows[0]) {
               await deletionConnection.rollback();
-              return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+              return Response.json({ error: "No se encontró el registro seleccionado." }, { status: 404 });
             }
             if (appointmentRows[0].appointment_id !== null) {
               await deletionConnection.execute(
@@ -5815,41 +5822,90 @@ const server = Bun.serve({
                 [Number(appointmentRows[0].appointment_id)],
               );
             }
-            const [entriesToDelete] = await deletionConnection.execute<RowDataPacket[]>(
-              `SELECT appointment_id,
-                      visitor_record_id, external_staff_id, person_name, event_type,
-                      DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
-               FROM daily_log_entries WHERE id = ? LIMIT 1 FOR UPDATE`,
+            const [groupRows] = await deletionConnection.execute<(RowDataPacket & { id: number })[]>(
+              `${dailyLogRecordsCte(false)},
+               partitioned_entries AS (
+                 SELECT d.*, ${dailyLogEntryPartition} AS partition_key
+                 FROM daily_log_records d
+               )
+               SELECT d.id
+               FROM partitioned_entries d
+               WHERE d.partition_key = (
+                 SELECT target.partition_key
+                 FROM partitioned_entries target
+                 WHERE target.id = ?
+                 LIMIT 1
+               )`,
               [entryId],
             );
-            const entryToDelete = entriesToDelete[0];
+            const groupEntryIds = groupRows.map((row) => Number(row.id));
+            if (groupEntryIds.length === 0) {
+              await deletionConnection.rollback();
+              return Response.json({ error: "No se encontró el registro seleccionado." }, { status: 404 });
+            }
+            const [entriesToDelete] = await deletionConnection.execute<RowDataPacket[]>(
+              `SELECT id, appointment_id, visitor_record_id, person_name, event_type,
+                      DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
+               FROM daily_log_entries
+               WHERE id IN (${groupEntryIds.map(() => "?").join(", ")})
+               ORDER BY id
+               FOR UPDATE`,
+              groupEntryIds,
+            );
+            const entryToDelete = entriesToDelete.find((entry) => Number(entry.id) === entryId);
             if (!entryToDelete) {
               await deletionConnection.rollback();
-              return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+              return Response.json({ error: "No se encontró el registro seleccionado." }, { status: 404 });
             }
             if (
               !user.isAdmin &&
-              String(entryToDelete.entry_date) < getAppDateTime().date
+              entriesToDelete.some((entry) => String(entry.entry_date) < getAppDateTime().date)
             ) {
               await deletionConnection.rollback();
               return Response.json(
-                { error: "Los movimientos de días anteriores son de solo lectura." },
+                { error: "Los registros de días anteriores son de solo lectura." },
                 { status: 403 },
               );
             }
 
-            linkedAppointmentId = entryToDelete.appointment_id === null
-              ? null
-              : Number(entryToDelete.appointment_id);
-            const [result] = await deletionConnection.execute<ResultSetHeader>(
-              "DELETE FROM daily_log_entries WHERE id = ?",
-              [entryId],
-            );
-            if (result.affectedRows === 0) {
-              await deletionConnection.rollback();
-              return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
+            const appointmentIds = [...new Set(
+              entriesToDelete
+                .filter((entry) => entry.appointment_id !== null)
+                .map((entry) => Number(entry.appointment_id)),
+            )].sort((a, b) => a - b);
+            for (const appointmentId of appointmentIds) {
+              linkedAppointmentIds.add(appointmentId);
+              if (Number(appointmentRows[0].appointment_id) !== appointmentId) {
+                await deletionConnection.execute(
+                  "SELECT id FROM appointments WHERE id = ? FOR UPDATE",
+                  [appointmentId],
+                );
+              }
             }
-            if (linkedAppointmentId !== null) {
+            timerScope = {
+              date: String(entryToDelete.entry_date),
+              appointmentId: entryToDelete.appointment_id === null
+                ? null
+                : Number(entryToDelete.appointment_id),
+              visitorRecordId: entryToDelete.visitor_record_id === null
+                ? null
+                : Number(entryToDelete.visitor_record_id),
+              personName: String(entryToDelete.person_name),
+              eventType: String(entryToDelete.event_type),
+            };
+            const [result] = await deletionConnection.execute<ResultSetHeader>(
+              `DELETE FROM daily_log_entries
+               WHERE id IN (${groupEntryIds.map(() => "?").join(", ")})`,
+              groupEntryIds,
+            );
+            if (result.affectedRows !== groupEntryIds.length) {
+              await deletionConnection.rollback();
+              return Response.json(
+                { error: "No se pudo eliminar el registro completo. Actualiza la bitácora e inténtalo de nuevo." },
+                { status: 409 },
+              );
+            }
+            for (const linkedAppointmentId of linkedAppointmentIds) {
               const appointmentStatus = await getAppointmentStatusFromMovements(
                 deletionConnection,
                 linkedAppointmentId,
@@ -5858,22 +5914,22 @@ const server = Bun.serve({
                 "UPDATE appointments SET status = ? WHERE id = ? AND status <> 'Cancelada'",
                 [appointmentStatus, linkedAppointmentId],
               );
-              shouldNotifyAppointment = statusUpdate.affectedRows > 0;
+              if (statusUpdate.affectedRows > 0) {
+                appointmentIdsToNotify.add(linkedAppointmentId);
+              }
             }
             await deletionConnection.commit();
-            if (["Llegada", "Ingreso", "Retiro"].includes(String(entryToDelete.event_type))) {
+            if (["Llegada", "Ingreso", "Retiro"].includes(timerScope.eventType)) {
               try {
                 await reconcileVisitTimerAfterMovementDeletion(deletionConnection, {
-                  date: String(entryToDelete.entry_date),
-                  appointmentId: linkedAppointmentId,
-                  visitorRecordId: entryToDelete.visitor_record_id === null
-                    ? null
-                    : Number(entryToDelete.visitor_record_id),
-                  personName: String(entryToDelete.person_name),
+                  date: timerScope.date,
+                  appointmentId: timerScope.appointmentId,
+                  visitorRecordId: timerScope.visitorRecordId,
+                  personName: timerScope.personName,
                 });
               } catch (error) {
                 timerWarning = true;
-                console.error("Failed to reconcile visit timer after deleting daily log movement:", error);
+                console.error("Failed to reconcile visit timer after deleting daily log record:", error);
               }
             }
           } catch (error) {
@@ -5882,14 +5938,14 @@ const server = Bun.serve({
           } finally {
             deletionConnection.release();
           }
-          if (shouldNotifyAppointment && linkedAppointmentId !== null) {
-            void sendAppointmentStatusNotification(linkedAppointmentId);
+          for (const appointmentId of appointmentIdsToNotify) {
+            void sendAppointmentStatusNotification(appointmentId);
           }
           publishRealtimeUpdate();
           return Response.json({
             message: timerWarning
-              ? "El movimiento se eliminó, pero no se pudo actualizar su temporizador."
-              : "El movimiento se eliminó.",
+              ? "El registro completo se eliminó, pero no se pudo actualizar su temporizador."
+              : "El registro completo se eliminó.",
             timerWarning,
           });
         }

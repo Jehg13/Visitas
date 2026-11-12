@@ -145,6 +145,7 @@ const recentPages = ref(1);
 const activeTimers = ref<VisitTimer[]>([]);
 const timerNow = ref(Date.now());
 const timerError = ref("");
+const timerSearch = ref("");
 const timerLoading = ref(false);
 const timerLastUpdatedAt = ref<number | null>(null);
 const timerActionId = ref<number | null>(null);
@@ -539,14 +540,28 @@ const orderedActiveTimers = computed(() =>
     first.dueAt.localeCompare(second.dueAt),
   ),
 );
+function normalizeTimerSearch(value: string) {
+  return value
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es");
+}
+const filteredActiveTimers = computed(() => {
+  const query = normalizeTimerSearch(timerSearch.value);
+  if (!query) return orderedActiveTimers.value;
+  return orderedActiveTimers.value.filter((timer) =>
+    normalizeTimerSearch(timer.personName).includes(query),
+  );
+});
 const timersPerPage = 8;
 const timersPage = ref(1);
 const timerPages = computed(() =>
-  Math.max(1, Math.ceil(orderedActiveTimers.value.length / timersPerPage)),
+  Math.max(1, Math.ceil(filteredActiveTimers.value.length / timersPerPage)),
 );
 const paginatedTimers = computed(() => {
   const start = (timersPage.value - 1) * timersPerPage;
-  return orderedActiveTimers.value.slice(start, start + timersPerPage);
+  return filteredActiveTimers.value.slice(start, start + timersPerPage);
 });
 const dueTimers = computed(() =>
   orderedActiveTimers.value.filter(
@@ -578,6 +593,10 @@ watch(dueTimers, (timers) => {
 
 watch(timerPages, (pages) => {
   if (timersPage.value > pages) timersPage.value = pages;
+});
+
+watch(timerSearch, () => {
+  timersPage.value = 1;
 });
 
 function isVisitTimer(value: unknown): value is VisitTimer {
@@ -1422,8 +1441,8 @@ async function handleQuickSearchEnter() {
 
 async function removeEntry(entry: LogEntry) {
   if (!await confirmUser(
-    `¿Eliminar el movimiento de ${entry.person}? Esta acción no se puede deshacer.`,
-    "Eliminar movimiento",
+    `¿Eliminar el registro completo de ${entry.person}? Se quitarán todos los movimientos asociados. Esta acción no se puede deshacer.`,
+    "Eliminar registro completo",
     "Confirmar eliminación",
     "warning",
   )) {
@@ -1678,31 +1697,31 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <p v-if="timerError && timerLastUpdatedAt !== null" class="daily-log-timer-message">
             Se conserva la última lectura confirmada: {{ formatTimerLastUpdated() }}.
           </p>
+          <label v-if="activeTimers.length > 0" class="daily-log-timer-search">
+            <span class="sr-only">Buscar persona en temporizadores</span>
+            <input
+              v-model.trim="timerSearch"
+              type="search"
+              placeholder="Buscar persona en temporizadores…"
+              aria-label="Buscar persona en temporizadores"
+            />
+          </label>
           <p v-if="activeTimers.length === 0" class="daily-log-timer-empty">
             No hay temporizadores activos para las visitas de hoy.
           </p>
+          <p v-else-if="filteredActiveTimers.length === 0" class="daily-log-timer-empty">
+            No se encontraron temporizadores para “{{ timerSearch }}”.
+          </p>
           <div
-            v-else
+            v-else-if="paginatedTimers.length > 0"
             class="daily-log-timer-list"
-            :class="[
-              `daily-log-timer-list--${Math.min(paginatedTimers.length, 4)}`,
-              {
-                'has-single-last-timer': paginatedTimers.length === 5,
-                'has-two-last-timers': paginatedTimers.length === 6,
-              },
-            ]"
             aria-live="off"
           >
             <article
-              v-for="(timer, index) in paginatedTimers"
+              v-for="timer in paginatedTimers"
               :key="timer.id"
               class="daily-log-timer-card"
-              :class="{
-                'is-due': Date.parse(timer.dueAt) <= timerNow,
-                'is-single-last-timer': paginatedTimers.length === 5 && index === 4,
-                'is-first-of-two-last-timers': paginatedTimers.length === 6 && index === 4,
-                'is-second-of-two-last-timers': paginatedTimers.length === 6 && index === 5,
-              }"
+              :class="{ 'is-due': Date.parse(timer.dueAt) <= timerNow }"
             >
               <div class="daily-log-timer-details">
                 <div class="daily-log-timer-person">
@@ -1764,15 +1783,15 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             </article>
           </div>
           <nav
-            v-if="activeTimers.length > timersPerPage"
+            v-if="filteredActiveTimers.length > timersPerPage"
             class="daily-log-timer-pagination"
             aria-label="Paginación de temporizadores activos"
           >
             <span>
               Mostrando {{ (timersPage - 1) * timersPerPage + 1 }}–{{
-                Math.min(timersPage * timersPerPage, activeTimers.length)
+                Math.min(timersPage * timersPerPage, filteredActiveTimers.length)
               }}
-              de {{ activeTimers.length }} personas
+              de {{ filteredActiveTimers.length }} personas
             </span>
             <div>
               <button
@@ -2006,8 +2025,8 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                     <button
                       class="daily-log-delete"
                       type="button"
-                      :aria-label="`Eliminar movimiento de ${entry.person}`"
-                      title="Eliminar movimiento"
+                      :aria-label="`Eliminar registro completo de ${entry.person}`"
+                      title="Eliminar registro completo"
                       @click.stop="removeEntry(entry)"
                     >
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14m-7-3h4l1 3H9l1-3Z" /></svg>
