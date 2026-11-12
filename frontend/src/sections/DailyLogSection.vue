@@ -19,6 +19,7 @@ type LogEntry = {
   externalStaffId: number | null;
   visitorRecordId: number | null;
   company: string;
+  tenantCompanyName?: string;
   host: string;
   category: LogCategory;
 };
@@ -39,6 +40,7 @@ type Appointment = {
   referenceCode: string;
   registeredBy: string;
   company: string;
+  tenantCompanyName?: string;
   partnerType?: "Contratista" | "Proveedor" | "Visitante";
   host: string;
   status: "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
@@ -103,6 +105,9 @@ type VisitorKioskSettingsResponse = {
 const props = defineProps<{
   isAdmin: boolean;
   isReception: boolean;
+  isCompanyUser: boolean;
+  isCompanyAdmin: boolean;
+  companyScope: "cymez" | "all";
   appointments: Appointment[];
   appointmentsLoading: boolean;
   externalStaff: ExternalStaff[];
@@ -113,6 +118,7 @@ const props = defineProps<{
   theme: "dark" | "light";
 }>();
 const emit = defineEmits<{
+  "update:companyScope": [scope: "cymez" | "all"];
   movementSaved: [];
   openQr: [appointment: Appointment, externalStaffId?: number];
 }>();
@@ -198,6 +204,7 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let timerPoller: ReturnType<typeof setInterval> | undefined;
 let timerClock: ReturnType<typeof setInterval> | undefined;
 let timerRequestInProgress = false;
+let timerRequestQueued = false;
 const dueNotificationKeys = new Set<string>();
 
 const dailyLogHelpSections = [
@@ -263,7 +270,7 @@ const selectedEntryIsHistorical = computed(() =>
   Boolean(selectedEntry.value && !selectedQuickAppointment.value && selectedEntry.value.date !== today.value),
 );
 const selectedEntryIsReadOnly = computed(() =>
-  selectedEntryIsHistorical.value && !props.isAdmin,
+  props.isCompanyAdmin || (selectedEntryIsHistorical.value && !props.isAdmin),
 );
 const selectedEntryAppointment = computed(() => {
   if (!selectedEntry.value?.appointmentId) return null;
@@ -399,6 +406,10 @@ function appointmentForEntry(entry: LogEntry) {
 function openEntryQr(entry: LogEntry) {
   const appointment = appointmentForEntry(entry);
   if (!appointment) return;
+  if (
+    props.isCompanyUser ||
+    appointment.tenantCompanyName?.trim().toLocaleLowerCase("es") !== "cymez"
+  ) return;
   if (entry.externalStaffId !== null) {
     emit("openQr", appointment, entry.externalStaffId);
     return;
@@ -460,6 +471,7 @@ function requestUrl() {
     pageSize: String(pageSize),
     recentPage: String(recentPage.value),
   });
+  if (props.isAdmin) query.set("scope", props.companyScope);
   if (departmentFilter.value) {
     const matchingHosts = hostFilter.value && departmentHostNames.value.includes(hostFilter.value)
       ? [hostFilter.value]
@@ -616,11 +628,15 @@ function isVisitTimer(value: unknown): value is VisitTimer {
 }
 
 async function loadTimers() {
-  if (timerRequestInProgress) return;
+  if (timerRequestInProgress) {
+    timerRequestQueued = true;
+    return;
+  }
   timerRequestInProgress = true;
   timerLoading.value = true;
   try {
-    const response = await fetch("/api/daily-log/timers");
+    const scopeQuery = props.isAdmin ? `?scope=${props.companyScope}` : "";
+    const response = await fetch(`/api/daily-log/timers${scopeQuery}`);
     const result = await response.json() as { timers?: unknown; error?: string };
     if (!response.ok) throw new Error(result.error ?? "No se pudieron cargar los temporizadores.");
     if (!Array.isArray(result.timers) || !result.timers.every(isVisitTimer)) {
@@ -637,6 +653,10 @@ async function loadTimers() {
   } finally {
     timerRequestInProgress = false;
     timerLoading.value = false;
+    if (timerRequestQueued) {
+      timerRequestQueued = false;
+      void loadTimers();
+    }
   }
 }
 
@@ -709,7 +729,8 @@ async function updateTimer(timer: VisitTimer, action: "snooze" | "cancel") {
   timerActionId.value = timer.id;
   timerError.value = "";
   try {
-    const response = await fetch(`/api/daily-log/timers/${timer.id}`, {
+    const scopeQuery = props.isAdmin ? `?scope=${props.companyScope}` : "";
+    const response = await fetch(`/api/daily-log/timers/${timer.id}${scopeQuery}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action }),
@@ -1497,6 +1518,12 @@ watch([fromDate, toDate, eventFilter, categoryFilter, hostFilter, departmentFilt
   void loadEntries();
 });
 watch([page, recentPage], () => void loadEntries());
+watch(() => props.companyScope, () => {
+  page.value = 1;
+  recentPage.value = 1;
+  void loadEntries();
+  void loadTimers();
+});
 watch(search, () => {
   page.value = 1;
   recentPage.value = 1;
@@ -1519,7 +1546,7 @@ function refreshDailyLogAfterRealtimeUpdate() {
 onMounted(() => {
   void loadEntries();
   void loadTimers();
-  void loadVisitorKioskSettings();
+  if (!props.isCompanyUser) void loadVisitorKioskSettings();
   timerPoller = setInterval(() => void loadTimers(), 10_000);
   timerClock = setInterval(() => {
     timerNow.value = Date.now();
@@ -1598,11 +1625,22 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             <input v-model="toDate" type="date" aria-label="Fecha final de la bitácora" />
           </label>
         </div>
+        <label v-if="isAdmin" class="daily-log-date-range daily-log-company-filter">
+          <span>Empresa</span>
+          <select
+            :value="companyScope"
+            aria-label="Filtrar bitácora por empresa"
+            @change="emit('update:companyScope', ($event.target as HTMLSelectElement).value as 'cymez' | 'all')"
+          >
+            <option value="cymez">Cymez</option>
+            <option value="all">Todas</option>
+          </select>
+        </label>
         <button class="daily-log-secondary-button" type="button" @click="showRecentHistory">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8" /><path d="M3 3v5h5m4-1v5l3 2" /></svg>
           Historial
         </button>
-        <button class="daily-log-primary-button" type="button" @click="openCreateDialog">
+        <button v-if="!isCompanyAdmin" class="daily-log-primary-button" type="button" @click="openCreateDialog">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           Registrar movimiento
         </button>
@@ -1678,7 +1716,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
               Actualizar ahora
             </button>
           </div>
-          <label class="daily-log-kiosk-setting">
+          <label v-if="!isCompanyUser" class="daily-log-kiosk-setting">
             <input
               type="checkbox"
               :checked="autoAuthorizePublicVisitors"
@@ -1808,7 +1846,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             </div>
           </nav>
         </section>
-        <section class="daily-log-quick-panel" aria-labelledby="daily-log-quick-title">
+        <section v-if="!isCompanyAdmin" class="daily-log-quick-panel" aria-labelledby="daily-log-quick-title">
           <div class="daily-log-quick-heading">
             <div>
               <span class="daily-log-panel-kicker">ACCESO RÁPIDO</span>
@@ -1819,6 +1857,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 Introducir código
               </button>
               <button
+                v-if="!isCompanyUser"
                 class="daily-log-secondary-button daily-log-mobile-scan-button"
                 type="button"
                 :disabled="scannerOpen"
@@ -1966,10 +2005,11 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                   <th>Tipo</th>
                   <th>Visitante</th>
                   <th>Empresa / área</th>
+                  <th v-if="isAdmin">Empresa propietaria</th>
                   <th>Anfitrión</th>
                   <th v-if="isAdmin">Registró / autorizó</th>
                   <th>Estado</th>
-                  <th>QR</th>
+                  <th v-if="!isCompanyUser">QR</th>
                   <th v-if="isAdmin">Acciones</th>
                 </tr>
               </thead>
@@ -2002,6 +2042,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                     </small>
                   </td>
                   <td class="daily-log-table-company">{{ entry.company || "N/A" }}</td>
+                  <td v-if="isAdmin" class="daily-log-table-company">{{ entry.tenantCompanyName || "N/A" }}</td>
                   <td>{{ entry.host || "N/A" }}</td>
                   <td v-if="isAdmin" class="daily-log-table-actor">
                     {{ entry.actorName || "Sin registro" }}
@@ -2011,9 +2052,13 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                       {{ entryStatus(entry) }}
                     </span>
                   </td>
-                  <td>
+                  <td v-if="!isCompanyUser">
                     <button
-                      v-if="appointmentForEntry(entry)"
+                      v-if="
+                        appointmentForEntry(entry) &&
+                        !isCompanyUser &&
+                        appointmentForEntry(entry)?.tenantCompanyName?.trim().toLocaleLowerCase('es') === 'cymez'
+                      "
                       class="daily-log-table-qr"
                       type="button"
                       :aria-label="`Ver QR de ${entry.person}`"
@@ -2072,7 +2117,10 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
                 <strong>{{ entry.event === "Ingreso" ? "Entrada" : entry.event === "Retiro" ? "Salida" : entry.event }}</strong>
                 <span class="daily-log-recent-time">{{ entry.time }}</span>
               </span>
-              <span>{{ entry.person }}<template v-if="entry.company"> · {{ entry.company }}</template></span>
+              <span>
+                {{ entry.person }}<template v-if="entry.company"> · {{ entry.company }}</template>
+                <template v-if="isAdmin && entry.tenantCompanyName"> · {{ entry.tenantCompanyName }}</template>
+              </span>
               <small :class="{ 'is-manual': entry.details.startsWith('Registro manual · Folio ') }">
                 <template v-if="entry.details.startsWith('Registro manual · Folio ')">
                   <span class="daily-log-recent-manual-tag">Registro manual</span>
@@ -2146,6 +2194,10 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <template v-if="selectedPerson">
             <div class="daily-log-selection-meta">
               <p><span>Empresa</span><strong>{{ selectedPersonCompany || "N/A" }}</strong></p>
+              <p v-if="isAdmin && selectedEntry">
+                <span>Empresa propietaria</span>
+                <strong>{{ selectedEntry.tenantCompanyName || "N/A" }}</strong>
+              </p>
               <p><span>Anfitrión</span><strong>{{ selectedPersonHost || "N/A" }}</strong></p>
               <p><span>Fecha y hora</span><strong>{{ selectedPersonDateTime }}</strong></p>
               <p>

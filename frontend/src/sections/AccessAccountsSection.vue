@@ -38,6 +38,8 @@ const filteredAccounts = computed(() => {
         ? "administrador"
         : account.sectionAccess.includes("recepcion")
           ? "recepción"
+          : account.sectionAccess.includes("anfitriones")
+            ? "anfitrión"
           : "sin acceso",
     ]
       .join(" ")
@@ -86,7 +88,7 @@ watch(
   <div class="access-intro">
     <span class="access-intro-label">Control de permisos</span>
     <p>
-      Asigna a cada cuenta acceso de Administrador, Recepción o ninguno. El permiso de anfitrión se gestiona en su propia sección.
+      Asigna a cada cuenta un perfil de Administrador, Recepción, Anfitrión o ninguno.
       <span>No se muestran contraseñas ni datos de activación.</span>
     </p>
   </div>
@@ -106,7 +108,7 @@ watch(
   <div v-if="accounts.length > 0" class="workspace-table-scroll">
     <table class="workspace-table access-table">
       <caption class="workspace-table-caption access-table-caption">
-        <span class="access-table-caption-title">Usuarios reales de seg_users</span>
+        <span class="access-table-caption-title">Usuarios</span>
         <span class="access-table-caption-count">
           {{ firstVisibleAccount }}–{{ lastVisibleAccount }} de {{ filteredAccounts.length }}
           {{ filteredAccounts.length === 1 ? "cuenta" : "cuentas" }}
@@ -148,6 +150,10 @@ watch(
                 v-else-if="account.sectionAccess.includes('recepcion')"
                 class="access-role-pill access-role-reception"
               >Recepción</span>
+              <span
+                v-else-if="account.sectionAccess.includes('anfitriones')"
+                class="access-role-pill access-role-reception"
+              >Anfitrión</span>
               <span
                 v-else
                 class="access-role-pill access-role-none"

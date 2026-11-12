@@ -4723,6 +4723,87 @@ input:focus-visible {
   font-weight: 650;
 }
 
+.company-directory-card-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.company-directory-card-main:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid #58a8ff;
+  outline-offset: 3px;
+}
+
+.company-directory-card-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 5px;
+}
+
+.company-directory-card-copy strong {
+  overflow-wrap: anywhere;
+  color: #e5f0fa;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.company-directory-card-copy span {
+  color: #9bb1c8;
+  font-size: 0.7rem;
+}
+
+.company-directory-card-chevron {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: #83c4d4;
+}
+
+.company-directory-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ds-text-muted);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.company-directory-back:hover {
+  color: var(--ds-text);
+}
+
+.company-directory-back .icon {
+  width: 14px;
+  height: 14px;
+  transform: rotate(180deg);
+}
+
+.department-users {
+  display: grid;
+  gap: 12px;
+}
+
+.department-users-intro {
+  margin: 0;
+  color: var(--ds-text-muted);
+  font-size: 0.78rem;
+}
+
 .department-card-actions {
   display: flex;
   align-items: center;
@@ -12431,8 +12512,17 @@ input:focus-visible {
 
 .dashboard-app[data-theme="light"] .department-card-count strong,
 .dashboard-app[data-theme="light"] .department-card h3,
+.dashboard-app[data-theme="light"] .company-directory-card-copy strong,
 .dashboard-app[data-theme="light"] .external-company-name {
   color: #1a344d;
+}
+
+.dashboard-app[data-theme="light"] .company-directory-card-copy span {
+  color: #5c7185;
+}
+
+.dashboard-app[data-theme="light"] .company-directory-card-chevron {
+  color: #327792;
 }
 
 .dashboard-app[data-theme="light"] .department-card-actions,

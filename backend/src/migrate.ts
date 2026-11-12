@@ -39,6 +39,14 @@ const appointmentEmployeeAttendanceMigrationUrl = new URL(
   "../../database/init/012_create_appointment_employee_attendance.sql",
   import.meta.url,
 );
+const companiesMigrationUrl = new URL(
+  "../../database/init/013_create_companies.sql",
+  import.meta.url,
+);
+const companyAdminAccountsMigrationUrl = new URL(
+  "../../database/init/014_create_company_admin_accounts.sql",
+  import.meta.url,
+);
 const initialMobileAppUrl = new URL("../../initial-mobile-app.apk", import.meta.url);
 
 async function migrate() {
@@ -53,6 +61,8 @@ async function migrate() {
     visitorKioskSettingsMigrationUrl,
     mobileOnlyNotificationsMigrationUrl,
     appointmentEmployeeAttendanceMigrationUrl,
+    companiesMigrationUrl,
+    companyAdminAccountsMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
@@ -82,6 +92,282 @@ async function migrate() {
   try {
     for (const statement of statements) {
       await connection.query(statement);
+    }
+    const [departmentCompanyColumns] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'departments'
+         AND COLUMN_NAME = 'company_id'`,
+    );
+    if (departmentCompanyColumns.length === 0) {
+      await connection.query(
+        "ALTER TABLE departments ADD COLUMN company_id BIGINT UNSIGNED NULL AFTER id",
+      );
+    }
+    await connection.query(
+      `INSERT INTO companies (name) VALUES ('Cymez')
+       ON DUPLICATE KEY UPDATE name = 'Cymez'`,
+    );
+    const [cymezRows] = await connection.query<RowDataPacket[]>(
+      "SELECT id FROM companies WHERE name = 'Cymez' LIMIT 1",
+    );
+    if (!cymezRows[0]) {
+      throw new Error("[db:migrate] No se pudo preparar la empresa Cymez.");
+    }
+    const cymezCompanyId = Number(cymezRows[0].id);
+    for (const tableName of [
+      "general_visitors",
+      "business_partners",
+      "appointments",
+      "daily_log_entries",
+      "equipment_declarations",
+    ]) {
+      const [tenantColumns] = await connection.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = ?
+           AND COLUMN_NAME = 'company_id'`,
+        [tableName],
+      );
+      if (tenantColumns.length === 0) {
+        await connection.query(
+          `ALTER TABLE \`${tableName}\` ADD COLUMN company_id BIGINT UNSIGNED NULL`,
+        );
+      }
+      await connection.query(
+        `UPDATE \`${tableName}\` SET company_id = ? WHERE company_id IS NULL`,
+        [cymezCompanyId],
+      );
+      await connection.query(
+        `ALTER TABLE \`${tableName}\` MODIFY company_id BIGINT UNSIGNED NOT NULL`,
+      );
+      const indexName = `idx_${tableName}_company_id`;
+      const [tenantIndexes] = await connection.query<RowDataPacket[]>(
+        `SELECT INDEX_NAME
+         FROM INFORMATION_SCHEMA.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = ?
+           AND INDEX_NAME = ?`,
+        [tableName, indexName],
+      );
+      if (tenantIndexes.length === 0) {
+        await connection.query(
+          `ALTER TABLE \`${tableName}\` ADD INDEX \`${indexName}\` (company_id)`,
+        );
+      }
+      const foreignKeyName = `fk_${tableName}_company`;
+      const [tenantForeignKeys] = await connection.query<RowDataPacket[]>(
+        `SELECT CONSTRAINT_NAME
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = ?
+           AND CONSTRAINT_NAME = ?
+           AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+        [tableName, foreignKeyName],
+      );
+      if (tenantForeignKeys.length === 0) {
+        await connection.query(
+          `ALTER TABLE \`${tableName}\`
+           ADD CONSTRAINT \`${foreignKeyName}\`
+           FOREIGN KEY (company_id) REFERENCES companies (id)
+           ON UPDATE CASCADE ON DELETE RESTRICT`,
+        );
+      }
+    }
+    await connection.query(
+      "UPDATE departments SET company_id = ? WHERE company_id IS NULL",
+      [cymezCompanyId],
+    );
+    await connection.query(
+      "ALTER TABLE departments MODIFY company_id BIGINT UNSIGNED NOT NULL",
+    );
+    const [departmentCompanyIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'departments'
+         AND INDEX_NAME = 'uq_departments_name'`,
+    );
+    if (departmentCompanyIndexes.length > 0) {
+      await connection.query("ALTER TABLE departments DROP INDEX uq_departments_name");
+    }
+    const [departmentCompanyUniqueIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'departments'
+         AND INDEX_NAME = 'uq_departments_company_name'`,
+    );
+    if (departmentCompanyUniqueIndexes.length === 0) {
+      await connection.query(
+        "ALTER TABLE departments ADD UNIQUE INDEX uq_departments_company_name (company_id, name)",
+      );
+    }
+    const [departmentCompanyForeignKeys] = await connection.query<RowDataPacket[]>(
+      `SELECT CONSTRAINT_NAME
+       FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'departments'
+         AND CONSTRAINT_NAME = 'fk_departments_company'
+         AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+    );
+    if (departmentCompanyForeignKeys.length === 0) {
+      await connection.query(
+        `ALTER TABLE departments
+         ADD CONSTRAINT fk_departments_company
+         FOREIGN KEY (company_id) REFERENCES companies (id)
+         ON UPDATE CASCADE ON DELETE RESTRICT`,
+      );
+    }
+    const [accessColumns] = await connection.query<(RowDataPacket & { COLUMN_NAME: string })[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'`,
+    );
+    const accessColumnNames = new Set(accessColumns.map((column) => column.COLUMN_NAME));
+    if (!accessColumnNames.has("company_id")) {
+      await connection.query(
+        "ALTER TABLE accesos ADD COLUMN company_id BIGINT UNSIGNED NULL AFTER phone",
+      );
+    }
+    await connection.query(
+      "UPDATE accesos SET company_id = ? WHERE company_id IS NULL",
+      [cymezCompanyId],
+    );
+    await connection.query(
+      "ALTER TABLE accesos MODIFY company_id BIGINT UNSIGNED NOT NULL",
+    );
+    const [applicationRoleColumn] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND COLUMN_NAME = 'rol_aplicacion'`,
+    );
+    if (applicationRoleColumn.length === 0) {
+      await connection.query(
+        `ALTER TABLE accesos
+         ADD COLUMN rol_aplicacion
+         ENUM('administrador_empresa', 'recepcion', 'anfitrion', 'sin_acceso')
+         NOT NULL DEFAULT 'sin_acceso' AFTER active`,
+      );
+    } else {
+      await connection.query(
+        `ALTER TABLE accesos MODIFY rol_aplicacion
+         ENUM('administrador_empresa', 'recepcion', 'anfitrion', 'sin_acceso')
+         NOT NULL DEFAULT 'sin_acceso'`,
+      );
+    }
+    const [legacyAdminColumn] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND COLUMN_NAME = 'priv_admin'`,
+    );
+    if (legacyAdminColumn.length > 0) {
+      await connection.query(
+        `UPDATE accesos
+         SET rol_aplicacion = CASE WHEN priv_admin = 'Y'
+           THEN 'administrador_empresa' ELSE 'sin_acceso' END`,
+      );
+      await connection.query("ALTER TABLE accesos DROP COLUMN priv_admin");
+    }
+    const [passwordChangeColumn] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND COLUMN_NAME = 'must_change_password'`,
+    );
+    if (passwordChangeColumn.length === 0) {
+      await connection.query(
+        "ALTER TABLE accesos ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT TRUE AFTER phone",
+      );
+    }
+    const [accessDepartmentColumn] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND COLUMN_NAME = 'department_id'`,
+    );
+    if (accessDepartmentColumn.length === 0) {
+      await connection.query(
+        "ALTER TABLE accesos ADD COLUMN department_id BIGINT UNSIGNED NULL AFTER company_id",
+      );
+    }
+    const [accessDepartmentIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND INDEX_NAME = 'idx_accesos_department_id'`,
+    );
+    if (accessDepartmentIndexes.length === 0) {
+      await connection.query(
+        "ALTER TABLE accesos ADD INDEX idx_accesos_department_id (department_id)",
+      );
+    }
+    const [accessDepartmentForeignKeys] = await connection.query<RowDataPacket[]>(
+      `SELECT CONSTRAINT_NAME
+       FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND CONSTRAINT_NAME = 'fk_accesos_department'
+         AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+    );
+    if (accessDepartmentForeignKeys.length === 0) {
+      await connection.query(
+        `ALTER TABLE accesos
+         ADD CONSTRAINT fk_accesos_department
+         FOREIGN KEY (department_id) REFERENCES departments (id)
+         ON UPDATE CASCADE ON DELETE SET NULL`,
+      );
+    }
+    for (const obsoleteColumn of ["mfa", "activacion_code"]) {
+      const [columns] = await connection.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'accesos'
+           AND COLUMN_NAME = ?`,
+        [obsoleteColumn],
+      );
+      if (columns.length > 0) {
+        await connection.query(`ALTER TABLE accesos DROP COLUMN \`${obsoleteColumn}\``);
+      }
+    }
+    const [accessCompanyIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND INDEX_NAME = 'idx_accesos_company_id'`,
+    );
+    if (accessCompanyIndexes.length === 0) {
+      await connection.query(
+        "ALTER TABLE accesos ADD INDEX idx_accesos_company_id (company_id)",
+      );
+    }
+    const [accessCompanyForeignKeys] = await connection.query<RowDataPacket[]>(
+      `SELECT CONSTRAINT_NAME
+       FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'accesos'
+         AND CONSTRAINT_NAME = 'fk_accesos_company'
+         AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+    );
+    if (accessCompanyForeignKeys.length === 0) {
+      await connection.query(
+        `ALTER TABLE accesos
+         ADD CONSTRAINT fk_accesos_company
+         FOREIGN KEY (company_id) REFERENCES companies (id)
+         ON UPDATE CASCADE ON DELETE RESTRICT`,
+      );
     }
     const [appointmentHistoryActionColumns] = await connection.query<RowDataPacket[]>(
       `SELECT COLUMN_TYPE

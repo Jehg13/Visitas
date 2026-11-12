@@ -35,6 +35,8 @@ const props = defineProps<{
   loading: boolean;
   dispatchAppointment: Appointment | null;
   sendingStaffId: number | null;
+  isCompanyUser: boolean;
+  canManageStaff: boolean;
   theme: "dark" | "light";
 }>();
 
@@ -183,21 +185,21 @@ const emit = defineEmits<{
           >
             {{ dispatchAppointment ? "Salir del envío" : "Volver a empresas" }}
           </button>
-          <button class="button-primary" type="button" @click="emit('create', selectedCompany?.id)">
+          <button v-if="canManageStaff" class="button-primary" type="button" @click="emit('create', selectedCompany?.id)">
             <svg class="icon"><use href="#i-plus" /></svg>
             <span>Registrar empleado</span>
           </button>
         </div>
       </header>
       <div v-if="dispatchAppointment && selectedCompany" class="external-qr-dispatch-note">
-        <strong>Envío de pases para la cita</strong>
+        <strong>{{ isCompanyUser ? "Envío de referencias para la cita" : "Envío de pases para la cita" }}</strong>
         <span>{{ dispatchAppointment.date }} · {{ dispatchAppointment.time }} · Anfitrión: {{ dispatchAppointment.host }}</span>
         <p v-if="equipmentRecipientName">
-          Cada empleado tiene su propio QR. El enlace para declarar equipo y herramientas, de un solo uso, se envía únicamente a
+          {{ isCompanyUser ? "Cada empleado recibe su código de referencia." : "Cada empleado tiene su propio QR." }} El enlace para declarar equipo y herramientas, de un solo uso, se envía únicamente a
           {{ equipmentRecipientName }}.
         </p>
         <p v-else>
-          Cada empleado tiene su propio QR. Registra un correo electrónico válido para habilitar el envío y definir quién recibirá el enlace de equipo de un solo uso.
+          {{ isCompanyUser ? "Cada empleado recibe su código de referencia." : "Cada empleado tiene su propio QR." }} Registra un correo electrónico válido para habilitar el envío y definir quién recibirá el enlace de equipo de un solo uso.
         </p>
       </div>
       <div class="external-staff-toolbar">
@@ -280,11 +282,11 @@ const emit = defineEmits<{
               <td><span class="external-staff-company">{{ person.companyName }}</span></td>
               <td>
                 <div class="staff-actions">
-                  <button class="staff-edit-button" type="button" @click="emit('edit', person)">
+                  <button v-if="canManageStaff" class="staff-edit-button" type="button" @click="emit('edit', person)">
                     Editar
                   </button>
                   <template v-if="dispatchAppointment">
-                    <button class="qr-button" type="button" @click="emit('openQr', person)">
+                    <button v-if="!isCompanyUser" class="qr-button" type="button" @click="emit('openQr', person)">
                       <svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span>
                     </button>
                     <button
@@ -294,10 +296,11 @@ const emit = defineEmits<{
                       :title="!(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? 'Bloqueado: registra un correo electrónico válido para poder enviar el QR.' : undefined"
                       @click="emit('sendQr', person)"
                     >
-                      <span>{{ !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? "Bloqueado" : sendingStaffId === person.id ? "Enviando..." : "Enviar QR" }}</span>
+                      <span>{{ !(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email.trim())) ? "Bloqueado" : sendingStaffId === person.id ? "Enviando..." : isCompanyUser ? "Enviar referencia" : "Enviar QR" }}</span>
                     </button>
                   </template>
                   <button
+                    v-if="canManageStaff"
                     class="workspace-remove"
                     type="button"
                     :aria-label="`Eliminar a ${person.fullName}`"

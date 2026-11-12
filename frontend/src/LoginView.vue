@@ -35,7 +35,7 @@ const recoveryMessage = ref("");
 const recoveryError = ref("");
 const recoverySubmitting = ref(false);
 const passwordRequirements = computed(() => [
-  { label: "Mínimo 12 caracteres", valid: Array.from(recoveryPassword.value).length >= 12 },
+  { label: "Mínimo 8 caracteres", valid: Array.from(recoveryPassword.value).length >= 8 },
   { label: "Al menos una letra mayúscula", valid: /\p{Lu}/u.test(recoveryPassword.value) },
   { label: "Al menos una letra minúscula", valid: /\p{Ll}/u.test(recoveryPassword.value) },
   { label: "Al menos un número", valid: /\d/.test(recoveryPassword.value) },
@@ -440,9 +440,9 @@ async function resetPassword() {
               type="password"
               name="new-password"
               autocomplete="new-password"
-              minlength="12"
+              minlength="8"
               maxlength="128"
-              placeholder="Al menos 12 caracteres"
+              placeholder="Al menos 8 caracteres"
               :aria-invalid="recoveryPassword.length > 0 && !passwordMeetsRequirements"
               aria-describedby="password-requirements"
               required
@@ -473,7 +473,7 @@ async function resetPassword() {
               type="password"
               name="confirm-password"
               autocomplete="new-password"
-              minlength="12"
+              minlength="8"
               maxlength="128"
               placeholder="Repite la contraseña"
               :aria-invalid="passwordsDoNotMatch"

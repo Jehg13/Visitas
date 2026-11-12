@@ -17,7 +17,10 @@ import type {
   BusinessPartner,
   BusinessPartnerStatus,
   BusinessPartnerType,
+  Company,
+  CompanyUser,
   Department,
+  Administrator,
   ExternalStaff,
   ExternalStaffType,
   GeneralVisitor,
@@ -28,9 +31,11 @@ import type {
 } from "./stores/types";
 
 const DepartmentSection = defineAsyncComponent(() => import("./sections/DepartmentSection.vue"));
+const CompanySection = defineAsyncComponent(() => import("./sections/CompanySection.vue"));
+const CompanyUsersSection = defineAsyncComponent(() => import("./sections/CompanyUsersSection.vue"));
+const AdministratorsSection = defineAsyncComponent(() => import("./sections/AdministratorsSection.vue"));
 const DailyLogSection = defineAsyncComponent(() => import("./sections/DailyLogSection.vue"));
 const EquipmentSection = defineAsyncComponent(() => import("./sections/EquipmentSection.vue"));
-const HostsSection = defineAsyncComponent(() => import("./sections/HostsSection.vue"));
 const ExternalStaffSection = defineAsyncComponent(() => import("./sections/ExternalStaffSection.vue"));
 const AppointmentsSection = defineAsyncComponent(() => import("./sections/AppointmentsSection.vue"));
 const HomeSection = defineAsyncComponent(() => import("./sections/HomeSection.vue"));
@@ -40,7 +45,7 @@ const MobileAppReleasesSection = defineAsyncComponent(
   () => import("./sections/MobileAppReleasesSection.vue"),
 );
 
-type AccessRoleDraft = "administrador" | "recepcion" | "";
+type AccessRoleDraft = "administrador" | "recepcion" | "anfitriones" | "";
 const otherAppointmentVisitor = "__otro__";
 const hostVisitorCompanyOption = -1;
 type HostVisitor = {
@@ -66,6 +71,7 @@ const {
   selectedAppointmentDate,
   appointmentFilter,
   appointments,
+  companies,
   externalStaff,
   departments,
   hosts,
@@ -79,8 +85,10 @@ const otherHostAccountOption = "__otro__";
 const dashboardSections = [
   "Inicio",
   "Agenda de citas",
-  "Anfitriones",
+  "Usuarios de empresa",
   "Accesos",
+  "Empresas",
+  "Administradores",
   "Departamento",
   "Personal de externos",
   "Contratistas, proveedores y visitantes",
@@ -163,6 +171,17 @@ dashboardTheme.value = getStoredDashboardTheme(currentUser.value.login);
 selectedAppointmentDate.value = getLocalDate();
 const allowedDashboardSections = computed(() => {
   if (currentUser.value.isAdmin) return dashboardSections;
+  const companyOperationalSections = [
+    "Agenda de citas",
+    "Personal de externos",
+    "Contratistas, proveedores y visitantes",
+    "Equipo y herramientas",
+    "Bitácora diaria",
+  ];
+  if (currentUser.value.isCompanyAdmin) {
+    return ["Empresas", "Usuarios de empresa", ...companyOperationalSections];
+  }
+  if (currentUser.value.companyRole) return companyOperationalSections;
   if (currentUser.value.sectionAccess.includes("recepcion")) {
     return [
       "Agenda de citas",
@@ -179,22 +198,43 @@ const allowedDashboardSections = computed(() => {
   }
   return [];
 });
+const companyUsersCompanyName = computed(() =>
+  companies.value.find((company) => company.id === selectedCompanyUsersCompanyId.value)?.name ?? "",
+);
+const companyUserDepartments = computed(() => {
+  const companyId = currentUser.value.isCompanyAdmin
+    ? currentUser.value.companyId
+    : selectedCompanyUsersCompanyId.value;
+  return departments.value.filter((department) => department.companyId === companyId);
+});
+watch(allowedDashboardSections, (allowed) => {
+  if (!allowed.includes(activeSection.value)) {
+    activeSection.value = allowed[0] ?? "";
+  }
+}, { immediate: true });
 const isReception = computed(
-  () => !currentUser.value.isAdmin && currentUser.value.sectionAccess.includes("recepcion"),
+  () =>
+    !currentUser.value.isAdmin &&
+    (currentUser.value.companyRole === "recepcion" ||
+      (!currentUser.value.companyRole && currentUser.value.sectionAccess.includes("recepcion"))),
 );
 const isHost = computed(
   () =>
     !currentUser.value.isAdmin &&
-    currentUser.value.sectionAccess.includes("anfitriones") &&
-    !currentUser.value.sectionAccess.includes("recepcion"),
+    (currentUser.value.companyRole === "anfitrion" ||
+      (!currentUser.value.companyRole &&
+        currentUser.value.sectionAccess.includes("anfitriones") &&
+        !currentUser.value.sectionAccess.includes("recepcion"))),
 );
 if (isHost.value) appointmentFilter.value = "all";
 const currentRoleLabel = computed(() =>
   currentUser.value.isAdmin
     ? "Administrador"
-    : isReception.value
-      ? "Recepción"
-      : "Anfitrión",
+    : currentUser.value.isCompanyAdmin
+      ? "Administrador de empresa"
+      : isReception.value
+        ? "Recepción"
+        : "Anfitrión",
 );
 const lateAppointmentCheckClock = ref(Date.now());
 const lateAppointmentNoticeKeys = new Set<string>();
@@ -219,6 +259,15 @@ const qrExternalStaff = ref<ExternalStaff | null>(null);
 const qrDataUrl = ref("");
 const qrGenerating = ref(false);
 const qrDispatchAppointment = ref<Appointment | null>(null);
+function appointmentUsesReference(appointment: Appointment) {
+  return Boolean(currentUser.value.companyRole) ||
+    appointment.tenantCompanyName?.trim().toLocaleLowerCase("es") !== "cymez";
+}
+const qrDispatchUsesReference = computed(() =>
+  qrDispatchAppointment.value
+    ? appointmentUsesReference(qrDispatchAppointment.value)
+    : Boolean(currentUser.value.companyRole),
+);
 const sendingExternalQrStaffId = ref<number | null>(null);
 const deletingAppointmentId = ref<number | null>(null);
 const dailyLogInitialRange = ref<{ from: string; to: string } | null>(null);
@@ -237,6 +286,7 @@ const visitorTime = ref("18:00");
 const appointmentSaving = ref(false);
 const appointmentLoading = ref(false);
 const appointmentSearch = ref("");
+const globalCompanyScope = ref<"cymez" | "all">("cymez");
 const appointmentsPage = ref(1);
 const appointmentsPerPage = 7;
 const calendarMonth = ref(getLocalDate().slice(0, 7));
@@ -248,8 +298,53 @@ const externalStaffRelationshipType = ref<ExternalStaffType>("Contratista");
 const externalStaffBusinessPartnerId = ref<number | null>(null);
 const departmentDialogOpen = ref(false);
 const editingDepartmentId = ref<number | null>(null);
+const departmentCompanyId = ref<number | null>(null);
 const departmentName = ref("");
 const departmentSaving = ref(false);
+const companyDialogOpen = ref(false);
+const editingCompanyId = ref<number | null>(null);
+const companyName = ref("");
+const companySaving = ref(false);
+const administrators = ref<Administrator[]>([]);
+const administratorDialogOpen = ref(false);
+const editingAdministratorLogin = ref<string | null>(null);
+const administratorLogin = ref("");
+const administratorPassword = ref("");
+const administratorName = ref("");
+const administratorEmail = ref("");
+const administratorRole = ref("");
+const administratorPhone = ref("");
+const administratorActive = ref("Y");
+const administratorCompanyId = ref<number | null>(null);
+const administratorSaving = ref(false);
+const temporaryPasswordDialogOpen = ref(false);
+const temporaryPasswordValue = ref("");
+const passwordChangeValue = ref("");
+const passwordChangeConfirmation = ref("");
+const passwordChangeError = ref("");
+const passwordChangeSaving = ref(false);
+const passwordChangeRequirements = computed(() => [
+  { label: "Mínimo 8 caracteres", valid: Array.from(passwordChangeValue.value).length >= 8 },
+  { label: "Una mayúscula", valid: /\p{Lu}/u.test(passwordChangeValue.value) },
+  { label: "Una minúscula", valid: /\p{Ll}/u.test(passwordChangeValue.value) },
+  { label: "Un número", valid: /\d/.test(passwordChangeValue.value) },
+  { label: "Un símbolo", valid: /[^\p{L}\p{N}\s]/u.test(passwordChangeValue.value) },
+]);
+const companyUsers = ref<CompanyUser[]>([]);
+const companyUsersSearch = ref("");
+const selectedCompanyUsersCompanyId = ref<number | null>(null);
+const companyUserDialogOpen = ref(false);
+const editingCompanyUserLogin = ref<string | null>(null);
+const companyUserLogin = ref("");
+const companyUserName = ref("");
+const companyUserEmail = ref("");
+const companyUserRole = ref("");
+const companyUserPhone = ref("");
+const companyUserApplicationRole = ref<"recepcion" | "anfitrion">("recepcion");
+const companyUserDepartmentId = ref<number | null>(null);
+const companyUserActive = ref("Y");
+const companyUserResetPassword = ref(false);
+const companyUserSaving = ref(false);
 const hostRole = ref("");
 const hostDialogOpen = ref(false);
 const editingHostId = ref<number | null>(null);
@@ -424,9 +519,8 @@ function refreshVisibleSection() {
   if (activeSection.value === "Departamento" && (currentUser.value.isAdmin || isReception.value)) {
     void loadDepartments(true);
   }
-  if (activeSection.value === "Anfitriones" && currentUser.value.isAdmin) {
-    void loadHostAccounts(true);
-    void loadDepartmentHosts(true);
+  if (activeSection.value === "Usuarios de empresa") {
+    void loadCompanyUsers(true);
   }
   if (
     (activeSection.value === "Departamento" ||
@@ -517,18 +611,22 @@ onMounted(() => {
   }, 30_000);
   document.addEventListener("click", closeAccountMenuOnOutsideClick);
   document.addEventListener("keydown", closeAccountMenuOnEscape);
-  if (currentUser.value.isAdmin || isReception.value) void loadDepartments();
-  if (currentUser.value.isAdmin || isReception.value || isHost.value) {
+  if (currentUser.value.mustChangePassword) return;
+  if (currentUser.value.isAdmin || currentUser.value.isCompanyAdmin || isReception.value) void loadDepartments();
+  if (currentUser.value.isAdmin || currentUser.value.companyRole || isReception.value || isHost.value) {
     void loadBusinessDirectory();
     void loadAppointments();
   }
   if (currentUser.value.isAdmin || isHost.value) void loadHostVisitors();
   if (currentUser.value.isAdmin) {
+    void loadCompanies();
+    void loadAdministrators();
     void loadHostAccounts();
   }
-  if (currentUser.value.isAdmin || isReception.value) {
+  if (currentUser.value.isAdmin || currentUser.value.isCompanyAdmin || isReception.value) {
     void loadDepartmentHosts();
   }
+  if (currentUser.value.isCompanyAdmin) void loadCompanies();
   realtimeEvents = apiEventSource("/api/events");
   realtimeEvents.onopen = () => {
     stopRealtimeFallback();
@@ -558,11 +656,17 @@ watch(dashboardTheme, (theme) => {
 });
 
 async function loadAppointments(silent = false) {
-  if (appointmentsRequestInProgress) return;
+  if (appointmentsRequestInProgress) {
+    appointmentsRequestQueued = true;
+    return;
+  }
   appointmentsRequestInProgress = true;
   if (!silent) appointmentLoading.value = true;
   try {
-    const response = await fetch("/api/appointments");
+    const endpoint = currentUser.value.isAdmin
+      ? `/api/appointments?scope=${globalCompanyScope.value}`
+      : "/api/appointments";
+    const response = await fetch(endpoint);
     const result = await response.json() as {
       appointments?: Appointment[];
       error?: string;
@@ -585,6 +689,10 @@ async function loadAppointments(silent = false) {
   } finally {
     appointmentsRequestInProgress = false;
     if (!silent) appointmentLoading.value = false;
+    if (appointmentsRequestQueued) {
+      appointmentsRequestQueued = false;
+      void loadAppointments(silent);
+    }
   }
 }
 
@@ -686,7 +794,9 @@ function openAccessAccountEditor(account: AccessAccount) {
       ? "administrador"
       : account.sectionAccess.includes("recepcion")
         ? "recepcion"
-        : "";
+        : account.sectionAccess.includes("anfitriones")
+          ? "anfitriones"
+          : "";
 }
 
 async function saveAccessAccount() {
@@ -776,9 +886,15 @@ const navigationGroups = [
   {
     title: "ORGANIZACIÓN",
     items: [
-      { label: "Departamento", icon: "organization" },
-      { label: "Anfitriones", icon: "users" },
+      { label: "Empresas", icon: "building" },
+      { label: "Usuarios de empresa", icon: "users" },
       { label: "Accesos", icon: "shield" },
+    ],
+  },
+  {
+    title: "ADMINISTRACIÓN",
+    items: [
+      { label: "Administradores", icon: "users" },
     ],
   },
   {
@@ -792,6 +908,7 @@ const navigationGroups = [
 ];
 
 let appointmentsRequestInProgress = false;
+let appointmentsRequestQueued = false;
 let businessDirectoryRequestInProgress = false;
 
 const summaryItems = [
@@ -1088,6 +1205,11 @@ watch(selectedAppointmentDate, (date) => {
   appointmentFilter.value = "day";
 });
 
+watch(globalCompanyScope, () => {
+  appointmentsPage.value = 1;
+  if (currentUser.value.isAdmin) void loadAppointments();
+});
+
 watch(appointmentsPage, (page) => {
   if (page > totalAppointmentPages.value) {
     appointmentsPage.value = totalAppointmentPages.value;
@@ -1100,6 +1222,70 @@ function selectSection(label: string) {
   drawerOpen.value = false;
   const path = dashboardSectionPaths[label as keyof typeof dashboardSectionPaths];
   if (path && route.path !== path) void router.push(path);
+}
+
+async function changeTemporaryPassword() {
+  passwordChangeError.value = "";
+  const length = Array.from(passwordChangeValue.value).length;
+  if (
+    length < 8 ||
+    length > 128 ||
+    passwordChangeRequirements.value.some((requirement) => !requirement.valid) ||
+    passwordChangeValue.value !== passwordChangeConfirmation.value
+  ) {
+    passwordChangeError.value =
+      "Usa de 8 a 128 caracteres, incluye mayúscula, minúscula, número y símbolo; ambas contraseñas deben coincidir.";
+    return;
+  }
+  if (passwordChangeSaving.value) return;
+  passwordChangeSaving.value = true;
+  try {
+    const response = await fetch("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        password: passwordChangeValue.value,
+        confirmation: passwordChangeConfirmation.value,
+      }),
+    });
+    const result = await response.json() as {
+      user?: AuthenticatedUser;
+      error?: string;
+    };
+    if (!response.ok || !result.user) {
+      passwordChangeError.value = result.error ?? "No se pudo actualizar la contraseña.";
+      return;
+    }
+    authStore.setSession(result.user, authStore.accounts);
+    passwordChangeValue.value = "";
+    passwordChangeConfirmation.value = "";
+    if (result.user.isCompanyAdmin) {
+      void loadDepartments(true);
+      void loadCompanies(true);
+      void loadDepartmentHosts(true);
+    }
+    showToast("Tu contraseña quedó actualizada.", "success", "Cambio completado");
+  } catch (error) {
+    console.error("Failed to change temporary password:", error);
+    passwordChangeError.value = "No se pudo conectar con el servidor. Inténtalo de nuevo.";
+  } finally {
+    passwordChangeSaving.value = false;
+  }
+}
+
+async function copyTemporaryPassword() {
+  try {
+    await navigator.clipboard.writeText(temporaryPasswordValue.value);
+    showToast("La contraseña temporal se copió.", "success");
+  } catch (error) {
+    console.error("Failed to copy temporary password:", error);
+    showToast("No se pudo copiar. Selecciona y copia la contraseña manualmente.");
+  }
+}
+
+function closeTemporaryPasswordDialog() {
+  temporaryPasswordDialogOpen.value = false;
+  temporaryPasswordValue.value = "";
 }
 
 function openDailyLogRange(from: string, to: string) {
@@ -1126,6 +1312,96 @@ async function loadDepartments(silent = false) {
   } catch (error) {
     console.error("Failed to load departments:", error);
     if (!silent) showToast("No se pudo conectar con el servidor para cargar los departamentos.");
+  }
+}
+
+async function loadCompanies(silent = false) {
+  try {
+    const response = await fetch("/api/companies");
+    const result = await response.json() as { companies?: Company[]; error?: string };
+    if (!response.ok) {
+      const message = result.error ?? "No se pudieron cargar las empresas.";
+      if (silent) console.error(message);
+      else showToast(message);
+      return;
+    }
+    if (!Array.isArray(result.companies)) {
+      console.error("La API devolvió una lista de empresas con formato inválido.");
+      if (!silent) showToast("No se pudieron cargar las empresas.");
+      return;
+    }
+    companies.value = result.companies;
+    if (selectedCompanyUsersCompanyId.value === null) {
+      selectedCompanyUsersCompanyId.value = currentUser.value.isCompanyAdmin
+        ? currentUser.value.companyId
+        : result.companies[0]?.id ?? null;
+    }
+    if (currentUser.value.isAdmin || currentUser.value.isCompanyAdmin) {
+      void loadCompanyUsers(true);
+    }
+  } catch (error) {
+    console.error("Failed to load companies:", error);
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar las empresas.");
+  }
+}
+
+async function loadCompanyUsers(silent = false): Promise<boolean> {
+  const companyId = selectedCompanyUsersCompanyId.value;
+  if (companyId === null && currentUser.value.isAdmin) {
+    companyUsers.value = [];
+    return true;
+  }
+  try {
+    const query = companyId === null ? "" : `?companyId=${companyId}`;
+    const response = await fetch(`/api/company-users${query}`);
+    const result = await response.json() as { users?: CompanyUser[]; error?: string };
+    if (!response.ok) {
+      const message = result.error ?? "No se pudieron cargar los usuarios de empresa.";
+      if (silent) console.error(message);
+      else showToast(message);
+      return false;
+    }
+    if (!Array.isArray(result.users)) {
+      console.error("La API devolvió una lista de usuarios de empresa con formato inválido.");
+      if (!silent) showToast("No se pudieron cargar los usuarios de empresa.");
+      return false;
+    }
+    companyUsers.value = result.users;
+    return true;
+  } catch (error) {
+    console.error("Failed to load company users:", error);
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar los usuarios de empresa.");
+    return false;
+  }
+}
+
+function selectCompanyForUsers(companyId: number | null) {
+  selectedCompanyUsersCompanyId.value = companyId;
+  companyUsers.value = [];
+  void loadCompanyUsers();
+}
+
+async function loadAdministrators(silent = false): Promise<boolean> {
+  try {
+    const response = await fetch("/api/administrators");
+    const result = await response.json() as { administrators?: Administrator[]; error?: string };
+    if (!response.ok) {
+      const message = result.error ?? "No se pudieron cargar los administradores.";
+      if (silent) console.error(message);
+      else showToast(message);
+      return false;
+    }
+    if (!Array.isArray(result.administrators)) {
+      console.error("La API devolvió una lista de administradores con formato inválido.");
+      if (!silent) showToast("No se pudieron cargar los administradores.");
+      return false;
+    }
+    administrators.value = result.administrators;
+    return true;
+  } catch (error) {
+    console.error("Failed to load administrators:", error);
+    if (!silent) showToast("No se pudo conectar con el servidor para cargar los administradores.");
+    return false;
   }
 }
 
@@ -1239,6 +1515,10 @@ async function createAppointmentQr(appointment: Appointment, staff?: ExternalSta
 }
 
 async function openQrDialog(appointment: Appointment, externalStaffId?: number) {
+  if (appointmentUsesReference(appointment)) {
+    showToast("Las empresas reciben un código de referencia, no un pase QR.");
+    return;
+  }
   const staff = externalStaffId === undefined
     ? undefined
     : externalStaff.value.find(({ id }) => id === externalStaffId);
@@ -1275,6 +1555,10 @@ function openCompanyQrDispatch(appointment: Appointment) {
 }
 
 async function openExternalStaffQr(staff: ExternalStaff) {
+  if (!qrDispatchAppointment.value || appointmentUsesReference(qrDispatchAppointment.value)) {
+    showToast("Las empresas reciben códigos de referencia, no pases QR.");
+    return;
+  }
   const appointment = qrDispatchAppointment.value;
   if (!appointment) {
     showToast("No se encontró la cita para generar este QR.");
@@ -1315,11 +1599,16 @@ async function sendExternalStaffQr(staff: ExternalStaff) {
     )
     .sort((first, second) => first.id - second.id)[0];
   const receivesEquipmentLink = equipmentRecipient?.id === staff.id;
+  const usesReference = appointmentUsesReference(appointment);
   const confirmed = await confirmUser(
-    receivesEquipmentLink
-      ? `Se enviará el QR de ${staff.fullName} a ${staff.email}. Si la declaración aún está pendiente, este correo incluirá el enlace para declarar equipo y herramientas. Ese enlace solo puede usarse una vez y se desactiva al enviar la declaración; solo esta persona lo recibe. ¿Continuar?`
-      : `Se enviará el QR de ${staff.fullName} a ${staff.email}. El enlace de declaración de equipo se envía únicamente a ${equipmentRecipient?.fullName ?? "la primera persona con correo válido"}. ¿Continuar?`,
-    "Enviar QR",
+    usesReference
+      ? receivesEquipmentLink
+        ? `Se enviará la referencia de ${staff.fullName} a ${staff.email}, con el enlace de un solo uso para declarar equipo y herramientas. ¿Continuar?`
+        : `Se enviará la referencia de ${staff.fullName} a ${staff.email}. El enlace de declaración de equipo se enviará únicamente a ${equipmentRecipient?.fullName ?? "la primera persona con correo válido"}. ¿Continuar?`
+      : receivesEquipmentLink
+        ? `Se enviará el QR de ${staff.fullName} a ${staff.email}. Si la declaración aún está pendiente, este correo incluirá el enlace para declarar equipo y herramientas. Ese enlace solo puede usarse una vez y se desactiva al enviar la declaración; solo esta persona lo recibe. ¿Continuar?`
+        : `Se enviará el QR de ${staff.fullName} a ${staff.email}. El enlace de declaración de equipo se envía únicamente a ${equipmentRecipient?.fullName ?? "la primera persona con correo válido"}. ¿Continuar?`,
+    usesReference ? "Enviar referencia" : "Enviar QR",
   );
   if (!confirmed) return;
 
@@ -1353,14 +1642,14 @@ async function sendExternalStaffQr(staff: ExternalStaff) {
           ].filter(Boolean).join("\n")
         : "";
       showToast([
-        result.error ?? "No se pudo enviar el QR al empleado.",
+        result.error ?? `No se pudo enviar ${usesReference ? "la referencia" : "el QR"} al empleado.`,
         diagnosticDetails,
       ].filter(Boolean).join("\n\n"));
       return;
     }
     if (!result.message) {
-      console.error("La API no devolvió la confirmación del envío del QR.");
-      showToast("El servidor no confirmó el envío del QR.");
+      console.error("La API no devolvió la confirmación del envío.");
+      showToast("El servidor no confirmó el envío.");
       return;
     }
     showToast(result.message, "success");
@@ -1369,6 +1658,42 @@ async function sendExternalStaffQr(staff: ExternalStaff) {
     showToast("No se pudo conectar con el servidor para enviar el QR.");
   } finally {
     sendingExternalQrStaffId.value = null;
+  }
+}
+
+async function sendAppointmentReference(appointment: Appointment) {
+  if (!currentUser.value.isAdmin && !currentUser.value.companyRole) return;
+  let email = appointment.email.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    email = window.prompt(`Correo para enviar la referencia de ${appointment.visitor}:`)?.trim() ?? "";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    showToast("Escribe un correo electrónico válido para enviar la referencia.");
+    return;
+  }
+  if (!await confirmUser(
+    `Se enviará el código de referencia de ${appointment.visitor} a ${email}.`,
+    "Enviar referencia",
+  )) return;
+  try {
+    const response = await fetch(`/api/appointments/${appointment.id}/send-qr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const result = await response.json() as { message?: string; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo enviar la referencia.");
+      return;
+    }
+    if (!result.message) {
+      showToast("El servidor no confirmó el envío de la referencia.");
+      return;
+    }
+    showToast(result.message, "success");
+  } catch (error) {
+    console.error("Failed to send appointment reference:", error);
+    showToast("No se pudo conectar con el servidor para enviar la referencia.");
   }
 }
 
@@ -1564,8 +1889,317 @@ function changeCalendarMonth(offset: number) {
   calendarMonth.value = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function openDepartmentDialog(department?: Department) {
+function openCompanyDialog(company?: Company) {
+  editingCompanyId.value = company?.id ?? null;
+  companyName.value = company?.name ?? "";
+  companyDialogOpen.value = true;
+}
+
+async function submitCompany() {
+  const name = companyName.value.trim();
+  if (!name || companySaving.value) return;
+  const duplicate = companies.value.some(
+    (company) =>
+      company.name.trim().toLocaleLowerCase("es") === name.toLocaleLowerCase("es") &&
+      company.id !== editingCompanyId.value,
+  );
+  if (duplicate) {
+    showToast("Ya existe una empresa con ese nombre.");
+    return;
+  }
+
+  companySaving.value = true;
+  try {
+    const companyId = editingCompanyId.value;
+    const response = await fetch(
+      companyId === null ? "/api/companies" : `/api/companies/${companyId}`,
+      {
+        method: companyId === null ? "POST" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+    );
+    const result = await response.json() as { companies?: Company[]; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo guardar la empresa.");
+      return;
+    }
+    if (!Array.isArray(result.companies)) {
+      console.error("La API devolvió una lista de empresas con formato inválido.");
+      showToast("La empresa se guardó, pero no se pudo actualizar la lista. Recarga la sección.");
+      return;
+    }
+    companies.value = result.companies;
+    companyDialogOpen.value = false;
+    editingCompanyId.value = null;
+    companyName.value = "";
+    showToast(
+      companyId === null ? "La empresa se registró correctamente." : "La empresa se actualizó.",
+      "success",
+      companyId === null ? "Empresa registrada" : "Empresa actualizada",
+    );
+  } catch (error) {
+    console.error("Failed to save company:", error);
+    showToast("No se pudo conectar con el servidor para guardar la empresa.");
+  } finally {
+    companySaving.value = false;
+  }
+}
+
+async function removeCompany(id: number) {
+  const company = companies.value.find((item) => item.id === id);
+  if (!await confirmUser(
+    `¿Eliminar la empresa${company ? ` ${company.name}` : ""}? Solo se pueden eliminar empresas sin departamentos vinculados.`,
+    "Eliminar empresa",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
+  try {
+    const response = await fetch(`/api/companies/${id}`, { method: "DELETE" });
+    const result = await response.json() as { companies?: Company[]; error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo eliminar la empresa.");
+      return;
+    }
+    if (!Array.isArray(result.companies)) {
+      console.error("La API devolvió una lista de empresas con formato inválido.");
+      showToast("La empresa se eliminó, pero no se pudo actualizar la lista.");
+      return;
+    }
+    companies.value = result.companies;
+    showToast("La empresa se eliminó.", "success", "Empresa eliminada");
+  } catch (error) {
+    console.error("Failed to delete company:", error);
+    showToast("No se pudo conectar con el servidor para eliminar la empresa.");
+  }
+}
+
+function openAdministratorDialog(administrator?: Administrator) {
+  editingAdministratorLogin.value = administrator?.login ?? null;
+  administratorLogin.value = administrator?.login ?? "";
+  administratorPassword.value = "";
+  administratorName.value = administrator?.name ?? "";
+  administratorEmail.value = administrator?.email ?? "";
+  administratorRole.value = administrator?.role ?? "";
+  administratorPhone.value = administrator?.phone ?? "";
+  administratorActive.value = administrator?.active ?? "Y";
+  administratorCompanyId.value = administrator?.companyId ?? companies.value[0]?.id ?? null;
+  administratorDialogOpen.value = true;
+}
+
+function openCompanyUserDialog(companyUser?: CompanyUser) {
+  editingCompanyUserLogin.value = companyUser?.login ?? null;
+  companyUserLogin.value = companyUser?.login ?? "";
+  companyUserName.value = companyUser?.name ?? "";
+  companyUserEmail.value = companyUser?.email ?? "";
+  companyUserRole.value = companyUser?.role ?? "";
+  companyUserPhone.value = companyUser?.phone ?? "";
+  companyUserApplicationRole.value = companyUser?.applicationRole ?? "recepcion";
+  companyUserDepartmentId.value = companyUser?.departmentId ?? null;
+  companyUserActive.value = companyUser?.active ?? "Y";
+  companyUserResetPassword.value = false;
+  companyUserDialogOpen.value = true;
+}
+
+async function submitCompanyUser() {
+  const login = companyUserLogin.value.trim();
+  const name = companyUserName.value.trim();
+  const companyId = currentUser.value.isCompanyAdmin
+    ? currentUser.value.companyId
+    : selectedCompanyUsersCompanyId.value;
+  if (
+    companyUserSaving.value ||
+    !login ||
+    !name ||
+    companyId === null ||
+    (companyUserApplicationRole.value === "anfitrion" && companyUserDepartmentId.value === null)
+  ) {
+    showToast("Revisa el usuario, nombre, empresa y departamento del anfitrión.");
+    return;
+  }
+  companyUserSaving.value = true;
+  try {
+    const editingLogin = editingCompanyUserLogin.value;
+    const endpoint = editingLogin === null
+      ? "/api/company-users"
+      : `/api/company-users/${encodeURIComponent(editingLogin)}`;
+    const response = await fetch(`${endpoint}?companyId=${companyId}`, {
+      method: editingLogin === null ? "POST" : "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        login,
+        name,
+        email: companyUserEmail.value.trim(),
+        role: companyUserRole.value.trim(),
+        phone: companyUserPhone.value.trim(),
+        applicationRole: companyUserApplicationRole.value,
+        departmentId: companyUserApplicationRole.value === "anfitrion"
+          ? companyUserDepartmentId.value
+          : null,
+        active: companyUserActive.value,
+        resetPassword: companyUserResetPassword.value,
+      }),
+    });
+    const result = await response.json() as { error?: string; temporaryPassword?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo guardar el usuario de empresa.");
+      return;
+    }
+    companyUserDialogOpen.value = false;
+    const listUpdated = await loadCompanyUsers(true);
+    if (result.temporaryPassword) {
+      temporaryPasswordValue.value = result.temporaryPassword;
+      temporaryPasswordDialogOpen.value = true;
+      if (!listUpdated) {
+        showToast("La cuenta se guardó, pero no se pudo actualizar la lista. Guarda la contraseña y recarga después.", "warning");
+      }
+    } else if (listUpdated) {
+      showToast(
+        editingLogin === null ? "El usuario se registró correctamente." : "El usuario se actualizó.",
+        "success",
+        "Usuario de empresa guardado",
+      );
+    } else {
+      showToast("El usuario se guardó, pero no se pudo actualizar la lista. Recárgala.", "warning");
+    }
+  } catch (error) {
+    console.error("Failed to save company user:", error);
+    showToast("No se pudo conectar con el servidor para guardar el usuario.");
+  } finally {
+    companyUserSaving.value = false;
+  }
+}
+
+async function removeCompanyUser(companyUser: CompanyUser) {
+  if (!await confirmUser(
+    `¿Eliminar la cuenta ${companyUser.login} de esta empresa?`,
+    "Eliminar usuario de empresa",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
+  try {
+    const companyId = currentUser.value.isCompanyAdmin
+      ? currentUser.value.companyId
+      : selectedCompanyUsersCompanyId.value;
+    const response = await fetch(
+      `/api/company-users/${encodeURIComponent(companyUser.login)}?companyId=${companyId}`,
+      { method: "DELETE" },
+    );
+    const result = await response.json() as { error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo eliminar el usuario de empresa.");
+      return;
+    }
+    if (await loadCompanyUsers(true)) {
+      showToast("El usuario de empresa se eliminó.", "success", "Usuario eliminado");
+    } else {
+      showToast("El usuario se eliminó, pero no se pudo actualizar la lista. Recárgala.", "warning");
+    }
+  } catch (error) {
+    console.error("Failed to delete company user:", error);
+    showToast("No se pudo conectar con el servidor para eliminar el usuario.");
+  }
+}
+
+async function submitAdministrator() {
+  const login = administratorLogin.value.trim();
+  const name = administratorName.value.trim();
+  if (
+    administratorSaving.value ||
+    !login ||
+    !name ||
+    administratorCompanyId.value === null
+  ) {
+    showToast("Revisa el usuario, nombre y empresa del administrador.");
+    return;
+  }
+  administratorSaving.value = true;
+  try {
+    const editingLogin = editingAdministratorLogin.value;
+    const payload = {
+      login,
+      name,
+      email: administratorEmail.value.trim(),
+      role: administratorRole.value.trim(),
+      phone: administratorPhone.value.trim(),
+      active: administratorActive.value,
+      companyId: administratorCompanyId.value,
+    };
+    const response = await fetch(
+      editingLogin === null
+        ? "/api/administrators"
+        : `/api/administrators/${encodeURIComponent(editingLogin)}`,
+      {
+        method: editingLogin === null ? "POST" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+    const result = await response.json() as { error?: string; temporaryPassword?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo guardar el administrador.");
+      return;
+    }
+    administratorDialogOpen.value = false;
+    const listUpdated = await loadAdministrators(true);
+    if (result.temporaryPassword) {
+      temporaryPasswordValue.value = result.temporaryPassword;
+      temporaryPasswordDialogOpen.value = true;
+      if (!listUpdated) {
+        showToast("La cuenta se creó, pero no se pudo actualizar la lista. Guarda la contraseña y recarga después.", "warning");
+      }
+    } else if (listUpdated) {
+      showToast(
+        editingLogin === null ? "El administrador se registró correctamente." : "El administrador se actualizó.",
+        "success",
+        editingLogin === null ? "Administrador registrado" : "Administrador actualizado",
+      );
+    } else {
+      showToast("El administrador se guardó, pero no se pudo actualizar la lista. Recárgala.", "warning");
+    }
+  } catch (error) {
+    console.error("Failed to save administrator:", error);
+    showToast("No se pudo conectar con el servidor para guardar el administrador.");
+  } finally {
+    administratorSaving.value = false;
+  }
+}
+
+async function removeAdministrator(administrator: Administrator) {
+  if (!await confirmUser(
+    `¿Eliminar la cuenta de administrador ${administrator.login}?`,
+    "Eliminar administrador",
+    "Confirmar eliminación",
+    "warning",
+  )) return;
+  try {
+    const response = await fetch(
+      `/api/administrators/${encodeURIComponent(administrator.login)}`,
+      { method: "DELETE" },
+    );
+    const result = await response.json() as { error?: string };
+    if (!response.ok) {
+      showToast(result.error ?? "No se pudo eliminar el administrador.");
+      return;
+    }
+    if (await loadAdministrators(true)) {
+      showToast("El administrador se eliminó.", "success", "Administrador eliminado");
+    } else {
+      showToast("El administrador se eliminó, pero no se pudo actualizar la lista. Recárgala.", "warning");
+    }
+  } catch (error) {
+    console.error("Failed to delete administrator:", error);
+    showToast("No se pudo conectar con el servidor para eliminar el administrador.");
+  }
+}
+
+function openDepartmentDialog(department?: Department, companyId?: number) {
   editingDepartmentId.value = department?.id ?? null;
+  departmentCompanyId.value =
+    department?.companyId ??
+    companyId ??
+    companies.value[0]?.id ??
+    null;
   departmentName.value = department?.name ?? "";
   departmentDialogOpen.value = true;
 }
@@ -1573,9 +2207,15 @@ function openDepartmentDialog(department?: Department) {
 async function submitDepartment() {
   const name = departmentName.value.trim();
   if (!name || departmentSaving.value) return;
+  const companyId = departmentCompanyId.value;
+  if (companyId === null) {
+    showToast("No se pudo identificar la empresa del departamento. Actualiza la página e inténtalo de nuevo.");
+    return;
+  }
 
   const duplicate = departments.value.some(
     (department) =>
+      department.companyId === companyId &&
       department.name.toLocaleLowerCase() === name.toLocaleLowerCase() &&
       department.id !== editingDepartmentId.value,
   );
@@ -1594,7 +2234,7 @@ async function submitDepartment() {
       {
         method: departmentId === null ? "POST" : "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, companyId }),
       },
     );
     const result = await response.json() as { departments?: Department[]; error?: string };
@@ -1609,8 +2249,10 @@ async function submitDepartment() {
     }
 
     departments.value = result.departments;
+    void loadCompanies(true);
     departmentDialogOpen.value = false;
     editingDepartmentId.value = null;
+    departmentCompanyId.value = null;
     departmentName.value = "";
     showToast(
       departmentId === null ? "El departamento se guardó correctamente." : "El departamento se actualizó.",
@@ -1650,6 +2292,7 @@ async function removeDepartment(id: number) {
       return;
     }
     departments.value = result.departments;
+    void loadCompanies(true);
     showToast("El departamento se eliminó.", "success", "Departamento eliminado");
   } catch (error) {
     console.error("Failed to delete department:", error);
@@ -2759,6 +3402,10 @@ async function removeBusinessPartner(id: number) {
         'dashboard-main-home': activeSection === 'Inicio',
       }"
     >
+      <div v-if="allowedDashboardSections.length === 0" class="setup-callout company-role-unavailable">
+        <strong>Tu cuenta está lista, pero aún no hay módulos operativos habilitados para este perfil.</strong>
+        <p>Contacta a la administración de tu empresa. El acceso a los datos se habilitará cuando estén protegidos por empresa.</p>
+      </div>
       <div class="dashboard-heading">
         <div>
           <h1>{{ pageTitle }}</h1>
@@ -2777,11 +3424,17 @@ async function removeBusinessPartner(id: number) {
           <p v-else-if="activeSection === 'Departamento'">
             Administra departamentos y consulta los anfitriones vinculados
           </p>
+          <p v-else-if="activeSection === 'Empresas'">
+            Organiza empresas y consulta sus departamentos y usuarios asignados
+          </p>
+          <p v-else-if="activeSection === 'Administradores'">
+            Registra las cuentas administradoras y asígnalas a una empresa
+          </p>
           <p v-else-if="activeSection === 'Personal de externos'">
             Personal vinculado a contratistas y proveedores registrados en MySQL
           </p>
-          <p v-else-if="activeSection === 'Anfitriones'">
-            Registro de anfitriones de la organización · datos de demostración
+          <p v-else-if="activeSection === 'Usuarios de empresa'">
+            Administra administradores, recepcionistas y anfitriones ligados a cada empresa
           </p>
           <p v-else-if="activeSection === 'Accesos'">
             Asigna quién puede entrar al sistema y qué áreas puede utilizar · datos de demostración
@@ -2814,6 +3467,7 @@ async function removeBusinessPartner(id: number) {
         v-if="activeSection === 'Agenda de citas'"
         v-model:filter="appointmentFilter"
         v-model:search="appointmentSearch"
+        v-model:company-scope="globalCompanyScope"
         :selected-appointments="selectedAppointments"
         :searched-appointments="searchedAppointments"
         :paginated-appointments="paginatedAppointments"
@@ -2827,6 +3481,8 @@ async function removeBusinessPartner(id: number) {
         :loading="appointmentLoading"
         :can-create-appointments="currentUser.isAdmin || isHost"
         :can-manage-appointments="currentUser.isAdmin || isHost"
+        :can-send-reference="Boolean(currentUser.companyRole) || currentUser.isAdmin"
+        :is-company-user="Boolean(currentUser.companyRole)"
         :is-admin="currentUser.isAdmin"
         :is-reception="isReception"
         :is-host="isHost"
@@ -2839,22 +3495,25 @@ async function removeBusinessPartner(id: number) {
         @cancel="cancelAppointment"
         @open-qr="openQrDialog"
         @send-company-qrs="openCompanyQrDispatch"
+        @send-reference="sendAppointmentReference"
         @delete="deleteAppointment"
         @edit="openAppointmentDialog"
         @change-month="changeCalendarMonth"
         @select-day="selectCalendarDay"
       />
 
-      <HostsSection
-        v-else-if="activeSection === 'Anfitriones'"
-        v-model:search="hostSearch"
-        :hosts="hosts"
-        :filtered-hosts="filteredHosts"
-        :departments="departments"
-        :eligible-department-count="hostEligibleDepartments.length"
-        @create="openHostDialog()"
-        @edit="openHostDialog"
-        @remove="removeHost"
+      <CompanyUsersSection
+        v-else-if="activeSection === 'Usuarios de empresa'"
+        v-model:search="companyUsersSearch"
+        :users="companyUsers"
+        :companies="companies"
+        :company-id="selectedCompanyUsersCompanyId"
+        :company-name="companyUsersCompanyName"
+        :can-select-company="currentUser.isAdmin"
+        @update:company-id="selectCompanyForUsers"
+        @create="openCompanyUserDialog()"
+        @edit="openCompanyUserDialog"
+        @remove="removeCompanyUser"
       />
 
       <AccessSection
@@ -2875,6 +3534,29 @@ async function removeBusinessPartner(id: number) {
         @remove="removeDepartment"
       />
 
+      <CompanySection
+        v-else-if="activeSection === 'Empresas'"
+        :companies="companies"
+        :departments="departments"
+        :hosts="hosts"
+        :is-admin="currentUser.isAdmin"
+        :can-manage-departments="currentUser.isCompanyAdmin"
+        @create-company="openCompanyDialog()"
+        @edit-company="openCompanyDialog"
+        @remove-company="removeCompany"
+        @create-department="openDepartmentDialog(undefined, $event)"
+        @edit-department="openDepartmentDialog"
+        @remove-department="removeDepartment"
+      />
+
+      <AdministratorsSection
+        v-else-if="activeSection === 'Administradores'"
+        :administrators="administrators"
+        @create="openAdministratorDialog()"
+        @edit="openAdministratorDialog"
+        @remove="removeAdministrator"
+      />
+
       <ExternalStaffSection
         v-else-if="activeSection === 'Personal de externos'"
         v-model:search="externalStaffSearch"
@@ -2883,6 +3565,8 @@ async function removeBusinessPartner(id: number) {
         :loading="businessDirectoryLoading"
         :dispatch-appointment="qrDispatchAppointment"
         :sending-staff-id="sendingExternalQrStaffId"
+        :is-company-user="qrDispatchUsesReference"
+        :can-manage-staff="currentUser.isAdmin || currentUser.isCompanyAdmin || isHost"
         :theme="dashboardTheme"
         @create="openExternalStaffDialog(undefined, $event)"
         @edit="openExternalStaffDialog"
@@ -2907,7 +3591,7 @@ async function removeBusinessPartner(id: number) {
         :partner-rows-per-page="partnerRowsPerPage"
         :loading="businessDirectoryLoading"
         :business-partner-saving="businessPartnerSaving"
-        :is-admin="currentUser.isAdmin"
+        :is-admin="currentUser.isAdmin || currentUser.isCompanyAdmin || (!currentUser.companyRole && isHost)"
         :show-app-download="isHost"
         :theme="dashboardTheme"
         @create-partner="openBusinessPartnerDialog()"
@@ -2918,7 +3602,7 @@ async function removeBusinessPartner(id: number) {
       <EquipmentSection
         v-else-if="activeSection === 'Equipo y herramientas'"
         :theme="dashboardTheme"
-        :is-admin="currentUser.isAdmin"
+        :is-admin="currentUser.isAdmin || currentUser.isCompanyAdmin"
         :is-host="isHost"
       />
 
@@ -2928,6 +3612,9 @@ async function removeBusinessPartner(id: number) {
         :theme="dashboardTheme"
         :is-admin="currentUser.isAdmin"
         :is-reception="isReception"
+        :is-company-user="Boolean(currentUser.companyRole)"
+        :is-company-admin="currentUser.isCompanyAdmin"
+        v-model:company-scope="globalCompanyScope"
         :appointments="appointments"
         :appointments-loading="appointmentLoading"
         :external-staff="externalStaff"
@@ -2950,6 +3637,7 @@ async function removeBusinessPartner(id: number) {
         @delete-appointment="deleteAppointment"
         @open-qr="openQrDialog"
         @send-company-qrs="openCompanyQrDispatch"
+        @send-reference="sendAppointmentReference"
         @open-log="openDailyLogRange"
         @open-appointments="selectSection('Agenda de citas')"
         @open-equipment="selectSection('Equipo y herramientas')"
@@ -3338,12 +4026,20 @@ async function removeBusinessPartner(id: number) {
             <input
               v-model="accessAccountRoleDraft"
               type="radio"
+              value="anfitriones"
+            />
+            <span><strong>Anfitrión</strong><small>Permite consultar y gestionar las citas asignadas.</small></span>
+          </label>
+          <label class="host-toggle">
+            <input
+              v-model="accessAccountRoleDraft"
+              type="radio"
               value=""
             />
             <span><strong>Sin acceso</strong><small>No podrá entrar a las secciones de la aplicación.</small></span>
           </label>
           <p class="access-none-note">
-            La selección se guarda en las secciones autorizadas de la aplicación. El acceso de anfitrión se conserva por separado.
+            La selección se guarda como un único perfil de acceso en la aplicación.
           </p>
           <button class="button-primary workspace-submit" type="submit" :disabled="accessAccountSaving">
             {{ accessAccountSaving ? "Guardando..." : "Guardar cambios" }}
@@ -3377,8 +4073,8 @@ async function removeBusinessPartner(id: number) {
         <form class="workspace-form modal-workspace-form host-form" @submit.prevent="submitHost">
           <div v-if="hostEligibleDepartments.length === 0" class="setup-callout">
             <p>Para registrar un anfitrión, primero crea un departamento.</p>
-            <button class="button-secondary" type="button" @click="selectSection('Departamento')">
-              Ir a Departamentos
+            <button class="button-secondary" type="button" @click="selectSection('Empresas')">
+              Ir a Empresas
             </button>
           </div>
           <template v-else>
@@ -3464,6 +4160,284 @@ async function removeBusinessPartner(id: number) {
     </div>
 
     <div
+      v-if="companyDialogOpen"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
+      @click.self="companyDialogOpen = false"
+    >
+      <section
+        class="dialog workspace-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="company-dialog-title"
+      >
+        <button class="dialog-close" type="button" aria-label="Cerrar" @click="companyDialogOpen = false">
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+        <span class="dialog-icon"><svg class="icon"><use href="#i-building" /></svg></span>
+        <h2 id="company-dialog-title">
+          {{ editingCompanyId === null ? "Registrar empresa" : "Editar empresa" }}
+        </h2>
+        <p class="dialog-description">Las empresas pueden organizarse en departamentos.</p>
+        <form class="workspace-form modal-workspace-form" @submit.prevent="submitCompany">
+          <label>
+            Nombre de la empresa
+            <input
+              v-model.trim="companyName"
+              type="text"
+              maxlength="180"
+              pattern=".*\S.*"
+              autocomplete="organization"
+              required
+            />
+          </label>
+          <button class="button-primary workspace-submit" type="submit" :disabled="companySaving">
+            {{ companySaving ? "Guardando..." : editingCompanyId === null ? "Registrar empresa" : "Guardar cambios" }}
+          </button>
+        </form>
+      </section>
+    </div>
+
+    <div
+      v-if="companyUserDialogOpen"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
+      @click.self="companyUserDialogOpen = false"
+    >
+      <section
+        class="dialog workspace-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="company-user-dialog-title"
+      >
+        <button class="dialog-close" type="button" aria-label="Cerrar" @click="companyUserDialogOpen = false">
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+        <span class="dialog-icon"><svg class="icon"><use href="#i-users" /></svg></span>
+        <h2 id="company-user-dialog-title">
+          {{ editingCompanyUserLogin === null ? "Registrar usuario de empresa" : "Editar usuario de empresa" }}
+        </h2>
+        <p class="dialog-description">
+          Solo se pueden crear perfiles de Recepción o Anfitrión. Las cuentas nuevas tendrán cambio de contraseña obligatorio.
+        </p>
+        <form class="workspace-form modal-workspace-form" @submit.prevent="submitCompanyUser">
+          <label>
+            Usuario
+            <input
+              v-model.trim="companyUserLogin"
+              type="text"
+              maxlength="255"
+              autocomplete="username"
+              :readonly="editingCompanyUserLogin !== null"
+              required
+            />
+          </label>
+          <label>
+            Nombre completo
+            <input v-model.trim="companyUserName" type="text" maxlength="180" autocomplete="name" required />
+          </label>
+          <label>
+            Perfil
+            <select v-model="companyUserApplicationRole" required>
+              <option value="recepcion">Recepción</option>
+              <option value="anfitrion">Anfitrión</option>
+            </select>
+          </label>
+          <label v-if="companyUserApplicationRole === 'anfitrion'">
+            Departamento
+            <select v-model="companyUserDepartmentId" required>
+              <option :value="null" disabled>Selecciona un departamento</option>
+              <option v-for="department in companyUserDepartments" :key="department.id" :value="department.id">
+                {{ department.name }}
+              </option>
+            </select>
+          </label>
+          <label>
+            Correo electrónico
+            <input v-model.trim="companyUserEmail" type="email" maxlength="254" autocomplete="email" />
+          </label>
+          <label>
+            Puesto
+            <input v-model.trim="companyUserRole" type="text" maxlength="120" autocomplete="organization-title" />
+          </label>
+          <label>
+            Teléfono
+            <input v-model.trim="companyUserPhone" type="tel" maxlength="30" autocomplete="tel" />
+          </label>
+          <label>
+            Estado de la cuenta
+            <select v-model="companyUserActive" required>
+              <option value="Y">Activa</option>
+              <option value="N">Inactiva</option>
+            </select>
+          </label>
+          <label v-if="editingCompanyUserLogin !== null" class="host-toggle directory-form-full">
+            <input v-model="companyUserResetPassword" type="checkbox" />
+            <span><strong>Generar nueva contraseña temporal</strong><small>La cuenta deberá cambiarla en su siguiente inicio de sesión.</small></span>
+          </label>
+          <button class="button-primary workspace-submit" type="submit" :disabled="companyUserSaving">
+            {{ companyUserSaving ? "Guardando..." : editingCompanyUserLogin === null ? "Registrar usuario" : "Guardar cambios" }}
+          </button>
+        </form>
+      </section>
+    </div>
+
+    <div
+      v-if="temporaryPasswordDialogOpen"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
+      @click.self="closeTemporaryPasswordDialog"
+    >
+      <section
+        class="dialog workspace-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="temporary-password-title"
+      >
+        <span class="dialog-icon"><svg class="icon"><use href="#i-shield" /></svg></span>
+        <h2 id="temporary-password-title">Contraseña temporal</h2>
+        <p class="dialog-description">
+          Cópiala y entrégala al usuario de forma segura. No volverá a mostrarse; deberá cambiarla al iniciar sesión.
+        </p>
+        <label class="temporary-password-value">
+          <span class="sr-only">Contraseña temporal generada</span>
+          <input :value="temporaryPasswordValue" type="text" readonly autocomplete="off" />
+        </label>
+        <button
+          class="button-primary workspace-submit"
+          type="button"
+          @click="copyTemporaryPassword"
+        >Copiar contraseña</button>
+        <button
+          class="button-secondary workspace-submit"
+          type="button"
+          @click="closeTemporaryPasswordDialog"
+        >Listo, ya la guardé</button>
+      </section>
+    </div>
+
+    <div
+      v-if="currentUser.mustChangePassword"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
+    >
+      <section
+        class="dialog workspace-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="required-password-title"
+      >
+        <span class="dialog-icon"><svg class="icon"><use href="#i-shield" /></svg></span>
+        <h2 id="required-password-title">Cambia tu contraseña</h2>
+        <p class="dialog-description">
+          Tu cuenta usa una contraseña temporal. Define una contraseña personal para continuar; no podrás acceder al sistema hasta cambiarla.
+        </p>
+        <form class="workspace-form modal-workspace-form" @submit.prevent="changeTemporaryPassword">
+          <label>
+            Nueva contraseña
+            <input v-model="passwordChangeValue" type="password" minlength="8" maxlength="128" autocomplete="new-password" required />
+          </label>
+          <label>
+            Confirmar contraseña
+            <input v-model="passwordChangeConfirmation" type="password" minlength="8" maxlength="128" autocomplete="new-password" required />
+          </label>
+          <ul class="password-requirements directory-form-full" aria-label="Requisitos de la contraseña">
+            <li
+              v-for="requirement in passwordChangeRequirements"
+              :key="requirement.label"
+              :class="{ 'is-valid': requirement.valid }"
+            >
+              <span aria-hidden="true">{{ requirement.valid ? "✓" : "○" }}</span>
+              {{ requirement.label }}
+            </li>
+          </ul>
+          <p v-if="passwordChangeError" class="form-error directory-form-full" role="alert">
+            {{ passwordChangeError }}
+          </p>
+          <button class="button-primary workspace-submit" type="submit" :disabled="passwordChangeSaving">
+            {{ passwordChangeSaving ? "Actualizando..." : "Actualizar contraseña" }}
+          </button>
+        </form>
+      </section>
+    </div>
+
+    <div
+      v-if="administratorDialogOpen"
+      class="dashboard-app dashboard-modal-backdrop modal-backdrop"
+      :data-theme="dashboardTheme"
+      @click.self="administratorDialogOpen = false"
+    >
+      <section
+        class="dialog workspace-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="administrator-dialog-title"
+      >
+        <button class="dialog-close" type="button" aria-label="Cerrar" @click="administratorDialogOpen = false">
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+        <span class="dialog-icon"><svg class="icon"><use href="#i-shield" /></svg></span>
+        <h2 id="administrator-dialog-title">
+          {{ editingAdministratorLogin === null ? "Registrar administrador" : "Editar administrador" }}
+        </h2>
+        <p class="dialog-description">
+          La cuenta será administradora únicamente dentro de la empresa seleccionada. Recibirá una contraseña temporal al registrarla.
+        </p>
+        <form class="workspace-form modal-workspace-form" @submit.prevent="submitAdministrator">
+          <label>
+            Usuario
+            <input
+              v-model.trim="administratorLogin"
+              type="text"
+              maxlength="255"
+              autocomplete="username"
+              :readonly="editingAdministratorLogin !== null"
+              required
+            />
+          </label>
+          <p v-if="editingAdministratorLogin === null" class="workspace-hint directory-form-full">
+            Se generará una contraseña temporal de un solo uso para compartir con el administrador.
+          </p>
+          <label>
+            Nombre completo
+            <input v-model.trim="administratorName" type="text" maxlength="255" autocomplete="name" required />
+          </label>
+          <label>
+            Empresa
+            <select v-model="administratorCompanyId" required>
+              <option :value="null" disabled>Selecciona una empresa</option>
+              <option v-for="company in companies" :key="company.id" :value="company.id">
+                {{ company.name }}
+              </option>
+            </select>
+          </label>
+          <label>
+            Correo electrónico
+            <input v-model.trim="administratorEmail" type="email" maxlength="255" autocomplete="email" />
+          </label>
+          <label>
+            Puesto
+            <input v-model.trim="administratorRole" type="text" maxlength="128" autocomplete="organization-title" />
+          </label>
+          <label>
+            Teléfono
+            <input v-model.trim="administratorPhone" type="tel" maxlength="64" autocomplete="tel" />
+          </label>
+          <label>
+            Estado de la cuenta
+            <select v-model="administratorActive" required>
+              <option value="Y">Activa</option>
+              <option value="N">Inactiva</option>
+            </select>
+          </label>
+          <button class="button-primary workspace-submit" type="submit" :disabled="administratorSaving">
+            {{ administratorSaving ? "Guardando..." : editingAdministratorLogin === null ? "Registrar administrador" : "Guardar cambios" }}
+          </button>
+        </form>
+      </section>
+    </div>
+
+    <div
       v-if="departmentDialogOpen"
       class="dashboard-app dashboard-modal-backdrop modal-backdrop"
       :data-theme="dashboardTheme"
@@ -3482,7 +4456,10 @@ async function removeBusinessPartner(id: number) {
         <h2 id="department-dialog-title">
           {{ editingDepartmentId === null ? "Registrar departamento" : "Editar departamento" }}
         </h2>
-        <p class="dialog-description">Captura el nombre del departamento.</p>
+        <p class="dialog-description">
+          Captura el nombre del departamento para
+          {{ companies.find((company) => company.id === departmentCompanyId)?.name ?? "la empresa seleccionada" }}.
+        </p>
         <form class="workspace-form modal-workspace-form" @submit.prevent="submitDepartment">
           <label>
             Nombre del departamento

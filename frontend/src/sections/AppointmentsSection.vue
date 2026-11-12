@@ -16,6 +16,7 @@ type Appointment = {
   referenceCode: string;
   registeredBy: string;
   company: string;
+  tenantCompanyName?: string;
   host: string;
   status: AppointmentStatus;
 };
@@ -42,6 +43,9 @@ const props = defineProps<{
   loading: boolean;
   canCreateAppointments: boolean;
   canManageAppointments: boolean;
+  canSendReference: boolean;
+  isCompanyUser: boolean;
+  companyScope: "cymez" | "all";
   isAdmin: boolean;
   isReception: boolean;
   isHost: boolean;
@@ -89,6 +93,11 @@ function getAttendanceStatus(appointment: Appointment) {
 
 function getAppointmentStatus(appointment: Appointment) {
   return getAttendanceStatus(appointment) ?? appointment.status;
+}
+
+function usesReference(appointment: Appointment) {
+  return props.isCompanyUser ||
+    appointment.tenantCompanyName?.trim().toLocaleLowerCase("es") !== "cymez";
 }
 
 function getAppointmentStatusClass(appointment: Appointment) {
@@ -170,6 +179,7 @@ const appointmentHelpSections = computed(() =>
 );
 
 const emit = defineEmits<{
+  "update:companyScope": [scope: "cymez" | "all"];
   "update:filter": [value: "day" | "all"];
   "update:search": [value: string];
   "update:page": [value: number];
@@ -179,6 +189,7 @@ const emit = defineEmits<{
   cancel: [appointment: Appointment];
   openQr: [appointment: Appointment];
   sendCompanyQrs: [appointment: Appointment];
+  sendReference: [appointment: Appointment];
   delete: [appointment: Appointment];
   edit: [appointment: Appointment];
   changeMonth: [delta: number];
@@ -239,6 +250,17 @@ const emit = defineEmits<{
             @click="emit('update:filter', 'all')"
           >Todas las citas</button>
         </div>
+        <label v-if="isAdmin" class="agenda-company-scope">
+          <span class="sr-only">Filtrar agenda por empresa</span>
+          <select
+            :value="companyScope"
+            aria-label="Filtrar agenda por empresa"
+            @change="emit('update:companyScope', ($event.target as HTMLSelectElement).value as 'cymez' | 'all')"
+          >
+            <option value="cymez">Cymez</option>
+            <option value="all">Todas las empresas</option>
+          </select>
+        </label>
         <label class="agenda-search">
           <svg class="icon"><use href="#i-search" /></svg>
           <span class="sr-only">Buscar cita</span>
@@ -258,7 +280,7 @@ const emit = defineEmits<{
         <table class="workspace-table agenda-table" :class="{ 'agenda-table-readonly': !canManageAppointments }">
           <thead>
             <tr>
-              <th>Hora</th><th>Visitante</th><th>Empresa</th><th>Anfitrión</th><th>Estado</th><th>Acciones</th>
+              <th>Hora</th><th>Visitante</th><th>Empresa</th><th v-if="isAdmin && companyScope === 'all'">Empresa del registro</th><th>Anfitrión</th><th>Estado</th><th>Acciones</th>
             </tr>
           </thead>
           <tbody>
@@ -266,6 +288,7 @@ const emit = defineEmits<{
               <td>{{ appointment.time }}</td>
               <td>{{ appointment.visitor }}</td>
               <td>{{ appointment.company }}</td>
+              <td v-if="isAdmin && companyScope === 'all'">{{ appointment.tenantCompanyName || "N/A" }}</td>
               <td>{{ appointment.host }}</td>
               <td>
                 <span class="status-pill" :class="getAppointmentStatusClass(appointment)">
@@ -287,7 +310,7 @@ const emit = defineEmits<{
                     @click="emit('edit', appointment)"
                   >Editar</button>
                   <button
-                    v-if="canManageAppointments"
+                    v-if="canManageAppointments && !isCompanyUser"
                     class="workspace-remove"
                     type="button"
                     :aria-label="`Cancelar cita de ${appointment.visitor}`"
@@ -295,20 +318,30 @@ const emit = defineEmits<{
                     @click="emit('cancel', appointment)"
                   >Cancelar</button>
                   <button
+                    v-if="!usesReference(appointment)"
                     class="qr-button"
                     type="button"
                     :aria-label="`Ver QR de ${appointment.visitor}`"
                     @click="emit('openQr', appointment)"
                   ><svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span></button>
                   <button
-                    v-if="canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
+                    v-if="usesReference(appointment) && canSendReference && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
+                    class="qr-button"
+                    type="button"
+                    :aria-label="`Enviar referencia a ${appointment.visitor}`"
+                    @click="appointment.partnerType === 'Contratista' && appointment.businessPartnerId
+                      ? emit('sendCompanyQrs', appointment)
+                      : emit('sendReference', appointment)"
+                  ><span>Enviar referencia</span></button>
+                  <button
+                    v-else-if="!usesReference(appointment) && canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
                     class="qr-button"
                     type="button"
                     :aria-label="`Enviar QR al personal de ${appointment.company}`"
                     @click="emit('sendCompanyQrs', appointment)"
                   ><svg class="icon"><use href="#i-qr" /></svg><span>Enviar QR</span></button>
                   <button
-                    v-if="canManageAppointments"
+                    v-if="canManageAppointments && !isCompanyUser"
                     class="workspace-remove agenda-delete-action"
                     type="button"
                     :aria-label="`Eliminar cita de ${appointment.visitor}`"

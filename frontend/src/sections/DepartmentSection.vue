@@ -3,6 +3,7 @@ import { computed } from "vue";
 
 type Department = {
   id: number;
+  companyId: number;
   name: string;
   hostCount?: number;
 };

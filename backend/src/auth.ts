@@ -18,6 +18,10 @@ export type AuthenticatedUser = {
   email: string | null;
   role: string | null;
   isAdmin: boolean;
+  isCompanyAdmin: boolean;
+  companyId: number | null;
+  companyRole: "administrador_empresa" | "recepcion" | "anfitrion" | null;
+  mustChangePassword: boolean;
   sessionKey: string;
 };
 
@@ -30,6 +34,18 @@ type UserIdentityRow = RowDataPacket & {
   role: string | null;
 };
 
+type CompanyAdminIdentityRow = RowDataPacket & {
+  login: string;
+  pswd: string;
+  name: string | null;
+  email: string | null;
+  active: string;
+  rol_aplicacion: "administrador_empresa" | "recepcion" | "anfitrion" | "sin_acceso";
+  must_change_password: number | boolean;
+  role: string | null;
+  company_id: number;
+};
+
 const dummyPasswordHash = Bun.password.hash(crypto.randomUUID(), {
   algorithm: "argon2id",
 });
@@ -39,6 +55,36 @@ function hasProgrammerRole(role: string | null) {
 }
 
 export async function getActiveUser(login: string): Promise<AuthenticatedUser | null> {
+  const [companyAdminRows] = await pool.execute<CompanyAdminIdentityRow[]>(
+    `SELECT login, pswd, name, email, active, rol_aplicacion,
+            must_change_password, role, company_id
+     FROM accesos
+     WHERE login = ?
+     LIMIT 1`,
+    [login],
+  );
+  const companyAdmin = companyAdminRows[0];
+  if (companyAdmin) {
+    if (
+      !["Y", "1"].includes(companyAdmin.active) ||
+      companyAdmin.rol_aplicacion === "sin_acceso"
+    ) {
+      return null;
+    }
+    return {
+      login: companyAdmin.login,
+      name: companyAdmin.name,
+      email: companyAdmin.email,
+      role: companyAdmin.role,
+      isAdmin: false,
+      isCompanyAdmin: companyAdmin.rol_aplicacion === "administrador_empresa",
+      companyId: Number(companyAdmin.company_id),
+      companyRole: companyAdmin.rol_aplicacion,
+      mustChangePassword: Boolean(companyAdmin.must_change_password),
+      sessionKey: companyAdmin.pswd,
+    };
+  }
+
   const [rows] = await getExternalUsersPool().execute<UserIdentityRow[]>(
     `SELECT login, pswd, name, email, active, role
      FROM seg_users
@@ -59,6 +105,10 @@ export async function getActiveUser(login: string): Promise<AuthenticatedUser | 
     email: user.email,
     role: user.role,
     isAdmin: sectionRows.length > 0 || hasProgrammerRole(user.role),
+    isCompanyAdmin: false,
+    companyId: null,
+    companyRole: null,
+    mustChangePassword: false,
     sessionKey: user.pswd,
   };
 }
@@ -67,6 +117,43 @@ export async function authenticateUser(
   identifier: string,
   password: string,
 ): Promise<AuthenticatedUser | null> {
+  const [companyAdminRows] = await pool.execute<CompanyAdminIdentityRow[]>(
+    `SELECT login, pswd, name, email, active, rol_aplicacion,
+            must_change_password, role, company_id
+     FROM accesos
+     WHERE login = ? OR email = ?
+     LIMIT 1`,
+    [identifier, identifier],
+  );
+  const companyAdmin = companyAdminRows[0];
+  if (companyAdmin) {
+    const isArgon2id = companyAdmin.pswd.startsWith("$argon2id$");
+    const passwordMatches = await Bun.password.verify(
+      password,
+      isArgon2id ? companyAdmin.pswd : await dummyPasswordHash,
+    );
+    if (
+      !isArgon2id ||
+      !passwordMatches ||
+      !["Y", "1"].includes(companyAdmin.active) ||
+      companyAdmin.rol_aplicacion === "sin_acceso"
+    ) {
+      return null;
+    }
+    return {
+      login: companyAdmin.login,
+      name: companyAdmin.name,
+      email: companyAdmin.email,
+      role: companyAdmin.role,
+      isAdmin: false,
+      isCompanyAdmin: companyAdmin.rol_aplicacion === "administrador_empresa",
+      companyId: Number(companyAdmin.company_id),
+      companyRole: companyAdmin.rol_aplicacion,
+      mustChangePassword: Boolean(companyAdmin.must_change_password),
+      sessionKey: companyAdmin.pswd,
+    };
+  }
+
   const query = `SELECT login, pswd, name, email, active, role
    FROM seg_users
    WHERE login = ? OR email = ?
@@ -105,6 +192,10 @@ export async function authenticateUser(
     email: user.email,
     role: user.role,
     isAdmin: sectionRows.length > 0 || hasProgrammerRole(user.role),
+    isCompanyAdmin: false,
+    companyId: null,
+    companyRole: null,
+    mustChangePassword: false,
     sessionKey: user.pswd,
   };
 }

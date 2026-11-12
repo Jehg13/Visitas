@@ -142,12 +142,34 @@ el login o correo y solo se autentican cuentas activas (`active` igual a `Y` o
 `seg_users` y administra los permisos propios de esta aplicación en la tabla
 local `accesos_secciones`; no altera los datos de usuario externos. Cualquier
 cuenta activa cuyo rol externo sea `Programador` obtiene acceso de Administrador
-automáticamente. También se puede definir `INITIAL_ADMIN_LOGIN` para dar ese
+automáticamente. En **Accesos**, el administrador de plataforma puede asignar
+Administrador, Recepción, Anfitriones o dejar la cuenta sin acceso. También se puede definir `INITIAL_ADMIN_LOGIN` para dar ese
 acceso inicial a una cuenta específica. La sección Accesos permite administrar
 los permisos de las demás cuentas. La recuperación de
 contraseña actualiza `seg_users.pswd`, por lo que el usuario MySQL externo
-requiere permiso de lectura y actualización sobre esa tabla. El permiso
-`anfitriones` se concede al registrar una cuenta real como anfitrión.
+requiere permiso de lectura y actualización sobre esa tabla. El acceso
+`anfitriones` se asigna desde Accesos y la vinculación a departamento se
+administra en la sección de usuarios.
+
+La sección **Administradores** permite a un administrador de plataforma crear
+cuentas locales ligadas a una empresa en `accesos`, con el rol explícito
+`rol_aplicacion` (`administrador_empresa`, `recepcion`, `anfitrion` o
+`sin_acceso`). Las cuentas de empresa nunca se interpretan como administradores
+de plataforma. La sección **Usuarios de empresa** permite a cada administrador
+crear recepcionistas y anfitriones de su empresa y asignar anfitriones a un
+departamento.
+
+Las cuentas nuevas reciben una contraseña temporal aleatoria, almacenada con
+Argon2id y visible una sola vez al registrarlas. El backend exige cambiarla
+antes de permitir cualquier otra solicitud autenticada. Mientras no se haya
+completado el aislamiento de todos los módulos operativos por empresa, las
+cuentas locales solo pueden gestionar la empresa, sus departamentos y sus
+usuarios; los perfiles locales de Recepción y Anfitrión no reciben acceso a
+datos operativos.
+
+El Inicio de administración incorpora un comparativo de empresas con
+departamentos, administradores y personal con acceso, además de las gráficas
+existentes de actividad y bitácora.
 
 Las cuentas activas con rol `Programador` conservan acceso completo.
 Recepción solo tiene las vistas
@@ -410,7 +432,7 @@ frontend/              Aplicación Vue 3 + Vite + TypeScript + Vue Router + Pini
   src/dashboardRoutes.ts Mapa entre secciones del dashboard y sus rutas
   src/LoginView.vue    Formulario de acceso
   src/DashboardView.vue Estructura del dashboard, navegación y estado compartido
-  src/sections/        Home, Agenda, Anfitriones, Accesos, Departamentos,
+  src/sections/        Home, Agenda, Anfitriones, Accesos, Administradores, Departamentos,
                        Personal externo, Directorio, Equipo y Bitácora
 backend/               API Bun + TypeScript
   src/db.ts            Pool de conexiones MySQL

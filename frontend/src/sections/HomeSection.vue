@@ -15,6 +15,7 @@ type Appointment = {
   referenceCode: string;
   registeredBy: string;
   company: string;
+  tenantCompanyName?: string;
   host: string;
   status: AppointmentStatus;
 };
@@ -68,6 +69,13 @@ type AppointmentHistoryItem = {
   status: string;
   details: string;
 };
+type CompanyMetric = {
+  id: number;
+  name: string;
+  departments: number;
+  administrators: number;
+  staff: number;
+};
 
 const props = defineProps<{
   appointments: Appointment[];
@@ -80,6 +88,7 @@ const emit = defineEmits<{
   createAppointment: [date: string];
   openQr: [appointment: Appointment];
   sendCompanyQrs: [appointment: Appointment];
+  sendReference: [appointment: Appointment];
   editAppointment: [appointment: Appointment];
   cancelAppointment: [appointment: Appointment];
   deleteAppointment: [appointment: Appointment];
@@ -87,6 +96,10 @@ const emit = defineEmits<{
   openAppointments: [];
   openEquipment: [];
 }>();
+
+function usesReference(appointment: Appointment) {
+  return appointment.tenantCompanyName?.trim().toLocaleLowerCase("es") !== "cymez";
+}
 
 const today = getLocalDate();
 const selectedAgendaDate = ref(today);
@@ -100,6 +113,8 @@ const recentEntries = ref<LogEntry[]>([]);
 const appointmentHistory = ref<AppointmentHistoryItem[]>([]);
 const periodActivity = ref<DailyActivity[]>([]);
 const equipmentDeclarationCount = ref<number | null>(null);
+const companyMetrics = ref<CompanyMetric[]>([]);
+const companyMetricsError = ref("");
 const dashboardError = ref("");
 const dashboardLoading = ref(false);
 let dashboardRequestVersion = 0;
@@ -193,6 +208,9 @@ const donutSegments = computed(() => {
 });
 const maxTrendValue = computed(() =>
   Math.max(1, ...periodActivity.value.flatMap((day) => trendSeries.map((series) => day[series.key]))),
+);
+const maxCompanyUsers = computed(() =>
+  Math.max(1, ...companyMetrics.value.map((company) => company.administrators + company.staff)),
 );
 const trendDateLabels = computed(() => {
   const labelInterval = Math.max(1, Math.ceil(periodActivity.value.length / 6));
@@ -370,15 +388,38 @@ async function loadDashboardData() {
   }
 }
 
+async function loadCompanyMetrics() {
+  if (!props.isAdmin) return;
+  try {
+    const response = await fetch("/api/company-metrics");
+    const result = await response.json() as { companies?: CompanyMetric[]; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "No se pudieron cargar las métricas por empresa.");
+    if (!Array.isArray(result.companies)) {
+      throw new Error("Las métricas por empresa tienen un formato inesperado.");
+    }
+    companyMetrics.value = result.companies;
+    companyMetricsError.value = "";
+  } catch (error) {
+    console.error("No se pudieron cargar las métricas por empresa:", error);
+    companyMetricsError.value = error instanceof Error
+      ? error.message
+      : "No se pudieron cargar las métricas por empresa.";
+  }
+}
+
 watch([historyFromDate, historyToDate], () => void loadDashboardData());
 watch(() => props.appointments, () => void loadDashboardData());
 
 function refreshDashboardAfterRealtimeUpdate() {
-  if (document.visibilityState === "visible") void loadDashboardData();
+  if (document.visibilityState === "visible") {
+    void loadDashboardData();
+    void loadCompanyMetrics();
+  }
 }
 
 onMounted(() => {
   void loadDashboardData();
+  void loadCompanyMetrics();
   window.addEventListener("visitas:data-changed", refreshDashboardAfterRealtimeUpdate);
 });
 
@@ -548,6 +589,43 @@ onBeforeUnmount(() => {
     </section>
   </div>
 
+  <section v-if="isAdmin" class="panel home-company-chart" aria-labelledby="home-company-title">
+    <header class="panel-heading">
+      <div class="panel-title">
+        <svg class="icon"><use href="#i-building" /></svg>
+        <div>
+          <h2 id="home-company-title">Estructura por empresa</h2>
+          <p>Usuarios con acceso y departamentos registrados</p>
+        </div>
+      </div>
+      <span class="home-chart-total"><strong>{{ companyMetrics.length }}</strong> empresas</span>
+    </header>
+    <p v-if="companyMetricsError" class="dashboard-data-error" role="alert">{{ companyMetricsError }}</p>
+    <div v-else-if="companyMetrics.length" class="home-company-list">
+      <article v-for="company in companyMetrics" :key="company.id" class="home-company-row">
+        <div class="home-company-row-heading">
+          <strong>{{ company.name }}</strong>
+          <span>{{ company.departments }} {{ company.departments === 1 ? "departamento" : "departamentos" }}</span>
+        </div>
+        <div
+          class="home-company-bar-track"
+          role="img"
+          :aria-label="`${company.name}: ${company.administrators} administradores y ${company.staff} usuarios`"
+        >
+          <span
+            class="home-company-bar"
+            :style="{ width: `${(company.administrators + company.staff) / maxCompanyUsers * 100}%` }"
+          ></span>
+        </div>
+        <div class="home-company-roles">
+          <span>{{ company.administrators }} administradores</span>
+          <span>{{ company.staff }} recepcionistas/anfitriones</span>
+        </div>
+      </article>
+    </div>
+    <p v-else class="home-chart-empty">No hay empresas registradas.</p>
+  </section>
+
   <div class="dashboard-panels">
     <section class="panel agenda-panel" aria-labelledby="agenda-title">
       <header class="panel-heading">
@@ -614,6 +692,7 @@ onBeforeUnmount(() => {
                     @click="emit('cancelAppointment', appointment)"
                   >Cancelar</button>
                   <button
+                    v-if="!usesReference(appointment)"
                     class="qr-button"
                     type="button"
                     :aria-label="`Ver QR de ${appointment.visitor}`"
@@ -621,7 +700,16 @@ onBeforeUnmount(() => {
                     @click="emit('openQr', appointment)"
                   ><svg class="icon"><use href="#i-qr" /></svg><span>Ver QR</span></button>
                   <button
-                    v-if="canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
+                    v-if="usesReference(appointment) && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
+                    class="qr-button"
+                    type="button"
+                    :aria-label="`Enviar referencia a ${appointment.visitor}`"
+                    @click="appointment.partnerType === 'Contratista' && appointment.businessPartnerId
+                      ? emit('sendCompanyQrs', appointment)
+                      : emit('sendReference', appointment)"
+                  ><span>Enviar referencia</span></button>
+                  <button
+                    v-else-if="!usesReference(appointment) && canManageAppointments && appointment.partnerType === 'Contratista' && appointment.businessPartnerId && appointment.status !== 'Cancelada' && appointment.status !== 'Retirado'"
                     class="qr-button"
                     type="button"
                     :aria-label="`Enviar QR al personal de ${appointment.company}`"

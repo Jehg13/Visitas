@@ -1,8 +1,10 @@
 export const dashboardSectionPaths = {
   Inicio: "/inicio",
   "Agenda de citas": "/agenda",
-  Anfitriones: "/anfitriones",
+  "Usuarios de empresa": "/anfitriones",
   Accesos: "/accesos",
+  Empresas: "/organizaciones",
+  Administradores: "/administradores",
   Departamento: "/departamentos",
   "Personal de externos": "/personal-externo",
   "Contratistas, proveedores y visitantes": "/empresas",

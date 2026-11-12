@@ -20,6 +20,8 @@ import {
   getVisitTimerIntervalMinutes,
 } from "./visit-timers";
 import { inheritManualRegistrationReference } from "./daily-log-details";
+import { canCompanyAccountAccessApi } from "./company-access";
+import { isValidPassword } from "./password-policy";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
@@ -60,7 +62,7 @@ for (const origin of corsAllowedOrigins) {
   }
 }
 const sectionAccessValues = ["recepcion", "anfitriones", "administrador"] as const;
-const managedAccessValues = ["recepcion", "administrador"] as const;
+const managedAccessValues = ["recepcion", "anfitriones", "administrador"] as const;
 type SectionAccess = (typeof sectionAccessValues)[number];
 type DatabaseConnection = Awaited<ReturnType<typeof pool.getConnection>>;
 type RealtimeSubscriber = {
@@ -79,6 +81,10 @@ function safeErrorCode(error: unknown): string {
     return error.code;
   }
   return "UNKNOWN";
+}
+
+function generateTemporaryPassword() {
+  return `V!${randomBytes(24).toString("base64url")}9a`;
 }
 
 const realtimeSubscribers = new Set<RealtimeSubscriber>();
@@ -366,8 +372,8 @@ type ActiveDailyLogTimer = {
   status: "active";
 };
 
-async function listActiveDailyLogTimers() {
-  const [rows] = await pool.query<(RowDataPacket & {
+async function listActiveDailyLogTimers(companyId?: number) {
+  const [rows] = await pool.execute<(RowDataPacket & {
     id: number;
     appointment_id: number | null;
     visitor_record_id: number | null;
@@ -377,13 +383,15 @@ async function listActiveDailyLogTimers() {
     started_at: string;
     due_at: string;
   })[]>(
-    `SELECT id, appointment_id, visitor_record_id, person_name, phase, interval_minutes,
+    `    SELECT t.id, t.appointment_id, t.visitor_record_id, t.person_name, t.phase, t.interval_minutes,
             DATE_FORMAT(started_at, '%Y-%m-%dT%H:%i:%s.000Z') AS started_at,
             DATE_FORMAT(due_at, '%Y-%m-%dT%H:%i:%s.000Z') AS due_at
-     FROM daily_log_timers
-     WHERE status = 'active' AND visit_date = ?
-     ORDER BY due_at, id`,
-    [getAppDateTime().date],
+    FROM daily_log_timers t
+    INNER JOIN daily_log_entries d ON d.id = t.visit_entry_id
+    WHERE t.status = 'active' AND t.visit_date = ?
+      ${companyId === undefined ? "" : "AND d.company_id = ?"}
+    ORDER BY t.due_at, t.id`,
+    companyId === undefined ? [getAppDateTime().date] : [getAppDateTime().date, companyId],
   );
   return rows.map((row): ActiveDailyLogTimer => ({
     id: Number(row.id),
@@ -1049,8 +1057,15 @@ type AccessLoginRow = RowDataPacket & {
 
 type DepartmentRow = RowDataPacket & {
   id: number;
+  company_id: number;
   name: string;
   host_count?: number;
+};
+
+type CompanyRow = RowDataPacket & {
+  id: number;
+  name: string;
+  department_count: number;
 };
 
 type DepartmentHostRow = RowDataPacket & {
@@ -1140,6 +1155,8 @@ type AppointmentRow = RowDataPacket & {
   visit_date: string;
   visit_time: string;
   visitor_name: string;
+  tenant_company_name?: string;
+  tenant_company_id?: number;
   visitor_email: string;
   registered_by: string;
   company_name: string;
@@ -1230,6 +1247,7 @@ type DailyLogRow = RowDataPacket & {
   external_staff_id: number | null;
   visitor_record_id: number | null;
   company_name: string | null;
+  tenant_company_name: string | null;
   host_name: string | null;
   category: "Visitante" | "Contratista" | "Proveedor" | "Sin categoría";
 };
@@ -1390,7 +1408,13 @@ function hashAuthValue(scope: string, value: string) {
 }
 
 async function authenticateWithLockout(identifier: string, password: string, sourceAddress: string) {
-  const [accounts] = await getExternalUsersPool().execute<RowDataPacket[]>(
+  const [companyAdminAccounts] = await pool.execute<RowDataPacket[]>(
+    "SELECT login FROM accesos WHERE login = ? OR email = ? LIMIT 1",
+    [identifier, identifier],
+  );
+  const [accounts] = companyAdminAccounts.length > 0
+    ? [companyAdminAccounts]
+    : await getExternalUsersPool().execute<RowDataPacket[]>(
     "SELECT login FROM seg_users WHERE login = ? OR email = ? LIMIT 1",
     [identifier, identifier],
   );
@@ -1833,19 +1857,20 @@ async function writeVisitorKioskMovement(
   const details = event === "Ingreso" && !Boolean(registration.kiosk_items_present)
     ? `Registro manual · Folio ${registration.folio} · Ingreso autorizado sin equipo ni herramientas`
     : `Registro manual · Folio ${registration.folio} · Checklist de ${event === "Ingreso" ? "entrada" : "salida"} completado${movementDetails}`;
+  const companyId = await getCymezCompanyId();
   const [existing] = await connection.execute<RowDataPacket[]>(
     `SELECT id
      FROM daily_log_entries
-     WHERE visitor_record_id = ? AND event_type = ? AND details = ?
+     WHERE visitor_record_id = ? AND event_type = ? AND details = ? AND company_id = ?
      LIMIT 1`,
-    [registration.visitor_record_id, event, details],
+    [registration.visitor_record_id, event, details, companyId],
   );
   if (existing[0]) return;
   const [movementResult] = await connection.execute<ResultSetHeader>(
     `INSERT INTO daily_log_entries
        (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
-        details, visitor_record_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        details, visitor_record_id, company_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       date,
       time,
@@ -1855,6 +1880,7 @@ async function writeVisitorKioskMovement(
       actorName,
       details,
       registration.visitor_record_id,
+      companyId,
     ],
   );
   await updateVisitTimerForMovement(connection, {
@@ -2021,6 +2047,7 @@ async function handleVisitorKioskRequest(
     let transactionStep = "iniciar transacción";
     try {
       await connection.beginTransaction();
+      const companyId = await getCymezCompanyId();
       transactionStep = "comprobar clave de idempotencia";
       const [existingRegistrations] = await connection.execute<RowDataPacket[]>(
         `SELECT r.folio, v.full_name AS visitor_name, r.authorization_status,
@@ -2058,10 +2085,10 @@ async function handleVisitorKioskRequest(
       })[]>(
         `SELECT id, full_name
          FROM general_visitors
-         WHERE full_name = ?
+         WHERE full_name = ? AND company_id = ?
          ORDER BY id
          FOR UPDATE`,
-        [input.visitorName],
+        [input.visitorName, companyId],
       );
       const matchingVisitor = visitorMatches.find(
         (visitor) => normalizeVisitorName(visitor.full_name) === normalizeVisitorName(input.visitorName),
@@ -2071,9 +2098,9 @@ async function handleVisitorKioskRequest(
         visitorRecordId = Number(matchingVisitor.id);
       } else {
         const [visitorResult] = await connection.execute<ResultSetHeader>(
-          `INSERT INTO general_visitors (full_name, curp, phone, email)
-           VALUES (?, NULL, '', '')`,
-          [input.visitorName],
+          `INSERT INTO general_visitors (company_id, full_name, curp, phone, email)
+           VALUES (?, ?, NULL, '', '')`,
+          [companyId, input.visitorName],
         );
         visitorRecordId = visitorResult.insertId;
       }
@@ -2082,18 +2109,18 @@ async function handleVisitorKioskRequest(
       const [existingVisitorPartners] = await connection.execute<RowDataPacket[]>(
         `SELECT id
          FROM business_partners
-         WHERE visitor_record_id = ?
+         WHERE visitor_record_id = ? AND company_id = ?
          LIMIT 1
          FOR UPDATE`,
-        [visitorRecordId],
+        [visitorRecordId, companyId],
       );
       if (!existingVisitorPartners[0]) {
         await connection.execute(
           `INSERT INTO business_partners
-             (name, description, rfc, category, subject, visitor_record_id,
+             (company_id, name, description, rfc, category, subject, visitor_record_id,
               employee_count, partner_type, is_active)
-           VALUES (?, 'Público General', NULL, 'Visitante', ?, ?, 1, 'Visitante', TRUE)`,
-          [input.visitorName, input.visitReason, visitorRecordId],
+           VALUES (?, ?, 'Público General', NULL, 'Visitante', ?, ?, 1, 'Visitante', TRUE)`,
+          [companyId, input.visitorName, input.visitReason, visitorRecordId],
         );
       }
 
@@ -2151,8 +2178,8 @@ async function handleVisitorKioskRequest(
       const [arrivalResult] = await connection.execute<ResultSetHeader>(
         `INSERT INTO daily_log_entries
            (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name,
-            details, visitor_record_id)
-         VALUES (?, ?, 'Llegada', ?, 'autorregistro', 'Registro manual', ?, ?)`,
+            details, visitor_record_id, company_id)
+         VALUES (?, ?, 'Llegada', ?, 'autorregistro', 'Registro manual', ?, ?, ?)` ,
         [
           date,
           time,
@@ -2163,6 +2190,7 @@ async function handleVisitorKioskRequest(
               : "Pendiente de autorización"
           } · Motivo: ${input.visitReason}`,
           visitorRecordId,
+          companyId,
         ],
       );
       await updateVisitTimerForMovement(connection, {
@@ -2759,12 +2787,17 @@ function parseAppointment(value: unknown): AppointmentInput | null {
   };
 }
 
-async function resolveAppointmentHostName(input: AppointmentInput): Promise<string | null> {
+async function resolveAppointmentHostName(
+  input: AppointmentInput,
+  companyId?: number,
+): Promise<string | null> {
   if (input.hostLogin === null) return input.hostName;
 
   const [hosts] = await pool.execute<(RowDataPacket & { name: string })[]>(
-    "SELECT name FROM department_hosts WHERE login = ? LIMIT 1",
-    [input.hostLogin],
+    `SELECT dh.name FROM department_hosts dh
+     ${companyId === undefined ? "" : "INNER JOIN departments d ON d.id = dh.department_id AND d.company_id = ?"}
+     WHERE dh.login = ? LIMIT 1`,
+    companyId === undefined ? [input.hostLogin] : [companyId, input.hostLogin],
   );
   if (!hosts[0]) return null;
 
@@ -2772,16 +2805,16 @@ async function resolveAppointmentHostName(input: AppointmentInput): Promise<stri
     ? await pool.execute<(RowDataPacket & { owner_login: string | null })[]>(
         `SELECT registered_by_login AS owner_login
          FROM general_visitors
-         WHERE id = ?
+         WHERE id = ? ${companyId === undefined ? "" : "AND company_id = ?"}
          LIMIT 1`,
-        [input.visitorRecordId],
+        companyId === undefined ? [input.visitorRecordId] : [input.visitorRecordId, companyId],
       )
     : await pool.execute<(RowDataPacket & { owner_login: string | null })[]>(
         `SELECT created_by_login AS owner_login
          FROM business_partners
-         WHERE id = ?
+         WHERE id = ? ${companyId === undefined ? "" : "AND company_id = ?"}
          LIMIT 1`,
-        [input.businessPartnerId],
+        companyId === undefined ? [input.businessPartnerId] : [input.businessPartnerId, companyId],
       );
   if (owners[0]?.owner_login !== input.hostLogin) return null;
 
@@ -2812,6 +2845,7 @@ function parseHostVisitor(value: unknown): HostVisitorInput | null {
 async function resolveAppointmentDetails(
   input: AppointmentInput,
   ownerLogin?: string,
+  companyId?: number,
 ) {
   if (input.visitorRecordId !== null) {
     const [visitors] = await pool.execute<(RowDataPacket & {
@@ -2823,10 +2857,13 @@ async function resolveAppointmentDetails(
        WHERE id = ?
          AND registered_by_login IS NOT NULL
          ${ownerLogin === undefined ? "" : "AND registered_by_login = ?"}
+         ${companyId === undefined ? "" : "AND company_id = ?"}
        LIMIT 1`,
-      ownerLogin === undefined
-        ? [input.visitorRecordId]
-        : [input.visitorRecordId, ownerLogin],
+      [
+        input.visitorRecordId,
+        ...(ownerLogin === undefined ? [] : [ownerLogin]),
+        ...(companyId === undefined ? [] : [companyId]),
+      ],
     );
     if (!visitors[0]) return null;
     return {
@@ -2838,8 +2875,9 @@ async function resolveAppointmentDetails(
     };
   }
   const [partners] = await pool.execute<(RowDataPacket & { name: string })[]>(
-    "SELECT name FROM business_partners WHERE id = ? LIMIT 1",
-    [input.businessPartnerId],
+    `SELECT name FROM business_partners WHERE id = ?
+     ${companyId === undefined ? "" : "AND company_id = ?"} LIMIT 1`,
+    companyId === undefined ? [input.businessPartnerId] : [input.businessPartnerId, companyId],
   );
   if (!partners[0]) return null;
   return {
@@ -2914,14 +2952,25 @@ async function listBusinessPartners(
   ownerLogin?: string,
   includeRegistrant = true,
   includeRegistrantLogin = false,
+  companyId?: number,
 ) {
+  const conditions: string[] = [];
+  const parameters: Array<string | number> = [];
+  if (ownerLogin !== undefined) {
+    conditions.push("created_by_login = ?");
+    parameters.push(ownerLogin);
+  }
+  if (companyId !== undefined) {
+    conditions.push("company_id = ?");
+    parameters.push(companyId);
+  }
   const [rows] = await pool.execute<BusinessPartnerRow[]>(
     `SELECT id, name, description, rfc, category, subject, visitor_record_id,
             employee_count, partner_type, is_active, created_by_login, created_by_name
      FROM business_partners
-     ${ownerLogin === undefined ? "" : "WHERE created_by_login = ?"}
+     ${conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`}
      ORDER BY name, id`,
-    ownerLogin === undefined ? [] : [ownerLogin],
+    parameters,
   );
   return rows.map((row) => ({
     id: Number(row.id),
@@ -2946,11 +2995,13 @@ async function listBusinessPartners(
   }));
 }
 
-async function listGeneralVisitors() {
-  const [rows] = await pool.query<GeneralVisitorRow[]>(
+async function listGeneralVisitors(companyId?: number) {
+  const [rows] = await pool.execute<GeneralVisitorRow[]>(
     `SELECT id, full_name, curp, phone, email
      FROM general_visitors
+     ${companyId === undefined ? "" : "WHERE company_id = ?"}
      ORDER BY full_name, id`,
+    companyId === undefined ? [] : [companyId],
   );
   return rows.map((row) => ({
     id: Number(row.id),
@@ -2961,7 +3012,21 @@ async function listGeneralVisitors() {
   }));
 }
 
-async function listHostVisitors(ownerLogin?: string, includeRegistrantLogin = false) {
+async function listHostVisitors(
+  ownerLogin?: string,
+  includeRegistrantLogin = false,
+  companyId?: number,
+) {
+  const conditions = ["registered_by_login IS NOT NULL"];
+  const parameters: Array<string | number> = [];
+  if (ownerLogin !== undefined) {
+    conditions.push("registered_by_login = ?");
+    parameters.push(ownerLogin);
+  }
+  if (companyId !== undefined) {
+    conditions.push("company_id = ?");
+    parameters.push(companyId);
+  }
   const [rows] = await pool.execute<(RowDataPacket & {
     id: number;
     full_name: string;
@@ -2971,10 +3036,9 @@ async function listHostVisitors(ownerLogin?: string, includeRegistrantLogin = fa
   })[]>(
     `SELECT id, full_name, phone, email, registered_by_login
      FROM general_visitors
-     WHERE registered_by_login IS NOT NULL
-       ${ownerLogin === undefined ? "" : "AND registered_by_login = ?"}
+    WHERE ${conditions.join(" AND ")}
      ORDER BY full_name, id`,
-    ownerLogin === undefined ? [] : [ownerLogin],
+    parameters,
   );
   return rows.map((row) => ({
     id: Number(row.id),
@@ -2985,13 +3049,15 @@ async function listHostVisitors(ownerLogin?: string, includeRegistrantLogin = fa
   }));
 }
 
-async function listExternalStaff() {
-  const [rows] = await pool.query<ExternalStaffRow[]>(
+async function listExternalStaff(companyId?: number) {
+  const [rows] = await pool.execute<ExternalStaffRow[]>(
     `SELECT s.id, s.business_partner_id, s.full_name, s.phone, s.email,
             p.name AS partner_name, p.partner_type
      FROM external_staff s
      INNER JOIN business_partners p ON p.id = s.business_partner_id
+     ${companyId === undefined ? "" : "WHERE p.company_id = ?"}
      ORDER BY s.full_name, s.id`,
+    companyId === undefined ? [] : [companyId],
   );
   return rows.map((row) => ({
     id: Number(row.id),
@@ -3004,9 +3070,13 @@ async function listExternalStaff() {
   }));
 }
 
-async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
+async function listAppointments(
+  ownerLogin?: string,
+  hostNames: string[] = [],
+  companyId?: number,
+) {
   const visibilityConditions: string[] = [];
-  const visibilityParameters: string[] = [];
+  const visibilityParameters: Array<string | number> = [];
   if (ownerLogin !== undefined) {
     visibilityConditions.push("appointments.created_by_login = ?");
     visibilityParameters.push(ownerLogin);
@@ -3021,6 +3091,7 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
             DATE_FORMAT(appointments.visit_date, '%Y-%m-%d') AS visit_date,
             TIME_FORMAT(appointments.visit_time, '%H:%i') AS visit_time,
             appointments.visitor_name, appointments.visitor_email, appointments.reference_code, appointments.registered_by,
+            companies.name AS tenant_company_name,
             appointments.company_name, appointments.host_name, appointments.status,
             business_partners.partner_type,
             EXISTS (
@@ -3051,10 +3122,15 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
               WHERE ed.appointment_id = appointments.id
             ) AS equipment_exit_checklist_complete
      FROM appointments
-     LEFT JOIN business_partners ON business_partners.id = appointments.business_partner_id
+     LEFT JOIN business_partners
+       ON business_partners.id = appointments.business_partner_id
+      AND business_partners.company_id = appointments.company_id
+     LEFT JOIN companies ON companies.id = appointments.company_id
      WHERE appointments.deleted_at IS NULL
        ${visibilityConditions.length === 0 ? "" : `AND (${visibilityConditions.join(" OR ")})`}
+       ${companyId === undefined ? "" : "AND appointments.company_id = ?"}
      ORDER BY appointments.visit_date DESC, appointments.visit_time, appointments.id DESC`;
+  if (companyId !== undefined) visibilityParameters.push(companyId);
   const [rows] = visibilityParameters.length === 0
     ? await pool.query<AppointmentRow[]>(query)
     : await pool.execute<AppointmentRow[]>(query, visibilityParameters);
@@ -3071,6 +3147,7 @@ async function listAppointments(ownerLogin?: string, hostNames: string[] = []) {
     referenceCode: row.reference_code ?? "",
     registeredBy: row.registered_by,
     company: row.company_name,
+    tenantCompanyName: row.tenant_company_name,
     partnerType: row.partner_type ?? (row.visitor_record_id ? "Visitante" : undefined),
     host: row.host_name,
     status: row.status,
@@ -3096,7 +3173,7 @@ async function createAppointmentReferenceCode() {
 }
 
 const dailyLogJoins = `
-  LEFT JOIN appointments a ON a.id = d.appointment_id
+  LEFT JOIN appointments a ON a.id = d.appointment_id AND a.company_id = d.company_id
   LEFT JOIN external_staff s ON s.id = COALESCE(
     d.external_staff_id,
     (
@@ -3109,8 +3186,12 @@ const dailyLogJoins = `
       LIMIT 1
     )
   )
-  LEFT JOIN business_partners bp ON bp.id = COALESCE(s.business_partner_id, a.business_partner_id)
-  LEFT JOIN general_visitors gv ON gv.id = COALESCE(d.visitor_record_id, a.visitor_record_id)`;
+  LEFT JOIN business_partners bp
+    ON bp.id = COALESCE(s.business_partner_id, a.business_partner_id)
+   AND bp.company_id = d.company_id
+  LEFT JOIN general_visitors gv
+    ON gv.id = COALESCE(d.visitor_record_id, a.visitor_record_id)
+   AND gv.company_id = d.company_id`;
 
 const dailyLogSubjectKey = `CASE
   WHEN s.id IS NOT NULL THEN CONCAT('external:', s.id)
@@ -3157,6 +3238,7 @@ END`;
 function dailyLogRecordsCte(includeRecorder: boolean) {
   return `WITH daily_log_records AS (
     SELECT d.id,
+           d.company_id,
            DATE_FORMAT(d.entry_date, '%Y-%m-%d') AS entry_date,
            TIME_FORMAT(d.entry_time, '%H:%i') AS entry_time,
            d.event_type, d.person_name,
@@ -3164,6 +3246,7 @@ function dailyLogRecordsCte(includeRecorder: boolean) {
            d.details,
            d.appointment_id, COALESCE(d.external_staff_id, s.id) AS external_staff_id,
            d.visitor_record_id,
+           c.name AS tenant_company_name,
            CASE
              WHEN d.details LIKE 'Registro manual · Folio %' THEN COALESCE(
                (
@@ -3194,6 +3277,7 @@ function dailyLogRecordsCte(includeRecorder: boolean) {
            (${dailyLogSubjectKey}) AS subject_key
     FROM daily_log_entries d
     ${dailyLogJoins}
+    LEFT JOIN companies c ON c.id = d.company_id
   )`;
 }
 
@@ -3202,7 +3286,7 @@ function dailyLogRankedEntriesCte(includeRecorder: boolean) {
     ranked_entries AS (
       SELECT d.*,
              ROW_NUMBER() OVER (
-               PARTITION BY ${dailyLogEntryPartition}
+               PARTITION BY d.company_id, ${dailyLogEntryPartition}
                ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
              ) AS row_num
       FROM daily_log_records d
@@ -3216,9 +3300,14 @@ function dailyLogConditions(
   event: string,
   category: string,
   hosts: string[],
+  companyId?: number,
 ) {
   const conditions = ["d.entry_date BETWEEN ? AND ?"];
   const parameters: Array<string | number> = [fromDate, toDate];
+  if (companyId !== undefined) {
+    conditions.push("d.company_id = ?");
+    parameters.push(companyId);
+  }
   if (search) {
     conditions.push("(d.person_name LIKE ? OR COALESCE(d.company_name, '') LIKE ? OR COALESCE(d.details, '') LIKE ?)");
     const searchTerm = `%${search}%`;
@@ -3239,7 +3328,7 @@ function dailyLogConditions(
   return { where: conditions.join(" AND "), parameters };
 }
 
-function mapDailyLogEntry(row: DailyLogRow) {
+function mapDailyLogEntry(row: DailyLogRow, includeTenantCompanyName: boolean) {
   const company = row.company_name?.trim();
   const isManualRegistration = row.details?.startsWith("Registro manual · Folio ") ?? false;
   return {
@@ -3254,6 +3343,7 @@ function mapDailyLogEntry(row: DailyLogRow) {
     externalStaffId: row.external_staff_id === null ? null : Number(row.external_staff_id),
     visitorRecordId: row.visitor_record_id === null ? null : Number(row.visitor_record_id),
     company: company || (isManualRegistration ? "Público general" : ""),
+    ...(includeTenantCompanyName ? { tenantCompanyName: row.tenant_company_name ?? "" } : {}),
     host: row.host_name ?? "",
     category: row.category,
   };
@@ -3269,8 +3359,10 @@ async function listDailyLogEntries(
   page: number,
   pageSize: number,
   includeRecorder: boolean,
+  companyId?: number,
+  includeTenantCompanyName = false,
 ) {
-  const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts);
+  const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts, companyId);
   const [countRows] = await pool.execute<RowDataPacket[]>(
     `${dailyLogRankedEntriesCte(false)}
      SELECT COUNT(*) AS total
@@ -3284,7 +3376,7 @@ async function listDailyLogEntries(
      SELECT d.id, d.entry_date, d.entry_time,
             d.event_type, d.person_name, d.recorded_by_name, d.details,
             d.appointment_id, d.external_staff_id, d.visitor_record_id,
-            d.company_name, d.host_name, d.category
+            d.company_name, d.tenant_company_name, d.host_name, d.category
      FROM ranked_entries d
      WHERE d.row_num = 1 AND ${where}
      ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
@@ -3295,10 +3387,12 @@ async function listDailyLogEntries(
     `SELECT DISTINCT host_name
      FROM appointments
      WHERE host_name <> ''
+       ${companyId === undefined ? "" : "AND company_id = ?"}
      ORDER BY host_name`,
+    companyId === undefined ? [] : [companyId],
   );
   return {
-    entries: rows.map(mapDailyLogEntry),
+    entries: rows.map((row) => mapDailyLogEntry(row, includeTenantCompanyName)),
     total,
     hosts: hostRows.map((row) => String(row.host_name)),
   };
@@ -3314,8 +3408,10 @@ async function listRecentDailyLogEntries(
   includeRecorder: boolean,
   page: number,
   pageSize: number,
+  companyId?: number,
+  includeTenantCompanyName = false,
 ) {
-  const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts);
+  const { where, parameters } = dailyLogConditions(fromDate, toDate, search, event, category, hosts, companyId);
   const [countRows] = await pool.execute<RowDataPacket[]>(
     `${dailyLogRecordsCte(false)}
      SELECT COUNT(*) AS total
@@ -3329,42 +3425,51 @@ async function listRecentDailyLogEntries(
      SELECT d.id, d.entry_date, d.entry_time,
             d.event_type, d.person_name, d.recorded_by_name, d.details,
             d.appointment_id, d.external_staff_id, d.visitor_record_id,
-            d.company_name, d.host_name, d.category
+            d.company_name, d.tenant_company_name, d.host_name, d.category
      FROM daily_log_records d
      WHERE ${where}
      ORDER BY d.entry_date DESC, d.entry_time DESC, d.id DESC
      LIMIT ? OFFSET ?`,
     [...parameters, pageSize, (page - 1) * pageSize],
   );
-  return { entries: rows.map(mapDailyLogEntry), total };
+  return {
+    entries: rows.map((row) => mapDailyLogEntry(row, includeTenantCompanyName)),
+    total,
+  };
 }
 
-async function getDailyLogSummary(fromDate: string, toDate: string) {
+async function getDailyLogSummary(fromDate: string, toDate: string, companyId?: number) {
+  const tenantParameters = companyId === undefined ? [] : [companyId];
   const [[countRows], [insideRows], [pendingRows]] = await Promise.all([
     pool.execute<RowDataPacket[]>(
       `${dailyLogRankedEntriesCte(false)}
        SELECT COUNT(*) AS movement_count,
               SUM(event_type = 'Retiro') AS exit_count
        FROM ranked_entries
-       WHERE row_num = 1 AND entry_date BETWEEN ? AND ?`,
-      [fromDate, toDate],
+       WHERE row_num = 1 AND entry_date BETWEEN ? AND ?
+         ${companyId === undefined ? "" : "AND company_id = ?"}`,
+      [fromDate, toDate, ...tenantParameters],
     ),
     pool.query<RowDataPacket[]>(
       `${dailyLogRankedEntriesCte(false)}
        SELECT COUNT(*) AS inside_count
        FROM ranked_entries
-       WHERE row_num = 1 AND event_type = 'Ingreso'`,
+       WHERE row_num = 1 AND event_type = 'Ingreso'
+         ${companyId === undefined ? "" : "AND company_id = ?"}`,
+      tenantParameters,
     ),
     pool.execute<RowDataPacket[]>(
       `SELECT COUNT(*) AS pending_count
        FROM appointments a
        WHERE a.visit_date BETWEEN ? AND ?
+         ${companyId === undefined ? "" : "AND a.company_id = ?"}
          AND a.status IN ('Pendiente', 'En proceso')
          AND NOT EXISTS (
            SELECT 1 FROM daily_log_entries d
            WHERE d.appointment_id = a.id AND d.event_type = 'Ingreso'
+             AND d.company_id = a.company_id
          )`,
-      [fromDate, toDate],
+      [fromDate, toDate, ...tenantParameters],
     ),
   ]);
   return {
@@ -3450,11 +3555,13 @@ async function getAppointmentStatusFromMovements(
         : "Pendiente";
 }
 
-async function getDailyLogDateRange() {
-  const [rows] = await pool.query<RowDataPacket[]>(
+async function getDailyLogDateRange(companyId?: number) {
+  const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT DATE_FORMAT(MIN(entry_date), '%Y-%m-%d') AS first_date,
             DATE_FORMAT(MAX(entry_date), '%Y-%m-%d') AS last_date
-     FROM daily_log_entries`,
+     FROM daily_log_entries
+     ${companyId === undefined ? "" : "WHERE company_id = ?"}`,
+    companyId === undefined ? [] : [companyId],
   );
   const firstDate = rows[0]?.first_date;
   const lastDate = rows[0]?.last_date;
@@ -3464,7 +3571,7 @@ async function getDailyLogDateRange() {
   };
 }
 
-async function getDailyLogDailyCounts(fromDate: string, toDate: string) {
+async function getDailyLogDailyCounts(fromDate: string, toDate: string, companyId?: number) {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `${dailyLogRankedEntriesCte(false)}
      SELECT entry_date,
@@ -3474,9 +3581,10 @@ async function getDailyLogDailyCounts(fromDate: string, toDate: string) {
             SUM(event_type = 'Observaciones') AS observations
      FROM ranked_entries
      WHERE row_num = 1 AND entry_date BETWEEN ? AND ?
+       ${companyId === undefined ? "" : "AND company_id = ?"}
      GROUP BY entry_date
      ORDER BY entry_date`,
-    [fromDate, toDate],
+    companyId === undefined ? [fromDate, toDate] : [fromDate, toDate, companyId],
   );
   return rows.map((row) => ({
     date: String(row.entry_date),
@@ -3487,30 +3595,53 @@ async function getDailyLogDailyCounts(fromDate: string, toDate: string) {
   }));
 }
 
-async function listDepartments() {
-  const [departments] = await pool.query<DepartmentRow[]>(
-    `SELECT d.id, d.name, COUNT(h.id) AS host_count
+async function listDepartments(companyId?: number) {
+  const [departments] = await pool.execute<DepartmentRow[]>(
+    `SELECT d.id, d.company_id, d.name, COUNT(h.id) AS host_count
      FROM departments d
      LEFT JOIN department_hosts h ON h.department_id = d.id
-     GROUP BY d.id, d.name
-     ORDER BY d.name, d.id`,
+     ${companyId === undefined ? "" : "WHERE d.company_id = ?"}
+     GROUP BY d.id, d.company_id, d.name
+     ORDER BY d.company_id, d.name, d.id`,
+    companyId === undefined ? [] : [companyId],
   );
   return departments.map((department) => ({
     id: Number(department.id),
+    companyId: Number(department.company_id),
     name: department.name,
     hostCount: Number(department.host_count ?? 0),
   }));
 }
 
-async function listDepartmentHosts() {
-  const [hosts] = await pool.query<DepartmentHostRow[]>(
+async function listCompanies(companyId?: number) {
+  const [companies] = await pool.execute<CompanyRow[]>(
+    `SELECT c.id, c.name, COUNT(d.id) AS department_count
+     FROM companies c
+     LEFT JOIN departments d ON d.company_id = c.id
+     ${companyId === undefined ? "" : "WHERE c.id = ?"}
+     GROUP BY c.id, c.name
+     ORDER BY c.id`,
+    companyId === undefined ? [] : [companyId],
+  );
+  return companies.map((company) => ({
+    id: Number(company.id),
+    name: company.name,
+    departmentCount: Number(company.department_count ?? 0),
+  }));
+}
+
+async function listDepartmentHosts(companyId?: number) {
+  const [hosts] = await pool.execute<DepartmentHostRow[]>(
     `SELECT h.id, h.login, h.name, h.department_id, h.role, h.email, h.phone,
             GROUP_CONCAT(s.seccion ORDER BY s.seccion SEPARATOR ',') AS section_access
      FROM department_hosts h
+     INNER JOIN departments d ON d.id = h.department_id
      LEFT JOIN accesos_secciones s
        ON s.login COLLATE utf8mb4_unicode_ci = h.login COLLATE utf8mb4_unicode_ci
+     ${companyId === undefined ? "" : "WHERE d.company_id = ?"}
      GROUP BY h.id, h.login, h.name, h.department_id, h.role, h.email, h.phone
      ORDER BY h.name, h.login`,
+    companyId === undefined ? [] : [companyId],
   );
   return hosts.map((host) => {
     const sections = new Set((host.section_access ?? "").split(","));
@@ -3583,6 +3714,10 @@ function publicUser(user: AuthenticatedUser, sectionAccess: SectionAccess[]) {
     email: user.email,
     role: user.role,
     isAdmin: user.isAdmin,
+    isCompanyAdmin: user.isCompanyAdmin,
+    companyId: user.companyId,
+    companyRole: user.companyRole,
+    mustChangePassword: user.mustChangePassword,
     sectionAccess,
   };
 }
@@ -3697,12 +3832,20 @@ async function listAccessAccounts() {
   }));
 }
 
-async function listUserSectionAccess(login: string, isAdmin: boolean): Promise<SectionAccess[]> {
+async function listUserSectionAccess(
+  login: string,
+  isAdmin: boolean,
+  isCompanyAdmin = false,
+  companyRole: AuthenticatedUser["companyRole"] = null,
+): Promise<SectionAccess[]> {
   if (isAdmin) return [...sectionAccessValues];
+  if (isCompanyAdmin) return ["recepcion", "anfitriones"];
+  if (companyRole === "recepcion") return ["recepcion"];
+  if (companyRole === "anfitrion") return ["anfitriones"];
   const [rows] = await pool.execute<UserSectionAccessRow[]>(
     `SELECT seccion
      FROM accesos_secciones
-     WHERE login = ? AND seccion IN ('recepcion', 'administrador')`,
+     WHERE login = ? AND seccion IN ('recepcion', 'anfitriones', 'administrador')`,
     [login],
   );
   const sections = rows.map((row) => row.seccion);
@@ -3719,23 +3862,72 @@ async function listUserSectionAccess(login: string, isAdmin: boolean): Promise<S
 
 async function hasSectionAccess(user: AuthenticatedUser, section: SectionAccess) {
   if (user.isAdmin) return true;
-  return (await listUserSectionAccess(user.login, false)).includes(section);
+  return (await listUserSectionAccess(
+    user.login,
+    false,
+    user.isCompanyAdmin,
+    user.companyRole,
+  )).includes(section);
 }
 
 async function hasHostOnlyAccess(user: AuthenticatedUser) {
   if (user.isAdmin) return false;
-  const sections = await listUserSectionAccess(user.login, false);
+  const sections = await listUserSectionAccess(
+    user.login,
+    false,
+    user.isCompanyAdmin,
+    user.companyRole,
+  );
   return sections.includes("anfitriones") && !sections.includes("recepcion");
 }
 
 async function canManageExternalModules(user: AuthenticatedUser) {
-  return user.isAdmin || (await hasHostOnlyAccess(user));
+  return user.isAdmin || user.isCompanyAdmin ||
+    (!user.companyRole && await hasHostOnlyAccess(user));
 }
 
 async function canReadExternalModules(user: AuthenticatedUser) {
   return user.isAdmin ||
+    user.isCompanyAdmin ||
     (await hasSectionAccess(user, "recepcion")) ||
     (await hasHostOnlyAccess(user));
+}
+
+function companyScopeId(user: AuthenticatedUser) {
+  return user.isAdmin ? undefined : user.companyRole ? user.companyId ?? -1 : undefined;
+}
+
+async function requestedCompanyScope(user: AuthenticatedUser, url: URL) {
+  if (!user.isAdmin) return { valid: true, companyId: companyScopeId(user) };
+  const scope = url.searchParams.get("scope") ?? "cymez";
+  if (scope === "all") return { valid: true, companyId: undefined };
+  if (scope === "cymez") return { valid: true, companyId: await getCymezCompanyId() };
+  return { valid: false, companyId: undefined };
+}
+
+async function companyIdForNewRecord(user: AuthenticatedUser) {
+  if (user.companyRole) {
+    if (user.companyId === null) {
+      throw new Error("La cuenta de empresa no tiene una empresa asignada.");
+    }
+    return user.companyId;
+  }
+  return getCymezCompanyId();
+}
+
+async function getCymezCompanyId() {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    "SELECT id FROM companies WHERE name = 'Cymez' LIMIT 1",
+  );
+  if (!rows[0]) {
+    throw new Error("No se encontró la empresa Cymez para asociar el nuevo registro.");
+  }
+  return Number(rows[0].id);
+}
+
+async function canViewDailyLog(user: AuthenticatedUser) {
+  return user.isAdmin || user.isCompanyAdmin || Boolean(user.companyRole) ||
+    await hasSectionAccess(user, "recepcion");
 }
 
 function hostNamesForUser(user: AuthenticatedUser) {
@@ -3745,20 +3937,32 @@ function hostNamesForUser(user: AuthenticatedUser) {
 }
 
 function equipmentDeclarationVisibility(user: AuthenticatedUser, hostOnlyAccess: boolean) {
-  if (!hostOnlyAccess) return { condition: "1 = 1", parameters: [] as string[] };
+  const conditions: string[] = [];
+  const parameters: Array<string | number> = [];
+  const companyId = companyScopeId(user);
+  if (companyId !== undefined) {
+    conditions.push("d.company_id = ?");
+    parameters.push(companyId);
+  }
+  if (!user.companyRole && hostOnlyAccess) {
   const hostNames = hostNamesForUser(user);
-  return {
-    condition: `((d.created_by = ? AND EXISTS (
+    conditions.push(`((d.created_by = ? AND EXISTS (
       SELECT 1 FROM business_partners owned_partner
       WHERE owned_partner.id = d.business_partner_id
+        AND owned_partner.company_id = d.company_id
         AND owned_partner.created_by_login = ?
     )) OR EXISTS (
       SELECT 1 FROM appointments scoped_appointment
       WHERE scoped_appointment.id = d.appointment_id
+        AND scoped_appointment.company_id = d.company_id
         AND (scoped_appointment.created_by_login = ?
           OR LOWER(TRIM(scoped_appointment.host_name)) IN (${hostNames.map(() => "?").join(", ")}))
-    ))`,
-    parameters: [user.login, user.login, user.login, ...hostNames],
+    ))`);
+    parameters.push(user.login, user.login, user.login, ...hostNames);
+  }
+  return {
+    condition: conditions.length === 0 ? "1 = 1" : conditions.join(" AND "),
+    parameters,
   };
 }
 
@@ -3768,17 +3972,24 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       const user = await getRequestUser(request);
       if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
       const hostOnlyAccess = await hasHostOnlyAccess(user);
-      if (!user.isAdmin && !hostOnlyAccess) {
+      if (!user.isAdmin && !user.companyRole && !hostOnlyAccess) {
         return Response.json({ error: "No tienes permiso para el módulo de equipo." }, { status: 403 });
       }
-      const hostNames = hostOnlyAccess ? hostNamesForUser(user) : [];
-      const partnerOwnerCondition = hostOnlyAccess ? "AND created_by_login = ?" : "";
-      const partnerOwnerParameters = hostOnlyAccess ? [user.login] : [];
+      const companyId = companyScopeId(user);
+      const legacyHostOnlyAccess = hostOnlyAccess && !user.companyRole;
+      const hostNames = legacyHostOnlyAccess ? hostNamesForUser(user) : [];
+      const partnerOwnerCondition = legacyHostOnlyAccess ? "AND created_by_login = ?" : "";
+      const partnerScopeCondition = companyId === undefined ? "" : "AND company_id = ?";
+      const partnerOwnerParameters = [
+        ...(legacyHostOnlyAccess ? [user.login] : []),
+        ...(companyId === undefined ? [] : [companyId]),
+      ];
       const [partners] = await pool.query<RowDataPacket[]>(
         `SELECT id, name, partner_type FROM business_partners
          WHERE is_active = TRUE
            AND partner_type = 'Contratista'
            ${partnerOwnerCondition}
+           ${partnerScopeCondition}
          ORDER BY name`,
         partnerOwnerParameters,
       );
@@ -3788,7 +3999,8 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
          INNER JOIN business_partners p ON p.id = s.business_partner_id
          WHERE p.is_active = TRUE
            AND p.partner_type = 'Contratista'
-           ${hostOnlyAccess ? "AND p.created_by_login = ?" : ""}
+           ${legacyHostOnlyAccess ? "AND p.created_by_login = ?" : ""}
+           ${companyId === undefined ? "" : "AND p.company_id = ?"}
          ORDER BY s.full_name`,
         partnerOwnerParameters,
       );
@@ -3798,17 +4010,24 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                 TIME_FORMAT(a.visit_time, '%H:%i') AS visit_time,
                 p.name AS linked_company_name
          FROM appointments a
-         INNER JOIN business_partners p ON p.id = a.business_partner_id
+         INNER JOIN business_partners p
+           ON p.id = a.business_partner_id AND p.company_id = a.company_id
          WHERE p.partner_type = 'Contratista'
-           ${hostOnlyAccess ? "AND p.created_by_login = ?" : ""}
+           ${legacyHostOnlyAccess ? "AND p.created_by_login = ?" : ""}
+           ${companyId === undefined ? "" : "AND a.company_id = ?"}
+           ${companyId === undefined ? "" : "AND p.company_id = ?"}
            AND a.status NOT IN ('Cancelada', 'Retirado')
            AND a.visit_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-           ${hostOnlyAccess
+           ${legacyHostOnlyAccess
              ? `AND (a.created_by_login = ? OR LOWER(TRIM(a.host_name)) IN (${hostNames.map(() => "?").join(", ")}))`
              : ""}
          ORDER BY a.visit_date DESC, a.visit_time DESC
          LIMIT 200`,
-        hostOnlyAccess ? [user.login, user.login, ...hostNames] : [],
+        [
+          ...(legacyHostOnlyAccess ? [user.login] : []),
+          ...(companyId === undefined ? [] : [companyId, companyId]),
+          ...(legacyHostOnlyAccess ? [user.login, ...hostNames] : []),
+        ],
       );
       return Response.json({
         partners: partners.map((row) => ({
@@ -3847,7 +4066,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
     const user = await getRequestUser(request);
     if (!user) return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
     const hostOnlyAccess = await hasHostOnlyAccess(user);
+    const companyId = companyScopeId(user);
     const declarationVisibility = equipmentDeclarationVisibility(user, hostOnlyAccess);
+    const legacyHostOnlyAccess = hostOnlyAccess && !user.companyRole;
+    const companyEquipmentManager = user.companyRole === "anfitrion";
     const receptionistChecklistAccess = !user.isAdmin &&
       await hasSectionAccess(user, "recepcion") &&
       (
@@ -3856,7 +4078,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
           (declarationPath[2] === "inspections/entrada" ||
             declarationPath[2] === "inspections/salida"))
       );
-    if (!(await canManageExternalModules(user)) && !receptionistChecklistAccess) {
+    const canManageEquipment = user.isAdmin || user.isCompanyAdmin ||
+      companyEquipmentManager || legacyHostOnlyAccess;
+    const companyReadOnlyEquipment = Boolean(user.companyRole) && request.method === "GET";
+    if (!canManageEquipment && !receptionistChecklistAccess && !companyReadOnlyEquipment) {
       return Response.json({ error: "No tienes permiso para el módulo de equipo." }, { status: 403 });
     }
 
@@ -3931,7 +4156,9 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         `SELECT COUNT(*) AS total
          FROM equipment_declarations d
          INNER JOIN business_partners p
-           ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
+           ON p.id = d.business_partner_id
+          AND p.company_id = d.company_id
+          AND p.partner_type = 'Contratista'
          WHERE p.partner_type = 'Contratista'
            AND ${declarationVisibility.condition}
            AND (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)`,
@@ -3954,8 +4181,10 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
                  WHERE ei.declaration_id = d.id AND ii.result = 'Incidencia') AS incident_count
          FROM equipment_declarations d
          INNER JOIN business_partners p
-           ON p.id = d.business_partner_id AND p.partner_type = 'Contratista'
-         LEFT JOIN appointments a ON a.id = d.appointment_id
+           ON p.id = d.business_partner_id
+          AND p.company_id = d.company_id
+          AND p.partner_type = 'Contratista'
+         LEFT JOIN appointments a ON a.id = d.appointment_id AND a.company_id = d.company_id
          WHERE p.partner_type = 'Contratista'
            AND ${declarationVisibility.condition}
            AND (? = '' OR d.person_name LIKE ? OR p.name LIKE ?)
@@ -4019,11 +4248,16 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         );
       }
 
-      const partnerOwnerCondition = hostOnlyAccess ? "AND created_by_login = ?" : "";
+      const partnerOwnerCondition = legacyHostOnlyAccess ? "AND created_by_login = ?" : "";
       const [partnerRows] = await pool.execute<RowDataPacket[]>(
         `SELECT id, partner_type FROM business_partners
-         WHERE id = ? AND is_active = TRUE ${partnerOwnerCondition} LIMIT 1`,
-        hostOnlyAccess ? [businessPartnerId, user.login] : [businessPartnerId],
+         WHERE id = ? AND is_active = TRUE ${partnerOwnerCondition}
+           ${companyId === undefined ? "" : "AND company_id = ?"} LIMIT 1`,
+        [
+          businessPartnerId,
+          ...(legacyHostOnlyAccess ? [user.login] : []),
+          ...(companyId === undefined ? [] : [companyId]),
+        ],
       );
       if (partnerRows.length === 0) {
         return Response.json({ error: "La empresa no existe o está inactiva." }, { status: 400 });
@@ -4047,18 +4281,22 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
       }
 
       if (appointmentId !== null) {
-        const appointmentHostNames = hostOnlyAccess ? hostNamesForUser(user) : [];
+        const appointmentHostNames = legacyHostOnlyAccess ? hostNamesForUser(user) : [];
         const [appointmentRows] = await pool.execute<RowDataPacket[]>(
           `SELECT visitor_name, visitor_record_id FROM appointments
            WHERE id = ? AND business_partner_id = ?
+             ${companyId === undefined ? "" : "AND company_id = ?"}
              AND status NOT IN ('Cancelada', 'Retirado')
-             ${hostOnlyAccess
+             ${legacyHostOnlyAccess
                ? `AND (created_by_login = ? OR LOWER(TRIM(host_name)) IN (${appointmentHostNames.map(() => "?").join(", ")}))`
                : ""}
            LIMIT 1`,
-          hostOnlyAccess
-            ? [appointmentId, businessPartnerId, user.login, ...appointmentHostNames]
-            : [appointmentId, businessPartnerId],
+          [
+            appointmentId,
+            businessPartnerId,
+            ...(companyId === undefined ? [] : [companyId]),
+            ...(legacyHostOnlyAccess ? [user.login, ...appointmentHostNames] : []),
+          ],
         );
         if (appointmentRows.length === 0) {
           return Response.json({ error: "La cita no existe o no corresponde a la empresa seleccionada." }, { status: 400 });
@@ -4081,10 +4319,11 @@ async function handleEquipmentRequest(request: Request, url: URL): Promise<Respo
         await connection.beginTransaction();
         const [result] = await connection.execute<ResultSetHeader>(
           `INSERT INTO equipment_declarations
-             (business_partner_id, external_staff_id, visitor_record_id, appointment_id, person_name,
+             (company_id, business_partner_id, external_staff_id, visitor_record_id, appointment_id, person_name,
               created_by, token_hash, token_expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
           [
+            companyId ?? await companyIdForNewRecord(user),
             businessPartnerId,
             externalStaffId,
             visitorRecordId,
@@ -4503,15 +4742,43 @@ const server = Bun.serve({
       );
     }
 
-    if (
-      url.pathname.startsWith("/api/") &&
-      !isPublicApiRequest(request, url) &&
-      !(await getRequestUser(request))
-    ) {
-      return addCorsHeaders(
-        Response.json({ error: "Inicia sesión para continuar." }, { status: 401 }),
-        corsOrigin,
-      );
+    let authenticatedUser: AuthenticatedUser | null = null;
+    if (url.pathname.startsWith("/api/") && !isPublicApiRequest(request, url)) {
+      authenticatedUser = await getRequestUser(request);
+      if (!authenticatedUser) {
+        return addCorsHeaders(
+          Response.json({ error: "Inicia sesión para continuar." }, { status: 401 }),
+          corsOrigin,
+        );
+      }
+      if (
+        authenticatedUser.mustChangePassword &&
+        !(request.method === "POST" && url.pathname === "/api/auth/change-password")
+      ) {
+        return addCorsHeaders(
+          Response.json(
+            { error: "Debes cambiar tu contraseña temporal para continuar.", mustChangePassword: true },
+            { status: 428 },
+          ),
+          corsOrigin,
+        );
+      }
+      if (
+        authenticatedUser.companyRole &&
+        !canCompanyAccountAccessApi(
+          authenticatedUser.isCompanyAdmin,
+          request.method,
+          url.pathname,
+        )
+      ) {
+        return addCorsHeaders(
+          Response.json(
+            { error: "Este perfil todavía no tiene acceso a módulos operativos de la empresa." },
+            { status: 403 },
+          ),
+          corsOrigin,
+        );
+      }
     }
 
     if (apiVersion === 2) {
@@ -4859,20 +5126,15 @@ const server = Bun.serve({
         return Response.json({ error: "Las contraseñas no coinciden." }, { status: 400 });
       }
       const passwordLength = Array.from(body.password).length;
-      if (passwordLength < 12 || passwordLength > 128) {
+      if (passwordLength < 8 || passwordLength > 128) {
         return Response.json(
-          { error: "La contraseña debe tener entre 12 y 128 caracteres." },
+          { error: "La contraseña debe tener entre 8 y 128 caracteres." },
           { status: 400 },
         );
       }
-      if (
-        !/\p{Lu}/u.test(body.password) ||
-        !/\p{Ll}/u.test(body.password) ||
-        !/\d/.test(body.password) ||
-        !/[^\p{L}\p{N}\s]/u.test(body.password)
-      ) {
+      if (!isValidPassword(body.password)) {
         return Response.json(
-          { error: "Incluye al menos una mayúscula, una minúscula, un número y un carácter especial." },
+          { error: "Incluye al menos una mayúscula, una minúscula, un número y un símbolo." },
           { status: 400 },
         );
       }
@@ -4974,8 +5236,13 @@ const server = Bun.serve({
             { status: 401 },
           );
         }
-        const sectionAccess = await listUserSectionAccess(user.login, user.isAdmin);
-        if (sectionAccess.length === 0) {
+        const sectionAccess = await listUserSectionAccess(
+          user.login,
+          user.isAdmin,
+          user.isCompanyAdmin,
+          user.companyRole,
+        );
+        if (sectionAccess.length === 0 && !user.isCompanyAdmin) {
           return Response.json(
             { error: "Tu cuenta está activa, pero no tiene acceso asignado a la aplicación. Solicita acceso a Administración." },
             {
@@ -5017,8 +5284,13 @@ const server = Bun.serve({
             },
           });
         }
-        const sectionAccess = await listUserSectionAccess(user.login, user.isAdmin);
-        if (sectionAccess.length === 0) {
+        const sectionAccess = await listUserSectionAccess(
+          user.login,
+          user.isAdmin,
+          user.isCompanyAdmin,
+          user.companyRole,
+        );
+        if (sectionAccess.length === 0 && !user.isCompanyAdmin) {
           return Response.json(
             { user: null, accounts: [] },
             {
@@ -5043,6 +5315,78 @@ const server = Bun.serve({
           { error: "No se pudo restaurar la sesión." },
           { status: 500 },
         );
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/change-password") {
+      const user = await getRequestUser(request);
+      if (!user) {
+        return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+      }
+      if (!user.mustChangePassword || !user.companyRole) {
+        return Response.json({ error: "No hay un cambio de contraseña pendiente." }, { status: 409 });
+      }
+
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+      }
+      if (
+        !isRecord(body) ||
+        typeof body.password !== "string" ||
+        typeof body.confirmation !== "string" ||
+        body.password !== body.confirmation
+      ) {
+        return Response.json({ error: "Revisa la nueva contraseña y su confirmación." }, { status: 400 });
+      }
+      if (!isValidPassword(body.password)) {
+        return Response.json(
+          { error: "Usa de 8 a 128 caracteres e incluye mayúscula, minúscula, número y símbolo." },
+          { status: 400 },
+        );
+      }
+      if (await Bun.password.verify(body.password, user.sessionKey)) {
+        return Response.json({ error: "La nueva contraseña debe ser distinta a la temporal." }, { status: 400 });
+      }
+
+      try {
+        const passwordHash = await Bun.password.hash(body.password, { algorithm: "argon2id" });
+        if (!passwordHash.startsWith("$argon2id$")) {
+          throw new Error("No se pudo generar el hash seguro de la contraseña.");
+        }
+        const [result] = await pool.execute<ResultSetHeader>(
+          `UPDATE accesos
+           SET pswd = ?, must_change_password = FALSE
+           WHERE login = ? AND pswd = ? AND must_change_password = TRUE`,
+          [passwordHash, user.login, user.sessionKey],
+        );
+        if (result.affectedRows !== 1) {
+          return Response.json({ error: "La contraseña temporal ya no es válida. Inicia sesión de nuevo." }, { status: 409 });
+        }
+        const updatedUser = await getActiveUser(user.login);
+        if (!updatedUser) {
+          return Response.json({ error: "La cuenta dejó de estar activa." }, { status: 401 });
+        }
+        const sectionAccess = await listUserSectionAccess(
+          updatedUser.login,
+          updatedUser.isAdmin,
+          updatedUser.isCompanyAdmin,
+          updatedUser.companyRole,
+        );
+        return Response.json(
+          { user: publicUser(updatedUser, sectionAccess), message: "La contraseña se actualizó." },
+          {
+            headers: {
+              "Set-Cookie": `${sessionCookieName}=${createSessionToken(updatedUser)}; Max-Age=${sessionLifetimeMs / 1000}${sessionCookieAttributes(request, Bun.env.NODE_ENV === "production")}`,
+              "Cache-Control": "no-store",
+            },
+          },
+        );
+      } catch (error) {
+        console.error("Failed to change temporary company password:", error);
+        return Response.json({ error: "No se pudo actualizar la contraseña." }, { status: 500 });
       }
     }
 
@@ -5074,6 +5418,523 @@ const server = Bun.serve({
       }
     }
 
+    const administratorsPath = url.pathname.match(/^\/api\/administrators(?:\/([^/]+))?$/);
+    if (
+      administratorsPath &&
+      ["GET", "POST", "PATCH", "DELETE"].includes(request.method)
+    ) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin) {
+          return Response.json({ error: "No tienes permiso para administrar administradores." }, { status: 403 });
+        }
+        let login: string | null = null;
+        if (administratorsPath[1]) {
+          try {
+            login = decodeURIComponent(administratorsPath[1]);
+          } catch {
+            return Response.json({ error: "El usuario seleccionado no es válido." }, { status: 400 });
+          }
+        }
+        if (
+          (request.method === "GET" && login !== null) ||
+          (request.method === "POST" && login !== null) ||
+          (request.method !== "GET" && request.method !== "POST" && !login)
+        ) {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (request.method === "GET") {
+          const [rows] = await pool.query<RowDataPacket[]>(
+            `SELECT a.login, a.name, a.email, a.active, a.rol_aplicacion, a.role, a.phone,
+                    a.company_id, a.must_change_password, c.name AS company_name
+             FROM accesos a
+             INNER JOIN companies c ON c.id = a.company_id
+             WHERE a.rol_aplicacion = 'administrador_empresa'
+             ORDER BY c.name, a.name, a.login`,
+          );
+          return Response.json({
+            administrators: rows.map((row) => ({
+              login: row.login,
+              name: row.name,
+              email: row.email,
+              active: row.active,
+              applicationRole: row.rol_aplicacion,
+              role: row.role,
+              phone: row.phone,
+              companyId: Number(row.company_id),
+              companyName: row.company_name,
+              mustChangePassword: Boolean(row.must_change_password),
+            })),
+          });
+        }
+        if (request.method === "DELETE") {
+          const [result] = await pool.execute<ResultSetHeader>(
+            "DELETE FROM accesos WHERE login = ? AND rol_aplicacion = 'administrador_empresa'",
+            [login],
+          );
+          if (result.affectedRows === 0) {
+            return Response.json({ error: "No se encontró el administrador." }, { status: 404 });
+          }
+          return Response.json({ message: "El administrador se eliminó." });
+        }
+
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (typeof body !== "object" || body === null) {
+          return Response.json({ error: "Revisa los datos del administrador." }, { status: 400 });
+        }
+        const values = body as Record<string, unknown>;
+        const newLogin = request.method === "POST" ? values.login : login;
+        const password = values.password;
+        const name = values.name;
+        const email = values.email;
+        const role = values.role;
+        const phone = values.phone;
+        const active = values.active ?? "Y";
+        const activeValue = String(active);
+        const validAdministratorPassword = (value: unknown): value is string => {
+          return typeof value === "string" && isValidPassword(value);
+        };
+        const companyId = values.companyId;
+        if (
+          typeof newLogin !== "string" || !newLogin.trim() || newLogin.trim().length > 255 ||
+          typeof name !== "string" || !name.trim() || name.trim().length > 255 ||
+          (email !== null && email !== undefined &&
+            (typeof email !== "string" || email.trim().length > 255)) ||
+          (role !== null && role !== undefined &&
+            (typeof role !== "string" || role.trim().length > 128)) ||
+          (phone !== null && phone !== undefined &&
+            (typeof phone !== "string" || phone.trim().length > 64)) ||
+          !["Y", "N"].includes(activeValue) ||
+          typeof companyId !== "number" || !Number.isSafeInteger(companyId) || companyId < 1 ||
+          (request.method === "PATCH" && password !== undefined &&
+            !validAdministratorPassword(password))
+        ) {
+          return Response.json({ error: "Revisa los datos, empresa y contraseña del administrador." }, { status: 400 });
+        }
+        const [companies] = await pool.execute<RowDataPacket[]>(
+          "SELECT id FROM companies WHERE id = ? LIMIT 1",
+          [companyId],
+        );
+        if (companies.length === 0) {
+          return Response.json({ error: "Selecciona una empresa registrada." }, { status: 400 });
+        }
+
+        const normalizedLogin = newLogin.trim();
+        const normalizedEmail = typeof email === "string" ? email.trim() : "";
+        if (request.method === "PATCH") {
+          const [existingAccounts] = await pool.execute<RowDataPacket[]>(
+            "SELECT login FROM accesos WHERE login = ? LIMIT 1",
+            [normalizedLogin],
+          );
+          if (existingAccounts.length === 0) {
+            return Response.json({ error: "No se encontró el administrador." }, { status: 404 });
+          }
+        }
+        if (request.method === "POST" || normalizedEmail) {
+          const [externalMatches] = normalizedEmail
+            ? await getExternalUsersPool().execute<RowDataPacket[]>(
+                `SELECT login FROM seg_users
+                 WHERE ${request.method === "POST" ? "login = ? OR " : ""}email = ?
+                 LIMIT 1`,
+                request.method === "POST"
+                  ? [normalizedLogin, normalizedEmail]
+                  : [normalizedEmail],
+              )
+            : await getExternalUsersPool().execute<RowDataPacket[]>(
+                "SELECT login FROM seg_users WHERE login = ? LIMIT 1",
+                [normalizedLogin],
+              );
+          if (externalMatches.length > 0) {
+            return Response.json({ error: "Ese usuario o correo ya existe en las cuentas de CyMEZ." }, { status: 409 });
+          }
+        }
+        if (normalizedEmail) {
+          const [localMatches] = await pool.execute<RowDataPacket[]>(
+            "SELECT login FROM accesos WHERE email = ? AND login <> ? LIMIT 1",
+            [normalizedEmail, normalizedLogin],
+          );
+          if (localMatches.length > 0) {
+            return Response.json({ error: "Ese correo ya está asignado a otro administrador." }, { status: 409 });
+          }
+        }
+        if (request.method === "POST") {
+          const temporaryPassword = generateTemporaryPassword();
+          const passwordHash = await Bun.password.hash(temporaryPassword, { algorithm: "argon2id" });
+          await pool.execute(
+            `INSERT INTO accesos
+               (login, pswd, name, email, active, rol_aplicacion, role, phone,
+                company_id, must_change_password)
+             VALUES (?, ?, ?, ?, ?, 'administrador_empresa', ?, ?, ?, TRUE)`,
+            [
+              normalizedLogin,
+              passwordHash,
+              name.trim(),
+              typeof email === "string" && email.trim() ? email.trim() : null,
+              activeValue,
+              typeof role === "string" && role.trim() ? role.trim() : null,
+              typeof phone === "string" && phone.trim() ? phone.trim() : null,
+              companyId,
+            ],
+          );
+          return Response.json(
+            {
+              message: "El administrador se guardó correctamente.",
+              temporaryPassword,
+            },
+            { status: 201 },
+          );
+        } else {
+          const fields = [
+            "name = ?",
+            "email = ?",
+            "active = ?",
+            "rol_aplicacion = 'administrador_empresa'",
+            "role = ?",
+            "phone = ?",
+            "company_id = ?",
+          ];
+          const parameters: Array<string | number | null> = [
+            name.trim(),
+            typeof email === "string" && email.trim() ? email.trim() : null,
+            activeValue,
+            typeof role === "string" && role.trim() ? role.trim() : null,
+            typeof phone === "string" && phone.trim() ? phone.trim() : null,
+            companyId,
+          ];
+          if (typeof password === "string" && validAdministratorPassword(password)) {
+            fields.push("pswd = ?");
+            parameters.push(await Bun.password.hash(password, { algorithm: "argon2id" }));
+            fields.push("must_change_password = TRUE");
+          }
+          parameters.push(normalizedLogin);
+          await pool.execute(
+            `UPDATE accesos SET ${fields.join(", ")} WHERE login = ?`,
+            parameters,
+          );
+        }
+        return Response.json(
+          { message: "El administrador se guardó correctamente." },
+          { status: 200 },
+        );
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ER_DUP_ENTRY"
+        ) {
+          return Response.json({ error: "Ya existe un administrador con ese usuario." }, { status: 409 });
+        }
+        console.error("Failed to modify company administrators:", error);
+        return Response.json({ error: "No se pudo guardar el administrador." }, { status: 500 });
+      }
+    }
+
+    const companyUsersPath = url.pathname.match(/^\/api\/company-users(?:\/([^/]+))?$/);
+    if (companyUsersPath && ["GET", "POST", "PATCH", "DELETE"].includes(request.method)) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin && !user.isCompanyAdmin) {
+          return Response.json({ error: "Solo una administración puede gestionar usuarios de empresa." }, { status: 403 });
+        }
+        let login: string | null = null;
+        if (companyUsersPath[1]) {
+          try {
+            login = decodeURIComponent(companyUsersPath[1]);
+          } catch {
+            return Response.json({ error: "El usuario seleccionado no es válido." }, { status: 400 });
+          }
+        }
+        if (
+          (request.method === "GET" && login !== null) ||
+          (request.method === "POST" && login !== null) ||
+          (request.method !== "GET" && request.method !== "POST" && !login)
+        ) {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+
+        const requestedCompanyId = Number(url.searchParams.get("companyId"));
+        const scopedCompanyId = user.isCompanyAdmin
+          ? user.companyId
+          : Number.isSafeInteger(requestedCompanyId) && requestedCompanyId > 0
+            ? requestedCompanyId
+            : null;
+        if (scopedCompanyId === null) {
+          return Response.json({ error: "Selecciona una empresa válida." }, { status: 400 });
+        }
+
+        if (request.method === "GET") {
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT a.login, a.name, a.email, a.active, a.rol_aplicacion, a.role,
+                    a.phone, a.company_id, a.department_id, a.must_change_password,
+                    d.name AS department_name
+             FROM accesos a
+             LEFT JOIN departments d ON d.id = a.department_id
+             WHERE a.company_id = ?
+               AND a.rol_aplicacion IN ('recepcion', 'anfitrion')
+             ORDER BY a.name, a.login`,
+            [scopedCompanyId],
+          );
+          return Response.json({
+            users: rows.map((row) => ({
+              login: row.login,
+              name: row.name,
+              email: row.email,
+              active: row.active,
+              applicationRole: row.rol_aplicacion,
+              role: row.role,
+              phone: row.phone,
+              companyId: Number(row.company_id),
+              departmentId: row.department_id === null ? null : Number(row.department_id),
+              departmentName: row.department_name,
+              mustChangePassword: Boolean(row.must_change_password),
+            })),
+          });
+        }
+
+        if (request.method === "DELETE") {
+          const connection = await pool.getConnection();
+          try {
+            await connection.beginTransaction();
+            const [existing] = await connection.execute<RowDataPacket[]>(
+              `SELECT login FROM accesos
+               WHERE login = ? AND company_id = ?
+                 AND rol_aplicacion IN ('recepcion', 'anfitrion')
+               LIMIT 1 FOR UPDATE`,
+              [login, scopedCompanyId],
+            );
+            if (existing.length === 0) {
+              await connection.rollback();
+              return Response.json({ error: "No se encontró el usuario de empresa." }, { status: 404 });
+            }
+            await connection.execute(
+              `DELETE h FROM department_hosts h
+               INNER JOIN departments d ON d.id = h.department_id
+               WHERE h.login = ? AND d.company_id = ?`,
+              [login, scopedCompanyId],
+            );
+            await connection.execute(
+              `DELETE FROM accesos
+               WHERE login = ? AND company_id = ?
+                 AND rol_aplicacion IN ('recepcion', 'anfitrion')`,
+              [login, scopedCompanyId],
+            );
+            await connection.commit();
+            return Response.json({ message: "El usuario de empresa se eliminó." });
+          } catch (error) {
+            await connection.rollback();
+            throw error;
+          } finally {
+            connection.release();
+          }
+        }
+
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (!isRecord(body)) {
+          return Response.json({ error: "Revisa los datos del usuario." }, { status: 400 });
+        }
+        const values = body;
+        const accountLogin = request.method === "POST" ? values.login : login;
+        const name = values.name;
+        const email = values.email;
+        const role = values.role;
+        const phone = values.phone;
+        const applicationRole = values.applicationRole === "recepcion" ||
+            values.applicationRole === "anfitrion"
+          ? values.applicationRole
+          : null;
+        const active = String(values.active ?? "Y");
+        const departmentId = values.departmentId === null || values.departmentId === undefined
+          ? null
+          : Number(values.departmentId);
+        const resetPassword = values.resetPassword === true;
+        if (
+          typeof accountLogin !== "string" || !accountLogin.trim() || accountLogin.trim().length > 255 ||
+          typeof name !== "string" || !name.trim() || name.trim().length > 180 ||
+          (email !== null && email !== undefined &&
+            (typeof email !== "string" || email.trim().length > 254)) ||
+          (role !== null && role !== undefined &&
+            (typeof role !== "string" || role.trim().length > 120)) ||
+          (phone !== null && phone !== undefined &&
+            (typeof phone !== "string" || phone.trim().length > 30)) ||
+          applicationRole === null ||
+          !["Y", "N"].includes(active) ||
+          (departmentId !== null && (!Number.isSafeInteger(departmentId) || departmentId < 1)) ||
+          (applicationRole === "anfitrion" && departmentId === null)
+        ) {
+          return Response.json({ error: "Revisa el usuario, rol, departamento y datos de contacto." }, { status: 400 });
+        }
+        const normalizedLogin = accountLogin.trim();
+        const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+        if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+          return Response.json({ error: "El correo electrónico no es válido." }, { status: 400 });
+        }
+        if (departmentId !== null) {
+          const [departments] = await pool.execute<RowDataPacket[]>(
+            "SELECT id FROM departments WHERE id = ? AND company_id = ? LIMIT 1",
+            [departmentId, scopedCompanyId],
+          );
+          if (departments.length === 0) {
+            return Response.json({ error: "El departamento no pertenece a la empresa seleccionada." }, { status: 400 });
+          }
+        }
+        if (request.method === "POST") {
+          const [externalMatches] = await getExternalUsersPool().execute<RowDataPacket[]>(
+            `SELECT login FROM seg_users
+             WHERE login = ? OR (? <> '' AND LOWER(email) = ?)
+             LIMIT 1`,
+            [normalizedLogin, normalizedEmail, normalizedEmail],
+          );
+          if (externalMatches.length > 0) {
+            return Response.json({ error: "Ese usuario o correo ya existe en las cuentas de CyMEZ." }, { status: 409 });
+          }
+        } else {
+          const [existing] = await pool.execute<RowDataPacket[]>(
+            `SELECT login FROM accesos
+             WHERE login = ? AND company_id = ?
+               AND rol_aplicacion IN ('recepcion', 'anfitrion')
+             LIMIT 1`,
+            [normalizedLogin, scopedCompanyId],
+          );
+          if (existing.length === 0) {
+            return Response.json({ error: "No se encontró el usuario de empresa." }, { status: 404 });
+          }
+        }
+        if (normalizedEmail) {
+          const [localMatches] = await pool.execute<RowDataPacket[]>(
+            "SELECT login FROM accesos WHERE LOWER(email) = ? AND login <> ? LIMIT 1",
+            [normalizedEmail, normalizedLogin],
+          );
+          if (localMatches.length > 0) {
+            return Response.json({ error: "Ese correo ya está asignado a otra cuenta." }, { status: 409 });
+          }
+        }
+
+        const connection = await pool.getConnection();
+        let temporaryPassword: string | undefined;
+        try {
+          await connection.beginTransaction();
+          if (request.method === "POST" || resetPassword) {
+            temporaryPassword = generateTemporaryPassword();
+          }
+          const passwordHash = temporaryPassword
+            ? await Bun.password.hash(temporaryPassword, { algorithm: "argon2id" })
+            : null;
+          if (request.method === "POST") {
+            await connection.execute(
+              `INSERT INTO accesos
+                 (login, pswd, name, email, active, rol_aplicacion, role, phone,
+                  company_id, department_id, must_change_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+              [
+                normalizedLogin,
+                passwordHash,
+                name.trim(),
+                normalizedEmail || null,
+                active,
+                applicationRole,
+                typeof role === "string" && role.trim() ? role.trim() : null,
+                typeof phone === "string" && phone.trim() ? phone.trim() : null,
+                scopedCompanyId,
+                departmentId,
+              ],
+            );
+          } else {
+            const fields = [
+              "name = ?",
+              "email = ?",
+              "active = ?",
+              "rol_aplicacion = ?",
+              "role = ?",
+              "phone = ?",
+              "department_id = ?",
+            ];
+            const parameters: Array<string | number | null> = [
+              name.trim(),
+              normalizedEmail || null,
+              active,
+              applicationRole,
+              typeof role === "string" && role.trim() ? role.trim() : null,
+              typeof phone === "string" && phone.trim() ? phone.trim() : null,
+              departmentId,
+            ];
+            if (passwordHash) {
+              fields.push("pswd = ?", "must_change_password = TRUE");
+              parameters.push(passwordHash);
+            }
+            parameters.push(normalizedLogin, scopedCompanyId);
+            await connection.execute(
+              `UPDATE accesos SET ${fields.join(", ")}
+               WHERE login = ? AND company_id = ?
+                 AND rol_aplicacion IN ('recepcion', 'anfitrion')`,
+              parameters,
+            );
+          }
+          await connection.execute(
+            `DELETE h FROM department_hosts h
+             INNER JOIN departments d ON d.id = h.department_id
+             WHERE h.login = ? AND d.company_id = ?`,
+            [normalizedLogin, scopedCompanyId],
+          );
+          if (applicationRole === "anfitrion" && departmentId !== null) {
+            await connection.execute(
+              `INSERT INTO department_hosts
+                 (login, name, department_id, role, email, phone)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                normalizedLogin,
+                name.trim(),
+                departmentId,
+                typeof role === "string" ? role.trim() : "",
+                normalizedEmail,
+                typeof phone === "string" ? phone.trim() : "",
+              ],
+            );
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
+        }
+        return Response.json(
+          {
+            message: "El usuario de empresa se guardó correctamente.",
+            ...(temporaryPassword ? { temporaryPassword } : {}),
+          },
+          { status: request.method === "POST" ? 201 : 200 },
+        );
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ER_DUP_ENTRY"
+        ) {
+          return Response.json({ error: "Ya existe un usuario, correo o anfitrión con esos datos." }, { status: 409 });
+        }
+        console.error("Failed to modify company users:", error);
+        return Response.json({ error: "No se pudo guardar el usuario de empresa." }, { status: 500 });
+      }
+    }
+
     const businessPartnersPath = url.pathname.match(/^\/api\/business-partners(?:\/(\d+))?$/);
     if (
       businessPartnersPath &&
@@ -5098,7 +5959,7 @@ const server = Bun.serve({
           const appointmentScope = url.searchParams.get("scope") === "appointment";
           const ownerLogin = !user.isAdmin && (
             appointmentScope || await hasHostOnlyAccess(user)
-          )
+          ) && !user.companyRole
             ? user.login
             : undefined;
           return Response.json({
@@ -5106,16 +5967,18 @@ const server = Bun.serve({
               ownerLogin,
               user.isAdmin,
               appointmentScope,
+              companyScopeId(user),
             ),
           });
         }
         if (!(await canManageExternalModules(user))) {
           return Response.json({ error: "No tienes permiso para modificar contratistas y proveedores." }, { status: 403 });
         }
-        if (request.method === "DELETE" && !user.isAdmin) {
+        if (request.method === "DELETE" && !user.isAdmin && !user.isCompanyAdmin) {
           return Response.json({ error: "No tienes permiso para eliminar contratistas y proveedores." }, { status: 403 });
         }
-        const ownerLogin = user.isAdmin ? undefined : user.login;
+        const ownerLogin = user.isAdmin || user.isCompanyAdmin ? undefined : user.login;
+        const companyId = companyScopeId(user);
         if (
           (request.method === "POST" && partnerId !== null) ||
           (request.method !== "POST" && partnerId === null)
@@ -5123,17 +5986,21 @@ const server = Bun.serve({
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
         if (request.method === "DELETE") {
-          const deleteQuery = ownerLogin === undefined
-            ? "DELETE FROM business_partners WHERE id = ?"
-            : "DELETE FROM business_partners WHERE id = ? AND created_by_login = ?";
+          const deleteQuery = `DELETE FROM business_partners
+            WHERE id = ? ${ownerLogin === undefined ? "" : "AND created_by_login = ?"}
+            ${companyId === undefined ? "" : "AND company_id = ?"}`;
           const [result] = await pool.execute<ResultSetHeader>(
             deleteQuery,
-            ownerLogin === undefined ? [partnerId] : [partnerId, ownerLogin],
+            [
+              partnerId,
+              ...(ownerLogin === undefined ? [] : [ownerLogin]),
+              ...(companyId === undefined ? [] : [companyId]),
+            ],
           );
           if (result.affectedRows === 0) {
             return Response.json({ error: "No se encontró la empresa seleccionada." }, { status: 404 });
           }
-          return Response.json({ businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) });
+          return Response.json({ businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin, false, companyId) });
         }
 
         let body: unknown;
@@ -5160,9 +6027,14 @@ const server = Bun.serve({
                       employee_count, partner_type, is_active, created_by_login, created_by_name
                FROM business_partners
                WHERE id = ? ${ownerCondition}
+                 ${companyId === undefined ? "" : "AND company_id = ?"}
                LIMIT 1
                FOR UPDATE`,
-              ownerLogin === undefined ? [partnerId] : [partnerId, ownerLogin],
+              [
+                partnerId,
+                ...(ownerLogin === undefined ? [] : [ownerLogin]),
+                ...(companyId === undefined ? [] : [companyId]),
+              ],
             );
             if (!currentPartners[0]) {
               await connection.rollback();
@@ -5194,27 +6066,29 @@ const server = Bun.serve({
                 : null;
             if (partner.type === "Visitante" && visitorRecordId === null) {
               const [visitorResult] = await connection.execute<ResultSetHeader>(
-                `INSERT INTO general_visitors (full_name, curp, phone, email)
-                 VALUES (?, NULL, '', '')`,
-                [partner.name],
+                `INSERT INTO general_visitors (company_id, full_name, curp, phone, email)
+                 VALUES (?, ?, NULL, '', '')`,
+                [companyId ?? await companyIdForNewRecord(user), partner.name],
               );
               visitorRecordId = visitorResult.insertId;
             } else if (partner.type === "Visitante") {
               await connection.execute(
-                "UPDATE general_visitors SET full_name = ? WHERE id = ?",
-                [partner.name, visitorRecordId],
+                `UPDATE general_visitors SET full_name = ? WHERE id = ?
+                 ${companyId === undefined ? "" : "AND company_id = ?"}`,
+                companyId === undefined ? [partner.name, visitorRecordId] : [partner.name, visitorRecordId, companyId],
               );
             }
             await connection.execute(
               `UPDATE business_partners
                SET name = ?, description = ?, rfc = ?, category = ?, subject = ?,
                    visitor_record_id = ?, employee_count = ?, partner_type = ?, is_active = ?
-               WHERE id = ?`,
+               WHERE id = ? ${companyId === undefined ? "" : "AND company_id = ?"}`,
               [
                 partner.name, partner.description,
                 partner.type === "Visitante" ? null : partner.rfc,
                 partner.category, partner.subject, visitorRecordId, partner.employeeCount,
                 partner.type, partner.status !== "Inactiva", partnerId,
+                ...(companyId === undefined ? [] : [companyId]),
               ],
             );
             await connection.commit();
@@ -5231,18 +6105,19 @@ const server = Bun.serve({
             let visitorRecordId: number | null = null;
             if (partner.type === "Visitante") {
               const [visitorResult] = await connection.execute<ResultSetHeader>(
-                `INSERT INTO general_visitors (full_name, curp, phone, email)
-                 VALUES (?, NULL, '', '')`,
-                [partner.name],
+                `INSERT INTO general_visitors (company_id, full_name, curp, phone, email)
+                 VALUES (?, ?, NULL, '', '')`,
+                [companyId ?? await companyIdForNewRecord(user), partner.name],
               );
               visitorRecordId = visitorResult.insertId;
             }
             await connection.execute(
               `INSERT INTO business_partners
-                 (name, description, rfc, category, subject, visitor_record_id,
+                 (company_id, name, description, rfc, category, subject, visitor_record_id,
                   employee_count, partner_type, is_active, created_by_login, created_by_name)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
+                companyId ?? await companyIdForNewRecord(user),
                 partner.name,
                 partner.description,
                 partner.type === "Visitante" ? null : partner.rfc,
@@ -5266,7 +6141,7 @@ const server = Bun.serve({
         }
 
         return Response.json(
-          { businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin) },
+          { businessPartners: await listBusinessPartners(ownerLogin, user.isAdmin, false, companyId) },
           { status: request.method === "POST" ? 201 : 200 },
         );
       } catch (error) {
@@ -5314,12 +6189,14 @@ const server = Bun.serve({
             return Response.json({ error: "No tienes permiso para consultar visitantes registrados." }, { status: 403 });
           }
           const appointmentScope = url.searchParams.get("scope") === "appointment";
+          const ownerLogin = !user.isAdmin && !user.companyRole && (appointmentScope || hostOnlyAccess)
+            ? user.login
+            : undefined;
           return Response.json({
             visitors: await listHostVisitors(
-              !user.isAdmin && (appointmentScope || hostOnlyAccess)
-                ? user.login
-                : undefined,
+              ownerLogin,
               appointmentScope,
+              companyScopeId(user),
             ),
           });
         }
@@ -5338,13 +6215,17 @@ const server = Bun.serve({
         }
         await pool.execute(
           `INSERT INTO general_visitors
-             (full_name, curp, phone, email, registered_by_login)
-           VALUES (?, NULL, ?, ?, ?)`,
-          [visitor.fullName, visitor.phone, visitor.email, user.login],
+             (company_id, full_name, curp, phone, email, registered_by_login)
+           VALUES (?, ?, NULL, ?, ?, ?)`,
+          [await companyIdForNewRecord(user), visitor.fullName, visitor.phone, visitor.email, user.login],
         );
         publishRealtimeUpdate();
         return Response.json({
-          visitors: await listHostVisitors(hostOnlyAccess ? user.login : undefined),
+          visitors: await listHostVisitors(
+            hostOnlyAccess && !user.companyRole ? user.login : undefined,
+            false,
+            companyScopeId(user),
+          ),
         }, { status: 201 });
       } catch (error) {
         console.error("Failed to modify host visitor:", { code: safeErrorCode(error) });
@@ -5373,7 +6254,7 @@ const server = Bun.serve({
           if (visitorId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
-          return Response.json({ generalVisitors: await listGeneralVisitors() });
+          return Response.json({ generalVisitors: await listGeneralVisitors(companyScopeId(user)) });
         }
         if (!(await canManageExternalModules(user))) {
           return Response.json({ error: "No tienes permiso para modificar público general." }, { status: 403 });
@@ -5385,14 +6266,16 @@ const server = Bun.serve({
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
         if (request.method === "DELETE") {
+          const companyId = companyScopeId(user);
           const [result] = await pool.execute<ResultSetHeader>(
-            "DELETE FROM general_visitors WHERE id = ?",
-            [visitorId],
+            `DELETE FROM general_visitors WHERE id = ?
+             ${companyId === undefined ? "" : "AND company_id = ?"}`,
+            companyId === undefined ? [visitorId] : [visitorId, companyId],
           );
           if (result.affectedRows === 0) {
             return Response.json({ error: "No se encontró la persona seleccionada." }, { status: 404 });
           }
-          return Response.json({ generalVisitors: await listGeneralVisitors() });
+          return Response.json({ generalVisitors: await listGeneralVisitors(companyId) });
         }
 
         let body: unknown;
@@ -5409,18 +6292,22 @@ const server = Bun.serve({
           );
         }
         const curp = visitor.curp || null;
+        const companyId = companyScopeId(user);
 
         if (request.method === "PATCH") {
           const [result] = await pool.execute<ResultSetHeader>(
             `UPDATE general_visitors
              SET full_name = ?, curp = ?, phone = ?, email = ?
-             WHERE id = ?`,
-            [visitor.fullName, curp, visitor.phone, visitor.email, visitorId],
+             WHERE id = ? ${companyId === undefined ? "" : "AND company_id = ?"}`,
+            companyId === undefined
+              ? [visitor.fullName, curp, visitor.phone, visitor.email, visitorId]
+              : [visitor.fullName, curp, visitor.phone, visitor.email, visitorId, companyId],
           );
           if (result.affectedRows === 0) {
             const [matches] = await pool.execute<GeneralVisitorRow[]>(
-              "SELECT id FROM general_visitors WHERE id = ? LIMIT 1",
-              [visitorId],
+              `SELECT id FROM general_visitors WHERE id = ?
+               ${companyId === undefined ? "" : "AND company_id = ?"} LIMIT 1`,
+              companyId === undefined ? [visitorId] : [visitorId, companyId],
             );
             if (matches.length === 0) {
               return Response.json({ error: "No se encontró la persona seleccionada." }, { status: 404 });
@@ -5428,14 +6315,14 @@ const server = Bun.serve({
           }
         } else {
           await pool.execute(
-            `INSERT INTO general_visitors (full_name, curp, phone, email)
-             VALUES (?, ?, ?, ?)`,
-            [visitor.fullName, curp, visitor.phone, visitor.email],
+            `INSERT INTO general_visitors (company_id, full_name, curp, phone, email)
+             VALUES (?, ?, ?, ?, ?)`,
+            [await companyIdForNewRecord(user), visitor.fullName, curp, visitor.phone, visitor.email],
           );
         }
 
         return Response.json(
-          { generalVisitors: await listGeneralVisitors() },
+          { generalVisitors: await listGeneralVisitors(companyId) },
           { status: request.method === "POST" ? 201 : 200 },
         );
       } catch (error) {
@@ -5592,11 +6479,15 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+        if (!(await canViewDailyLog(user))) {
           return Response.json({ error: "No tienes permiso para consultar los temporizadores." }, { status: 403 });
         }
+        const scope = await requestedCompanyScope(user, url);
+        if (!scope.valid) {
+          return Response.json({ error: "El filtro de empresa no es válido." }, { status: 400 });
+        }
         await ensureTimersForActiveDailyLogVisits();
-        return Response.json({ timers: await listActiveDailyLogTimers() });
+        return Response.json({ timers: await listActiveDailyLogTimers(scope.companyId) });
       } catch (error) {
         console.error("Failed to load daily log timers:", error);
         return Response.json({ error: "No se pudieron cargar los temporizadores." }, { status: 500 });
@@ -5610,8 +6501,15 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+        if (!(await canViewDailyLog(user))) {
           return Response.json({ error: "Solo recepción o administración puede modificar los temporizadores." }, { status: 403 });
+        }
+        if (user.isCompanyAdmin) {
+          return Response.json({ error: "La bitácora de la empresa es de solo lectura para sus administradores." }, { status: 403 });
+        }
+        const scope = await requestedCompanyScope(user, url);
+        if (!scope.valid) {
+          return Response.json({ error: "El filtro de empresa no es válido." }, { status: 400 });
         }
         const timerId = Number(dailyLogTimerPath[1]);
         if (!Number.isSafeInteger(timerId) || timerId < 1) {
@@ -5626,19 +6524,27 @@ const server = Bun.serve({
         if (!isRecord(body) || (body.action !== "snooze" && body.action !== "cancel")) {
           return Response.json({ error: "Selecciona posponer o cancelar la alarma." }, { status: 400 });
         }
+        const companyId = scope.companyId;
+        const timerCompanyCondition = companyId === undefined
+          ? ""
+          : "AND EXISTS (SELECT 1 FROM daily_log_entries d WHERE d.id = daily_log_timers.visit_entry_id AND d.company_id = ?)";
         const update = body.action === "snooze"
           ? `UPDATE daily_log_timers
              SET due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_minutes MINUTE),
                  notification_sent_at = NULL
              WHERE id = ? AND visit_date = ? AND status = 'active'
-               AND ${user.isAdmin ? "1 = 1" : "due_at <= UTC_TIMESTAMP()"}`
+               AND ${user.isAdmin ? "1 = 1" : "due_at <= UTC_TIMESTAMP()"}
+               ${timerCompanyCondition}`
           : `UPDATE daily_log_timers
              SET status = 'canceled', notification_sent_at = COALESCE(notification_sent_at, UTC_TIMESTAMP())
              WHERE id = ? AND visit_date = ? AND status = 'active'
-               AND ${user.isAdmin ? "1 = 1" : "phase = 'Ingreso'"}`;
+               AND ${user.isAdmin ? "1 = 1" : "phase = 'Ingreso'"}
+               ${timerCompanyCondition}`;
         const [result] = await pool.execute<ResultSetHeader>(
           update,
-          [timerId, getAppDateTime().date],
+          companyId === undefined
+            ? [timerId, getAppDateTime().date]
+            : [timerId, getAppDateTime().date, companyId],
         );
         if (result.affectedRows === 0) {
           const [matches] = await pool.execute<(RowDataPacket & {
@@ -5650,8 +6556,9 @@ const server = Bun.serve({
                     DATE_FORMAT(due_at, '%Y-%m-%dT%H:%i:%s.000Z') AS due_at
              FROM daily_log_timers
              WHERE id = ? AND status = 'active'
+               ${companyId === undefined ? "" : "AND EXISTS (SELECT 1 FROM daily_log_entries d WHERE d.id = daily_log_timers.visit_entry_id AND d.company_id = ?)"}
              LIMIT 1`,
-            [timerId],
+            companyId === undefined ? [timerId] : [timerId, companyId],
           );
           if (matches.length === 0) {
             return Response.json({ error: "El temporizador ya no está activo." }, { status: 404 });
@@ -5668,7 +6575,7 @@ const server = Bun.serve({
           return Response.json({ error: "El temporizador cambió y ya no se puede actualizar. Actualiza la lista e inténtalo de nuevo." }, { status: 409 });
         }
         publishRealtimeUpdate();
-        return Response.json({ timers: await listActiveDailyLogTimers() });
+        return Response.json({ timers: await listActiveDailyLogTimers(companyId) });
       } catch (error) {
         console.error("Failed to update daily log timer:", error);
         return Response.json({ error: "No se pudo actualizar el temporizador." }, { status: 500 });
@@ -5681,7 +6588,7 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
+        if (!(await canViewDailyLog(user))) {
           return Response.json({ error: "No tienes permiso para consultar la bitácora." }, { status: 403 });
         }
         const today = getAppDateTime().date;
@@ -5699,8 +6606,12 @@ const server = Bun.serve({
         ) {
           return Response.json({ error: "Revisa el rango de fechas solicitado." }, { status: 400 });
         }
+        const scope = await requestedCompanyScope(user, url);
+        if (!scope.valid) {
+          return Response.json({ error: "El filtro de empresa no es válido." }, { status: 400 });
+        }
         return Response.json({
-          stats: await getDailyLogDailyCounts(fromDate, toDate),
+          stats: await getDailyLogDailyCounts(fromDate, toDate, scope.companyId),
         });
       } catch (error) {
         console.error("Failed to load daily log statistics:", error);
@@ -5715,11 +6626,14 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!(await hasSectionAccess(user, "recepcion"))) {
+        if (!(await canViewDailyLog(user))) {
           return Response.json({ error: "No tienes permiso para consultar la bitácora." }, { status: 403 });
         }
         if (request.method === "DELETE" && !user.isAdmin) {
           return Response.json({ error: "No tienes permiso para eliminar movimientos de la bitácora." }, { status: 403 });
+        }
+        if (request.method === "POST" && user.isCompanyAdmin) {
+          return Response.json({ error: "La bitácora de la empresa es de solo lectura para sus administradores." }, { status: 403 });
         }
         const entryId = dailyLogPath[1] ? Number(dailyLogPath[1]) : null;
         if (entryId !== null && (!Number.isSafeInteger(entryId) || entryId < 1)) {
@@ -5740,6 +6654,11 @@ const server = Bun.serve({
           const pageSize = Number(url.searchParams.get("pageSize") ?? 7);
           const recentPage = Number(url.searchParams.get("recentPage") ?? 1);
           const recentPageSize = Number(url.searchParams.get("recentPageSize") ?? 7);
+          const scope = await requestedCompanyScope(user, url);
+          if (!scope.valid) {
+            return Response.json({ error: "El filtro de empresa no es válido." }, { status: 400 });
+          }
+          const companyId = scope.companyId;
           const daySpan =
             (Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) /
             86_400_000;
@@ -5767,14 +6686,15 @@ const server = Bun.serve({
           }
           const [{ entries, total, hosts }, recentResult, summary, historyRange] = await Promise.all([
             listDailyLogEntries(
-              fromDate, toDate, search, event, category, hostFilters, page, pageSize, user.isAdmin,
+              fromDate, toDate, search, event, category, hostFilters, page, pageSize,
+              user.isAdmin, companyId, user.isAdmin,
             ),
             listRecentDailyLogEntries(
               fromDate, toDate, search, event, category, hostFilters, user.isAdmin,
-              recentPage, recentPageSize,
+              recentPage, recentPageSize, companyId, user.isAdmin,
             ),
-            getDailyLogSummary(fromDate, toDate),
-            getDailyLogDateRange(),
+            getDailyLogSummary(fromDate, toDate, companyId),
+            getDailyLogDateRange(companyId),
           ]);
           return Response.json({
             entries,
@@ -5966,6 +6886,10 @@ const server = Bun.serve({
             { status: 400 },
           );
         }
+        const companyId = companyScopeId(user);
+        const recordCompanyId = await companyIdForNewRecord(user);
+        const companyCondition = companyId === undefined ? "" : "AND company_id = ?";
+        const companyParameters = companyId === undefined ? [] : [companyId];
         const isMovementEvent =
           input.event === "Llegada" || input.event === "Ingreso" || input.event === "Retiro";
         const currentBusinessDate = getAppDateTime().date;
@@ -5979,9 +6903,9 @@ const server = Bun.serve({
           const [sourceEntries] = await pool.execute<RowDataPacket[]>(
             `SELECT DATE_FORMAT(entry_date, '%Y-%m-%d') AS entry_date
              FROM daily_log_entries
-             WHERE id = ?
+             WHERE id = ? ${companyCondition}
              LIMIT 1`,
-            [input.sourceEntryId],
+            [input.sourceEntryId, ...companyParameters],
           );
           if (!sourceEntries[0]) {
             return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
@@ -6009,8 +6933,9 @@ const server = Bun.serve({
              FROM appointments a
              LEFT JOIN business_partners bp ON bp.id = a.business_partner_id
              WHERE a.id = ?
+               ${companyId === undefined ? "" : "AND a.company_id = ?"}
              LIMIT 1`,
-            [input.appointmentId],
+            companyId === undefined ? [input.appointmentId] : [input.appointmentId, companyId],
           );
           const appointment = matches[0];
           if (!appointment) {
@@ -6050,8 +6975,8 @@ const server = Bun.serve({
             `SELECT s.full_name, s.business_partner_id, p.partner_type
              FROM external_staff s
              INNER JOIN business_partners p ON p.id = s.business_partner_id
-             WHERE s.id = ? LIMIT 1`,
-            [input.externalStaffId],
+             WHERE s.id = ? ${companyId === undefined ? "" : "AND p.company_id = ?"} LIMIT 1`,
+            companyId === undefined ? [input.externalStaffId] : [input.externalStaffId, companyId],
           );
           if (!matches[0]) {
             return Response.json({ error: "La ficha de personal externo ya no existe." }, { status: 404 });
@@ -6071,8 +6996,9 @@ const server = Bun.serve({
         }
         if (input.visitorRecordId !== null) {
           const [matches] = await pool.execute<RowDataPacket[]>(
-            "SELECT full_name, registered_by_login FROM general_visitors WHERE id = ? LIMIT 1",
-            [input.visitorRecordId],
+            `SELECT full_name, registered_by_login FROM general_visitors
+             WHERE id = ? ${companyCondition} LIMIT 1`,
+            [input.visitorRecordId, ...companyParameters],
           );
           if (!matches[0]) {
             return Response.json({ error: "La ficha del visitante ya no existe." }, { status: 404 });
@@ -6166,8 +7092,13 @@ const server = Bun.serve({
             `SELECT d.details, ${dailyLogManualRegistrationFolio} AS registration_folio
              FROM daily_log_entries d
              WHERE d.id = ? AND d.visitor_record_id = ?
+               ${companyId === undefined ? "" : "AND d.company_id = ?"}
              LIMIT 1`,
-            [input.sourceEntryId, visitorId],
+            [
+              input.sourceEntryId,
+              visitorId,
+              ...(companyId === undefined ? [] : [companyId]),
+            ],
           );
           movementDetails = inheritManualRegistrationReference(
             input.details,
@@ -6200,6 +7131,7 @@ const server = Bun.serve({
              AND appointment_id <=> ?
              AND external_staff_id <=> ?
              AND visitor_record_id <=> ?
+             ${companyId === undefined ? "" : "AND company_id = ?"}
            LIMIT 1`,
           [
             input.date,
@@ -6210,6 +7142,7 @@ const server = Bun.serve({
             input.appointmentId,
             externalStaffId,
             visitorId,
+            ...companyParameters,
           ],
         );
         if (duplicateRows[0]) {
@@ -6229,11 +7162,12 @@ const server = Bun.serve({
                   DATE_FORMAT(entry_date, '%Y-%m-%d') AS movement_date
            FROM daily_log_entries
            WHERE appointment_id <=> ?
+             ${companyId === undefined ? "" : "AND company_id = ?"}
              AND event_type IN ('Llegada', 'Ingreso', 'Retiro')
              AND ${subjectCondition}
            ORDER BY entry_date DESC, entry_time DESC, id DESC
            LIMIT 1`,
-          [input.appointmentId, ...subjectParameters],
+          [input.appointmentId, ...companyParameters, ...subjectParameters],
         );
         const latestMovementRow = latestMovementRows[0];
         if (
@@ -6258,8 +7192,9 @@ const server = Bun.serve({
              LEFT JOIN equipment_inspections ei
                ON ei.declaration_id = ed.id AND ei.phase = 'Entrada'
              WHERE ed.appointment_id = ?
+               ${companyId === undefined ? "" : "AND ed.company_id = ?"}
              LIMIT 1`,
-            [input.appointmentId],
+            companyId === undefined ? [input.appointmentId] : [input.appointmentId, companyId],
           );
           if (
             equipmentDeclarations.length > 0 &&
@@ -6282,8 +7217,9 @@ const server = Bun.serve({
              LEFT JOIN equipment_inspections ei
                ON ei.declaration_id = ed.id AND ei.phase = 'Salida'
              WHERE ed.appointment_id = ?
+               ${companyId === undefined ? "" : "AND ed.company_id = ?"}
              LIMIT 1`,
-            [input.appointmentId],
+            companyId === undefined ? [input.appointmentId] : [input.appointmentId, companyId],
           );
           if (
             equipmentDeclarations.length > 0 &&
@@ -6329,8 +7265,8 @@ const server = Bun.serve({
           const [movementResult] = await movementConnection.execute<ResultSetHeader>(
             `INSERT INTO daily_log_entries
                (entry_date, entry_time, event_type, person_name, recorded_by_login, recorded_by_name, details,
-                appointment_id, external_staff_id, visitor_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                appointment_id, external_staff_id, visitor_record_id, company_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               input.date,
               input.time,
@@ -6342,6 +7278,7 @@ const server = Bun.serve({
               input.appointmentId,
               externalStaffId,
               visitorId,
+              recordCompanyId,
             ],
           );
           if (timerEligible) {
@@ -6422,9 +7359,10 @@ const server = Bun.serve({
         }
         const hasReceptionAccess = await hasSectionAccess(user, "recepcion");
         const hasHostAccess = await hasHostOnlyAccess(user);
-        if (!user.isAdmin && (hasReceptionAccess || !hasHostAccess)) {
+        if (!user.isAdmin && !user.companyRole && (hasReceptionAccess || !hasHostAccess)) {
           return Response.json({ error: "No tienes permiso para enviar pases de visita." }, { status: 403 });
         }
+        const companyId = companyScopeId(user);
         const appointmentId = Number(appointmentQrPath[1]);
         if (!Number.isSafeInteger(appointmentId) || appointmentId < 1) {
           return Response.json({ error: "La cita seleccionada no es válida." }, { status: 400 });
@@ -6432,20 +7370,26 @@ const server = Bun.serve({
 
         const [rows] = await pool.execute<AppointmentRow[]>(
           `SELECT a.id, a.business_partner_id, a.visitor_record_id, a.created_by_login, a.reference_code,
+                  a.company_id AS tenant_company_id,
+                  c.name AS tenant_company_name,
                   p.partner_type,
                   DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
                   TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
                   visitor_name, visitor_email, registered_by, company_name, host_name, status
            FROM appointments a
-           LEFT JOIN business_partners p ON p.id = a.business_partner_id
-           WHERE a.id = ? AND a.deleted_at IS NULL LIMIT 1`,
-          [appointmentId],
+           LEFT JOIN business_partners p
+             ON p.id = a.business_partner_id AND p.company_id = a.company_id
+           LEFT JOIN companies c ON c.id = a.company_id
+           WHERE a.id = ? AND a.deleted_at IS NULL
+             ${companyId === undefined ? "" : "AND a.company_id = ?"}
+           LIMIT 1`,
+          companyId === undefined ? [appointmentId] : [appointmentId, companyId],
         );
         const appointment = rows[0];
         if (!appointment) {
           return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
         }
-        if (!user.isAdmin && appointment.created_by_login !== user.login) {
+        if (!user.isAdmin && !user.companyRole && appointment.created_by_login !== user.login) {
           return Response.json({ error: "No tienes permiso para enviar el QR de esta cita." }, { status: 403 });
         }
         if (!/^\d{8}$/.test(appointment.reference_code ?? "")) {
@@ -6673,10 +7617,11 @@ const server = Bun.serve({
             } else {
               await pool.execute(
                 `INSERT INTO equipment_declarations
-                   (business_partner_id, external_staff_id, visitor_record_id, appointment_id, person_name,
+                   (company_id, business_partner_id, external_staff_id, visitor_record_id, appointment_id, person_name,
                     created_by, token_hash, token_expires_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
                 [
+                 Number(appointment.tenant_company_id),
                   appointment.business_partner_id,
                   declarationExternalStaffId,
                   appointment.visitor_record_id ?? null,
@@ -6690,6 +7635,73 @@ const server = Bun.serve({
             equipmentDeclarationLink =
               `${publicAppOrigin}/#equipo=${encodeURIComponent(equipmentToken)}`;
           }
+        }
+        const isCymezAppointment =
+          appointment.tenant_company_name?.trim().toLocaleLowerCase("es") === "cymez";
+        if (!isCymezAppointment) {
+          const tenantCompanyName = appointment.tenant_company_name?.trim();
+          if (!tenantCompanyName) {
+            throw new Error("No se encontró el nombre de la empresa para el correo de referencia.");
+          }
+          const safeTenantCompanyName = escapeEmailHtml(tenantCompanyName);
+          const safeVisitorName = escapeEmailHtml(recipientName);
+          const safeHostName = escapeEmailHtml(appointment.host_name ?? "No asignado");
+          const safeReferenceCode = escapeEmailHtml(appointment.reference_code ?? "");
+          const safeCompanyName = escapeEmailHtml(appointment.company_name);
+          const safeVisitDate = escapeEmailHtml(appointment.visit_date);
+          const safeVisitTime = escapeEmailHtml(appointment.visit_time);
+          const safeEquipmentDeclarationLink = escapeEmailHtml(equipmentDeclarationLink);
+          const equipmentLinkHtml = equipmentDeclarationLink
+            ? `<p>Antes de tu visita, declara el equipo y las herramientas que llevarás. Este enlace es de un solo uso:</p>
+               <p><a href="${safeEquipmentDeclarationLink}">Declarar equipo y herramientas</a></p>`
+            : equipmentLinkAlreadyUsed
+              ? "<p>El enlace de declaración de equipo ya fue utilizado y no se volvió a enviar.</p>"
+              : "";
+          const secure = smtpPort === 465;
+          transporter = nodemailer.createTransport({
+            host: smtpHost,
+            port: smtpPort,
+            secure,
+            requireTLS: !secure,
+            auth: { user: smtpUser, pass: smtpPassword },
+          });
+          await transporter.sendMail({
+            from: { name: tenantCompanyName, address: smtpFrom },
+            to: recipientEmail,
+            subject: `Referencia de visita | ${tenantCompanyName}`,
+            text: [
+              `Hola ${recipientName},`,
+              `Tu visita a ${tenantCompanyName} está registrada.`,
+              `Empresa o motivo: ${appointment.company_name}`,
+              `Anfitrión: ${appointment.host_name}`,
+              `Fecha: ${appointment.visit_date}`,
+              `Hora: ${appointment.visit_time}`,
+              `Código de referencia para recepción: ${appointment.reference_code}`,
+              ...(equipmentDeclarationLink
+                ? ["", "Declara tu equipo y herramientas con este enlace de un solo uso:", equipmentDeclarationLink]
+                : []),
+            ].join("\n"),
+            html: `<!doctype html><html lang="es"><body style="margin:0;background:#f3f6fa;font-family:Arial,sans-serif;color:#17283f">
+              <main style="max-width:560px;margin:32px auto;padding:32px;background:#fff;border-radius:16px">
+                <p style="margin:0 0 8px;color:#52708f">${safeTenantCompanyName}</p>
+                <h1 style="font-size:24px;margin:0 0 20px">Referencia de visita</h1>
+                <p>Hola ${safeVisitorName}, tu visita está registrada.</p>
+                <p><strong>Empresa o motivo:</strong> ${safeCompanyName}<br>
+                   <strong>Anfitrión:</strong> ${safeHostName}<br>
+                   <strong>Fecha:</strong> ${safeVisitDate}<br>
+                   <strong>Hora:</strong> ${safeVisitTime}</p>
+                <div style="margin:24px 0;padding:20px;text-align:center;background:#f3f6fa;border-radius:12px">
+                  <p style="margin:0 0 8px">Código de referencia para recepción</p>
+                  <strong style="font-size:30px;letter-spacing:6px">${safeReferenceCode}</strong>
+                </div>
+                ${equipmentLinkHtml}
+              </main></body></html>`,
+          });
+          return Response.json({
+            message: equipmentDeclarationLink
+              ? `La referencia y el enlace de declaración de un solo uso se enviaron a ${recipientName} (${recipientEmail}).`
+              : `La referencia ${appointment.reference_code} se envió a ${recipientName} (${recipientEmail}).`,
+          });
         }
         const qrPayload = JSON.stringify({
           type: "visitas-appointment",
@@ -7042,6 +8054,10 @@ const server = Bun.serve({
         if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
           return Response.json({ error: "No tienes permiso para modificar la asistencia." }, { status: 403 });
         }
+        if (user.isCompanyAdmin) {
+          return Response.json({ error: "La agenda de la empresa es de solo lectura para sus administradores." }, { status: 403 });
+        }
+        const companyId = companyScopeId(user);
         const appointmentId = Number(appointmentEmployeeAttendancePath[1]);
         const externalStaffId = Number(appointmentEmployeeAttendancePath[2]);
         if (
@@ -7076,8 +8092,9 @@ const server = Bun.serve({
              FROM appointments a
              LEFT JOIN business_partners bp ON bp.id = a.business_partner_id
              WHERE a.id = ? AND a.deleted_at IS NULL
+               ${companyId === undefined ? "" : "AND a.company_id = ?"}
              LIMIT 1 FOR UPDATE`,
-            [appointmentId],
+            companyId === undefined ? [appointmentId] : [appointmentId, companyId],
           );
           const appointment = appointments[0];
           if (!appointment) {
@@ -7185,9 +8202,13 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!user.isAdmin && !(await hasSectionAccess(user, "recepcion"))) {
+        const hasAppointmentAccess = user.isAdmin ||
+          await hasSectionAccess(user, "recepcion") ||
+          await hasHostOnlyAccess(user);
+        if (!hasAppointmentAccess) {
           return Response.json({ error: "No tienes permiso para consultar la bitácora." }, { status: 403 });
         }
+        const companyId = companyScopeId(user);
         const appointmentId = Number(appointmentEmployeesPath[1]);
         if (!Number.isSafeInteger(appointmentId) || appointmentId < 1) {
           return Response.json({ error: "La cita seleccionada no es válida." }, { status: 400 });
@@ -7197,8 +8218,9 @@ const server = Bun.serve({
            FROM appointments a
            LEFT JOIN business_partners bp ON bp.id = a.business_partner_id
            WHERE a.id = ? AND a.deleted_at IS NULL
+             ${companyId === undefined ? "" : "AND a.company_id = ?"}
            LIMIT 1`,
-          [appointmentId],
+          companyId === undefined ? [appointmentId] : [appointmentId, companyId],
         );
         if (!appointments[0]) {
           return Response.json({ error: "No se encontró la cita seleccionada." }, { status: 404 });
@@ -7280,8 +8302,8 @@ const server = Bun.serve({
               .map((name) => name.trim().toLocaleLowerCase()))]
           : [];
         const visibilityConditions: string[] = [];
-        const parameters: string[] = [];
-        if (!user.isAdmin && !hasReceptionAccess) {
+        const parameters: Array<string | number> = [];
+        if (!user.isAdmin && !user.companyRole && !hasReceptionAccess) {
           visibilityConditions.push("created_by_login = ?");
           parameters.push(user.login);
           if (hostNames.length > 0) {
@@ -7291,31 +8313,27 @@ const server = Bun.serve({
             parameters.push(...hostNames);
           }
         }
-        const [rows] = visibilityConditions.length === 0
-          ? await pool.query<RowDataPacket[]>(
-              `SELECT id, appointment_id, action, actor_name,
-                      DATE_FORMAT(created_at, '%Y-%m-%d') AS changed_date,
-                      TIME_FORMAT(created_at, '%H:%i') AS changed_time,
-                      DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
-                      TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
-                      visitor_name, company_name, host_name, appointment_status, details
-               FROM appointment_history
-               ORDER BY created_at DESC, id DESC
-               LIMIT 50`,
-            )
-          : await pool.execute<RowDataPacket[]>(
-              `SELECT id, appointment_id, action, actor_name,
-                      DATE_FORMAT(created_at, '%Y-%m-%d') AS changed_date,
-                      TIME_FORMAT(created_at, '%H:%i') AS changed_time,
-                      DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
-                      TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
-                      visitor_name, company_name, host_name, appointment_status, details
-               FROM appointment_history
-               WHERE (${visibilityConditions.join(" OR ")})
-               ORDER BY created_at DESC, id DESC
-               LIMIT 50`,
-              parameters,
-            );
+        const companyId = companyScopeId(user);
+        const historyConditions = [
+          visibilityConditions.length === 0 ? "1 = 1" : `(${visibilityConditions.join(" OR ")})`,
+          ...(companyId === undefined
+            ? []
+            : ["EXISTS (SELECT 1 FROM appointments scoped_appointment WHERE scoped_appointment.id = appointment_history.appointment_id AND scoped_appointment.company_id = ?)"]),
+        ];
+        if (companyId !== undefined) parameters.push(companyId);
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          `SELECT id, appointment_id, action, actor_name,
+                  DATE_FORMAT(created_at, '%Y-%m-%d') AS changed_date,
+                  TIME_FORMAT(created_at, '%H:%i') AS changed_time,
+                  DATE_FORMAT(visit_date, '%Y-%m-%d') AS visit_date,
+                  TIME_FORMAT(visit_time, '%H:%i') AS visit_time,
+                  visitor_name, company_name, host_name, appointment_status, details
+           FROM appointment_history
+           WHERE ${historyConditions.join(" AND ")}
+           ORDER BY created_at DESC, id DESC
+           LIMIT 50`,
+          parameters,
+        );
         return Response.json({
           history: rows.map((row) => ({
             id: Number(row.id),
@@ -7359,10 +8377,21 @@ const server = Bun.serve({
               .filter((name): name is string => Boolean(name))
               .map((name) => name.trim().toLocaleLowerCase()))]
           : [];
-        const userAppointmentScope = appointmentHostNames.length > 0
+        const companyId = companyScopeId(user);
+        const creatorScope = appointmentHostNames.length > 0
           ? `(created_by_login = ? OR LOWER(TRIM(host_name)) IN (${appointmentHostNames.map(() => "?").join(", ")}))`
           : "created_by_login = ?";
-        const userAppointmentScopeParameters = [user.login, ...appointmentHostNames];
+        const userAppointmentScope = `(${creatorScope}) ${companyId === undefined ? "" : "AND company_id = ?"}`;
+        const userAppointmentScopeParameters = [
+          user.login,
+          ...appointmentHostNames,
+          ...(companyId === undefined ? [] : [companyId]),
+        ];
+        const listVisibleAppointments = (readCompanyId = companyId) => listAppointments(
+          !user.isAdmin && !hasReceptionAccess && !user.companyRole ? user.login : undefined,
+          !user.isAdmin && !hasReceptionAccess && !user.companyRole ? appointmentHostNames : [],
+          readCompanyId,
+        );
 
         const appointmentId = appointmentsPath[1] ? Number(appointmentsPath[1]) : null;
         if (appointmentId !== null && (!Number.isSafeInteger(appointmentId) || appointmentId < 1)) {
@@ -7372,11 +8401,12 @@ const server = Bun.serve({
           if (appointmentId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
+          const scope = await requestedCompanyScope(user, url);
+          if (!scope.valid) {
+            return Response.json({ error: "El filtro de empresa no es válido." }, { status: 400 });
+          }
           return Response.json({
-            appointments: await listAppointments(
-              !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
-              !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
-            ),
+            appointments: await listVisibleAppointments(scope.companyId),
           });
         }
         if (!user.isAdmin && (hasReceptionAccess || !hasHostAccess)) {
@@ -7391,6 +8421,9 @@ const server = Bun.serve({
         const targetAppointmentId = appointmentId ?? 0;
 
         if (request.method === "DELETE") {
+          if (user.companyRole) {
+            return Response.json({ error: "No puedes eliminar citas de tu empresa." }, { status: 403 });
+          }
           const connection = await pool.getConnection();
           try {
             await connection.beginTransaction();
@@ -7455,10 +8488,7 @@ const server = Bun.serve({
             connection.release();
           }
           return Response.json({
-            appointments: await listAppointments(
-              !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
-              !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
-            ),
+            appointments: await listVisibleAppointments(),
           });
         }
 
@@ -7470,6 +8500,9 @@ const server = Bun.serve({
         }
         if (request.method === "PATCH") {
           if (isRecord(body) && body.status === "Cancelada") {
+            if (user.companyRole) {
+              return Response.json({ error: "No puedes cancelar citas de tu empresa." }, { status: 403 });
+            }
             const connection = await pool.getConnection();
             try {
               await connection.beginTransaction();
@@ -7546,7 +8579,7 @@ const server = Bun.serve({
                 { status: 400 },
               );
             }
-            const resolvedHostName = await resolveAppointmentHostName(appointment);
+            const resolvedHostName = await resolveAppointmentHostName(appointment, companyId);
             if (resolvedHostName === null) {
               return Response.json(
                 { error: "El anfitrión seleccionado no registró esta empresa o visitante." },
@@ -7556,7 +8589,8 @@ const server = Bun.serve({
             appointment.hostName = resolvedHostName;
             const details = await resolveAppointmentDetails(
               appointment,
-              hasHostAccess && !user.isAdmin ? user.login : undefined,
+              hasHostAccess && !user.isAdmin && !user.companyRole ? user.login : undefined,
+              companyId,
             );
             if (!details) {
               return Response.json(
@@ -7633,10 +8667,7 @@ const server = Bun.serve({
                 await connection.rollback();
                 return Response.json({
                   message: "No se detectaron cambios en la cita.",
-                  appointments: await listAppointments(
-                    !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
-                    !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
-                  ),
+                  appointments: await listVisibleAppointments(),
                 });
               }
               await connection.execute(
@@ -7688,7 +8719,7 @@ const server = Bun.serve({
               { status: 400 },
             );
           }
-          const resolvedHostName = await resolveAppointmentHostName(appointment);
+          const resolvedHostName = await resolveAppointmentHostName(appointment, companyId);
           if (resolvedHostName === null) {
             return Response.json(
               { error: "El anfitrión seleccionado no registró esta empresa o visitante." },
@@ -7698,7 +8729,8 @@ const server = Bun.serve({
           appointment.hostName = resolvedHostName;
           const details = await resolveAppointmentDetails(
             appointment,
-            hasHostAccess && !user.isAdmin ? user.login : undefined,
+            hasHostAccess && !user.isAdmin && !user.companyRole ? user.login : undefined,
+            companyId,
           );
           if (!details) {
             return Response.json(
@@ -7715,14 +8747,15 @@ const server = Bun.serve({
           try {
             await connection.beginTransaction();
             let created = false;
+            const recordCompanyId = await companyIdForNewRecord(user);
             for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
               const referenceCode = await createAppointmentReferenceCode();
               try {
                 const [result] = await connection.execute<ResultSetHeader>(
                   `INSERT INTO appointments
                     (business_partner_id, visitor_record_id, visit_date, visit_time, visitor_name, visitor_email,
-                     reference_code, registered_by, created_by_login, company_name, host_name, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente')`,
+                     reference_code, registered_by, created_by_login, company_name, host_name, status, company_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?)`,
                   [
                     details.businessPartnerId,
                     details.visitorRecordId,
@@ -7735,6 +8768,7 @@ const server = Bun.serve({
                     user.login,
                     details.companyName,
                     user.isAdmin ? appointment.hostName : user.name?.trim() || user.login,
+                    recordCompanyId,
                   ],
                 );
                 createdAppointmentId = Number(result.insertId);
@@ -7780,10 +8814,7 @@ const server = Bun.serve({
         }
 
         return Response.json({
-          appointments: await listAppointments(
-            !user.isAdmin && !hasReceptionAccess ? user.login : undefined,
-            !user.isAdmin && !hasReceptionAccess ? appointmentHostNames : [],
-          ),
+          appointments: await listVisibleAppointments(),
         }, {
           status: request.method === "POST" ? 201 : 200,
         });
@@ -7817,9 +8848,9 @@ const server = Bun.serve({
           if (staffId !== null) {
             return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
           }
-          return Response.json({ externalStaff: await listExternalStaff() });
+          return Response.json({ externalStaff: await listExternalStaff(companyScopeId(user)) });
         }
-        if (!(await canManageExternalModules(user))) {
+        if (!(await canManageExternalModules(user)) && user.companyRole !== "anfitrion") {
           return Response.json({ error: "No tienes permiso para modificar personal externo." }, { status: 403 });
         }
         if (
@@ -7829,14 +8860,19 @@ const server = Bun.serve({
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
         }
         if (request.method === "DELETE") {
+          const companyId = companyScopeId(user);
           const [result] = await pool.execute<ResultSetHeader>(
-            "DELETE FROM external_staff WHERE id = ?",
-            [staffId],
+            `DELETE FROM external_staff WHERE id = ?
+             ${companyId === undefined ? "" : `AND EXISTS (
+               SELECT 1 FROM business_partners p
+               WHERE p.id = external_staff.business_partner_id AND p.company_id = ?
+             )`}`,
+            companyId === undefined ? [staffId] : [staffId, companyId],
           );
           if (result.affectedRows === 0) {
             return Response.json({ error: "No se encontró la persona seleccionada." }, { status: 404 });
           }
-          return Response.json({ externalStaff: await listExternalStaff() });
+          return Response.json({ externalStaff: await listExternalStaff(companyId) });
         }
 
         let body: unknown;
@@ -7852,6 +8888,7 @@ const server = Bun.serve({
             { status: 400 },
           );
         }
+        const companyId = companyScopeId(user);
         const connection = await pool.getConnection();
         try {
           await connection.beginTransaction();
@@ -7860,9 +8897,10 @@ const server = Bun.serve({
                     employee_count, partner_type, is_active
              FROM business_partners
              WHERE id = ?
+               ${companyId === undefined ? "" : "AND company_id = ?"}
              LIMIT 1
              FOR UPDATE`,
-            [staff.businessPartnerId],
+            companyId === undefined ? [staff.businessPartnerId] : [staff.businessPartnerId, companyId],
           );
           const partner = partners[0];
           if (!partner) {
@@ -7877,8 +8915,10 @@ const server = Bun.serve({
           let previousPartnerId: number | null = null;
           if (request.method === "PATCH") {
             const [staffRows] = await connection.execute<RowDataPacket[]>(
-              "SELECT business_partner_id FROM external_staff WHERE id = ? LIMIT 1",
-              [staffId],
+              `SELECT s.business_partner_id FROM external_staff s
+               INNER JOIN business_partners p ON p.id = s.business_partner_id
+               WHERE s.id = ? ${companyId === undefined ? "" : "AND p.company_id = ?"} LIMIT 1`,
+              companyId === undefined ? [staffId] : [staffId, companyId],
             );
             if (!staffRows[0]) {
               await connection.rollback();
@@ -7907,13 +8947,19 @@ const server = Bun.serve({
             await connection.execute(
               `UPDATE external_staff
                SET business_partner_id = ?, full_name = ?, phone = ?, email = ?
-               WHERE id = ?`,
+               WHERE id = ?
+                 ${companyId === undefined ? "" : `AND EXISTS (
+                   SELECT 1 FROM business_partners current_partner
+                   WHERE current_partner.id = external_staff.business_partner_id
+                     AND current_partner.company_id = ?
+                 )`}`,
               [
                 staff.businessPartnerId,
                 staff.fullName,
                 staff.phone,
                 staff.email,
                 staffId,
+                ...(companyId === undefined ? [] : [companyId]),
               ],
             );
           } else {
@@ -7932,7 +8978,7 @@ const server = Bun.serve({
         }
 
         return Response.json(
-          { externalStaff: await listExternalStaff() },
+          { externalStaff: await listExternalStaff(companyId) },
           { status: request.method === "POST" ? 201 : 200 },
         );
       } catch (error) {
@@ -8032,13 +9078,17 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        const sections = await listUserSectionAccess(user.login, user.isAdmin);
-        if (!user.isAdmin && !sections.includes("recepcion")) {
+        const sections = await listUserSectionAccess(user.login, user.isAdmin, user.isCompanyAdmin);
+        if (!user.isAdmin && !user.isCompanyAdmin && !sections.includes("recepcion")) {
           return Response.json({ error: "No tienes permiso para consultar anfitriones." }, { status: 403 });
         }
-        const hosts = await listDepartmentHosts();
+        const companyScopeId = user.isCompanyAdmin ? user.companyId ?? undefined : undefined;
+        if (user.isCompanyAdmin && companyScopeId === undefined) {
+          return Response.json({ error: "La cuenta no tiene una empresa asignada." }, { status: 403 });
+        }
+        const hosts = await listDepartmentHosts(companyScopeId);
         return Response.json({
-          hosts: user.isAdmin
+          hosts: user.isAdmin || user.isCompanyAdmin
             ? hosts
             : hosts.map((host) => ({
                 id: host.id,
@@ -8158,6 +9208,167 @@ const server = Bun.serve({
       }
     }
 
+    if (request.method === "GET" && url.pathname === "/api/company-metrics") {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin && !user.isCompanyAdmin) {
+          return Response.json({ error: "No tienes permiso para consultar las métricas de empresas." }, { status: 403 });
+        }
+        const companyScopeId = user.isCompanyAdmin ? user.companyId : undefined;
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          `SELECT c.id, c.name,
+                  COUNT(DISTINCT d.id) AS department_count,
+                  COUNT(DISTINCT CASE
+                    WHEN a.rol_aplicacion = 'administrador_empresa' THEN a.login END) AS administrator_count,
+                  COUNT(DISTINCT CASE
+                    WHEN a.rol_aplicacion IN ('recepcion', 'anfitrion') THEN a.login END) AS staff_count
+           FROM companies c
+           LEFT JOIN departments d ON d.company_id = c.id
+           LEFT JOIN accesos a ON a.company_id = c.id AND a.rol_aplicacion <> 'sin_acceso'
+           ${companyScopeId === undefined ? "" : "WHERE c.id = ?"}
+           GROUP BY c.id, c.name
+           ORDER BY c.name, c.id`,
+          companyScopeId === undefined ? [] : [companyScopeId],
+        );
+        const companies = rows.map((row) => ({
+          id: Number(row.id),
+          name: String(row.name),
+          departments: Number(row.department_count),
+          administrators: Number(row.administrator_count),
+          staff: Number(row.staff_count),
+        }));
+        return Response.json({
+          totals: {
+            companies: companies.length,
+            departments: companies.reduce((sum, company) => sum + company.departments, 0),
+            administrators: companies.reduce((sum, company) => sum + company.administrators, 0),
+            staff: companies.reduce((sum, company) => sum + company.staff, 0),
+          },
+          companies,
+        });
+      } catch (error) {
+        console.error("Failed to load company dashboard metrics:", error);
+        return Response.json({ error: "No se pudieron cargar las métricas de empresas." }, { status: 500 });
+      }
+    }
+
+    const companiesPath = url.pathname.match(/^\/api\/companies(?:\/(\d+))?$/);
+    if (
+      companiesPath &&
+      ((request.method === "GET" && !companiesPath[1]) ||
+        ["POST", "PATCH", "DELETE"].includes(request.method))
+    ) {
+      try {
+        const user = await getRequestUser(request);
+        if (!user) {
+          return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+        }
+        if (!user.isAdmin && !user.isCompanyAdmin) {
+          return Response.json({ error: "No tienes permiso para administrar empresas." }, { status: 403 });
+        }
+        const companyScopeId = user.isCompanyAdmin ? user.companyId ?? undefined : undefined;
+        if (user.isCompanyAdmin && companyScopeId === undefined) {
+          return Response.json({ error: "La cuenta no tiene una empresa asignada." }, { status: 403 });
+        }
+
+        const companyId = companiesPath[1] ? Number(companiesPath[1]) : null;
+        if (companyId !== null && (!Number.isSafeInteger(companyId) || companyId <= 0)) {
+          return Response.json({ error: "La empresa seleccionada no es válida." }, { status: 400 });
+        }
+        if (
+          (request.method === "POST" && companyId !== null) ||
+          (request.method === "PATCH" && companyId === null)
+        ) {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (request.method === "GET") {
+          return Response.json({ companies: await listCompanies(companyScopeId) });
+        }
+        if (!user.isAdmin) {
+          return Response.json({ error: "No tienes permiso para modificar empresas." }, { status: 403 });
+        }
+        if (request.method === "DELETE") {
+          if (companyId === null) {
+            return Response.json({ error: "Indica la empresa que deseas eliminar." }, { status: 400 });
+          }
+          const [matches] = await pool.execute<RowDataPacket[]>(
+            "SELECT id FROM companies WHERE id = ? LIMIT 1",
+            [companyId],
+          );
+          if (matches.length === 0) {
+            return Response.json({ error: "No se encontró la empresa seleccionada." }, { status: 404 });
+          }
+          const [departmentCounts] = await pool.execute<RowDataPacket[]>(
+            "SELECT COUNT(*) AS department_count FROM departments WHERE company_id = ?",
+            [companyId],
+          );
+          if (Number(departmentCounts[0]?.department_count ?? 0) > 0) {
+            return Response.json(
+              { error: "No se puede eliminar la empresa porque todavía tiene departamentos vinculados." },
+              { status: 409 },
+            );
+          }
+          await pool.execute("DELETE FROM companies WHERE id = ?", [companyId]);
+          return Response.json({ companies: await listCompanies() });
+        }
+
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
+        }
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          !("name" in body) ||
+          typeof body.name !== "string" ||
+          !body.name.trim() ||
+          body.name.trim().length > 180
+        ) {
+          return Response.json(
+            { error: "Escribe el nombre de la empresa (máximo 180 caracteres)." },
+            { status: 400 },
+          );
+        }
+        if (companyId === null) {
+          await pool.execute<ResultSetHeader>(
+            "INSERT INTO companies (name) VALUES (?)",
+            [body.name.trim()],
+          );
+        } else {
+          const [result] = await pool.execute<ResultSetHeader>(
+            "UPDATE companies SET name = ? WHERE id = ?",
+            [body.name.trim(), companyId],
+          );
+          if (result.affectedRows === 0) {
+            return Response.json({ error: "No se encontró la empresa seleccionada." }, { status: 404 });
+          }
+        }
+        return Response.json(
+          { companies: await listCompanies() },
+          { status: request.method === "POST" ? 201 : 200 },
+        );
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ER_DUP_ENTRY"
+        ) {
+          return Response.json({ error: "Ya existe una empresa con ese nombre." }, { status: 409 });
+        }
+        console.error("Failed to modify companies:", error);
+        return Response.json(
+          { error: "No se pudo guardar la empresa. Inténtalo de nuevo." },
+          { status: 500 },
+        );
+      }
+    }
+
     const departmentsPath = url.pathname.match(/^\/api\/departments(?:\/(\d+))?$/);
     if (departmentsPath && request.method === "GET" && !departmentsPath[1]) {
       try {
@@ -8165,11 +9376,17 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        const sections = await listUserSectionAccess(user.login, user.isAdmin);
-        if (!user.isAdmin && !sections.includes("recepcion")) {
+        const sections = await listUserSectionAccess(user.login, user.isAdmin, user.isCompanyAdmin);
+        if (!user.isAdmin && !user.isCompanyAdmin && !sections.includes("recepcion")) {
           return Response.json({ error: "No tienes permiso para consultar departamentos." }, { status: 403 });
         }
-        return Response.json({ departments: await listDepartments() });
+        const companyScopeId = user.isCompanyAdmin ? user.companyId ?? undefined : undefined;
+        if (user.isCompanyAdmin && companyScopeId === undefined) {
+          return Response.json({ error: "La cuenta no tiene una empresa asignada." }, { status: 403 });
+        }
+        return Response.json({
+          departments: await listDepartments(companyScopeId),
+        });
       } catch (error) {
         console.error("Failed to load departments:", error);
         return Response.json(
@@ -8188,8 +9405,12 @@ const server = Bun.serve({
         if (!user) {
           return Response.json({ error: "Inicia sesión para continuar." }, { status: 401 });
         }
-        if (!user.isAdmin) {
+        if (!user.isAdmin && !user.isCompanyAdmin) {
           return Response.json({ error: "No tienes permiso para modificar departamentos." }, { status: 403 });
+        }
+        const companyScopeId = user.isCompanyAdmin ? user.companyId ?? undefined : undefined;
+        if (user.isCompanyAdmin && companyScopeId === undefined) {
+          return Response.json({ error: "La cuenta no tiene una empresa asignada." }, { status: 403 });
         }
 
         const departmentId = departmentsPath[1] ? Number(departmentsPath[1]) : null;
@@ -8202,8 +9423,12 @@ const server = Bun.serve({
             return Response.json({ error: "Indica el departamento que deseas eliminar." }, { status: 400 });
           }
           const [matches] = await pool.execute<DepartmentRow[]>(
-            "SELECT id FROM departments WHERE id = ? LIMIT 1",
-            [departmentId],
+            `SELECT id FROM departments
+             WHERE id = ? ${user.isCompanyAdmin ? "AND company_id = ?" : ""}
+             LIMIT 1`,
+            user.isCompanyAdmin && companyScopeId !== undefined
+              ? [departmentId, companyScopeId]
+              : [departmentId],
           );
           if (matches.length === 0) {
             return Response.json({ error: "No se encontró el departamento seleccionado." }, { status: 404 });
@@ -8218,8 +9443,16 @@ const server = Bun.serve({
               { status: 409 },
             );
           }
-          await pool.execute("DELETE FROM departments WHERE id = ?", [departmentId]);
-          return Response.json({ departments: await listDepartments() });
+          await pool.execute(
+            `DELETE FROM departments
+             WHERE id = ? ${user.isCompanyAdmin ? "AND company_id = ?" : ""}`,
+            user.isCompanyAdmin && companyScopeId !== undefined
+              ? [departmentId, companyScopeId]
+              : [departmentId],
+          );
+          return Response.json({
+            departments: await listDepartments(companyScopeId),
+          });
         }
 
         if ((request.method === "POST" && departmentId !== null) ||
@@ -8246,11 +9479,27 @@ const server = Bun.serve({
             { status: 400 },
           );
         }
+        let requestedCompanyId: number | null = null;
+        if ("companyId" in body) {
+          if (
+            typeof body.companyId !== "number" ||
+            !Number.isSafeInteger(body.companyId) ||
+            body.companyId <= 0
+          ) {
+            return Response.json({ error: "Selecciona una empresa válida para el departamento." }, { status: 400 });
+          }
+          requestedCompanyId = body.companyId;
+        }
+        if (user.isCompanyAdmin) requestedCompanyId = companyScopeId ?? null;
 
         if (request.method === "PATCH" && departmentId !== null) {
           const [matches] = await pool.execute<DepartmentRow[]>(
-            "SELECT id FROM departments WHERE id = ? LIMIT 1",
-            [departmentId],
+            `SELECT id FROM departments
+             WHERE id = ? ${user.isCompanyAdmin ? "AND company_id = ?" : ""}
+             LIMIT 1`,
+            user.isCompanyAdmin && companyScopeId !== undefined
+              ? [departmentId, companyScopeId]
+              : [departmentId],
           );
           if (matches.length === 0) {
             return Response.json({ error: "No se encontró el departamento seleccionado." }, { status: 404 });
@@ -8260,14 +9509,33 @@ const server = Bun.serve({
             [body.name.trim(), departmentId],
           );
         } else {
+          if (requestedCompanyId === null) {
+            const [cymezRows] = await pool.execute<RowDataPacket[]>(
+              "SELECT id FROM companies ORDER BY id LIMIT 1",
+            );
+            requestedCompanyId = cymezRows[0] ? Number(cymezRows[0].id) : null;
+          }
+          if (requestedCompanyId === null) {
+            return Response.json(
+              { error: "No se encontró la empresa Cymez para asignar el departamento." },
+              { status: 409 },
+            );
+          }
+          const [companyRows] = await pool.execute<RowDataPacket[]>(
+            "SELECT id FROM companies WHERE id = ? LIMIT 1",
+            [requestedCompanyId],
+          );
+          if (companyRows.length === 0) {
+            return Response.json({ error: "No se encontró la empresa seleccionada." }, { status: 404 });
+          }
           await pool.execute<ResultSetHeader>(
-            "INSERT INTO departments (name) VALUES (?)",
-            [body.name.trim()],
+            "INSERT INTO departments (company_id, name) VALUES (?, ?)",
+            [requestedCompanyId, body.name.trim()],
           );
         }
 
         return Response.json(
-          { departments: await listDepartments() },
+          { departments: await listDepartments(companyScopeId) },
           { status: request.method === "POST" ? 201 : 200 },
         );
       } catch (error) {
@@ -8278,7 +9546,7 @@ const server = Bun.serve({
           error.code === "ER_DUP_ENTRY"
         ) {
           return Response.json(
-            { error: "Ya existe un departamento con ese nombre." },
+            { error: "Ya existe un departamento con ese nombre en la empresa seleccionada." },
             { status: 409 },
           );
         }
@@ -8378,7 +9646,7 @@ const server = Bun.serve({
             }
           }
           await connection.execute(
-            "DELETE FROM accesos_secciones WHERE login = ? AND seccion IN ('recepcion', 'administrador', 'registro')",
+            "DELETE FROM accesos_secciones WHERE login = ? AND seccion IN ('recepcion', 'anfitriones', 'administrador', 'registro')",
             [accountLogin],
           );
           for (const section of new Set(body.sections as SectionAccess[])) {

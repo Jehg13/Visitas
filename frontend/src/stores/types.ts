@@ -4,6 +4,11 @@ export type BusinessPartnerStatus = "Activa" | "Inactiva" | "No aplica";
 export type ExternalStaffType = "Contratista" | "Proveedor";
 export type SectionAccess = "recepcion" | "anfitriones" | "administrador";
 export type SystemAccessRole = "Administrador" | "Recepción" | "Anfitriones";
+export type CompanyApplicationRole =
+  | "administrador_empresa"
+  | "recepcion"
+  | "anfitrion"
+  | "sin_acceso";
 
 export type Appointment = {
   id: number;
@@ -16,6 +21,7 @@ export type Appointment = {
   referenceCode: string;
   registeredBy: string;
   company: string;
+  tenantCompanyName?: string;
   partnerType?: BusinessPartnerType;
   host: string;
   status: AppointmentStatus;
@@ -35,8 +41,15 @@ export type ExternalStaff = {
 
 export type Department = {
   id: number;
+  companyId: number;
   name: string;
   hostCount?: number;
+};
+
+export type Company = {
+  id: number;
+  name: string;
+  departmentCount: number;
 };
 
 export type Host = {
@@ -68,12 +81,43 @@ export type AccessAccount = {
   sectionAccess: SectionAccess[];
 };
 
+export type Administrator = {
+  login: string;
+  name: string | null;
+  email: string | null;
+  active: string;
+  applicationRole: CompanyApplicationRole;
+  role: string | null;
+  phone: string | null;
+  companyId: number;
+  companyName: string;
+  mustChangePassword: boolean;
+};
+
+export type CompanyUser = {
+  login: string;
+  name: string | null;
+  email: string | null;
+  active: string;
+  applicationRole: "recepcion" | "anfitrion";
+  role: string | null;
+  phone: string | null;
+  companyId: number;
+  departmentId: number | null;
+  departmentName: string | null;
+  mustChangePassword: boolean;
+};
+
 export type AuthenticatedUser = {
   login: string;
   name: string | null;
   email: string | null;
   role: string | null;
   isAdmin: boolean;
+  isCompanyAdmin: boolean;
+  companyId: number | null;
+  companyRole: Exclude<CompanyApplicationRole, "sin_acceso"> | null;
+  mustChangePassword: boolean;
   sectionAccess: SectionAccess[];
 };
 

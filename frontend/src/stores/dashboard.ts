@@ -3,6 +3,7 @@ import { ref } from "vue";
 import type {
   Appointment,
   BusinessPartner,
+  Company,
   Department,
   ExternalStaff,
   GeneralVisitor,
@@ -17,6 +18,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const appointmentFilter = ref<"day" | "all">("day");
   const appointments = ref<Appointment[]>([]);
   const externalStaff = ref<ExternalStaff[]>([]);
+  const companies = ref<Company[]>([]);
   const departments = ref<Department[]>([]);
   const hosts = ref<Host[]>([]);
   const hostAccountOptions = ref<HostAccountOption[]>([]);
@@ -30,6 +32,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     appointmentFilter.value = "day";
     appointments.value = [];
     externalStaff.value = [];
+    companies.value = [];
     departments.value = [];
     hosts.value = [];
     hostAccountOptions.value = [];
@@ -44,6 +47,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     appointmentFilter,
     appointments,
     externalStaff,
+    companies,
     departments,
     hosts,
     hostAccountOptions,
