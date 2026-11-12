@@ -1431,12 +1431,20 @@ async function removeEntry(entry: LogEntry) {
   }
   try {
     const response = await fetch(`/api/daily-log/${entry.id}`, { method: "DELETE" });
-    const result = await response.json() as { message?: string; error?: string };
+    const result = await response.json() as {
+      message?: string;
+      error?: string;
+      timerWarning?: boolean;
+    };
     if (!response.ok) {
       notifyUser(result.error ?? "No se pudo eliminar el movimiento.");
       return;
     }
-    notifyUser(result.message ?? "El movimiento se eliminó correctamente.", "success", "Movimiento eliminado");
+    notifyUser(
+      result.message ?? "El movimiento se eliminó correctamente.",
+      result.timerWarning ? "warning" : "success",
+      "Movimiento eliminado",
+    );
     await loadEntries();
   } catch (cause) {
     console.error("Failed to delete daily log movement:", cause);

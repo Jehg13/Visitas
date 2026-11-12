@@ -909,13 +909,17 @@ async function reconcileVisitTimerAfterMovementDeletion(
   if (deletedMovement.date !== getAppDateTime().date) return;
   const scope = deletedMovement.appointmentId !== null
     ? {
-        sql: "appointment_id = ? AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
-        params: [deletedMovement.appointmentId, deletedMovement.personName],
+        sql: "appointment_id = ? AND visitor_record_id <=> ? AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
+        params: [
+          deletedMovement.appointmentId,
+          deletedMovement.visitorRecordId,
+          deletedMovement.personName,
+        ],
       }
     : deletedMovement.visitorRecordId !== null
       ? {
-          sql: "appointment_id IS NULL AND visitor_record_id = ?",
-          params: [deletedMovement.visitorRecordId],
+          sql: "appointment_id IS NULL AND visitor_record_id = ? AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
+          params: [deletedMovement.visitorRecordId, deletedMovement.personName],
         }
       : {
           sql: "appointment_id IS NULL AND visitor_record_id IS NULL AND LOWER(TRIM(person_name)) = LOWER(TRIM(?))",
@@ -966,6 +970,19 @@ async function reconcileVisitTimerAfterMovementDeletion(
   }
   const intervalMinutes = getVisitTimerIntervalMinutes(latest.event_type);
   const now = new Date();
+  const [targetTimerRows] = await connection.execute<(RowDataPacket & {
+    id: number;
+    status: "active" | "canceled" | "completed";
+  })[]>(
+    `SELECT id, status
+     FROM daily_log_timers
+     WHERE visit_date = ? AND visit_entry_id = ?
+     LIMIT 1
+     FOR UPDATE`,
+    [deletedMovement.date, latest.id],
+  );
+  const targetTimer = targetTimerRows[0];
+  if (targetTimer?.status === "canceled") return;
   const [timerRows] = await connection.execute<(RowDataPacket & {
     id: number;
     status: "active" | "canceled" | "completed";
@@ -977,7 +994,7 @@ async function reconcileVisitTimerAfterMovementDeletion(
      LIMIT 1`,
     [deletedMovement.date, ...scope.params],
   );
-  const timer = timerRows[0];
+  const timer = targetTimer ?? timerRows[0];
   if (timer?.status === "canceled") return;
   const startedAt = formatUtcSqlDateTime(now);
   const dueAt = formatUtcSqlDateTime(new Date(now.getTime() + intervalMinutes * 60_000));
@@ -5781,6 +5798,7 @@ const server = Bun.serve({
           const deletionConnection = await pool.getConnection();
           let linkedAppointmentId: number | null = null;
           let shouldNotifyAppointment = false;
+          let timerWarning = false;
           try {
             await deletionConnection.beginTransaction();
             const [appointmentRows] = await deletionConnection.execute<RowDataPacket[]>(
@@ -5823,10 +5841,6 @@ const server = Bun.serve({
             linkedAppointmentId = entryToDelete.appointment_id === null
               ? null
               : Number(entryToDelete.appointment_id);
-            await deletionConnection.execute(
-              "DELETE FROM daily_log_timers WHERE visit_entry_id = ?",
-              [entryId],
-            );
             const [result] = await deletionConnection.execute<ResultSetHeader>(
               "DELETE FROM daily_log_entries WHERE id = ?",
               [entryId],
@@ -5834,16 +5848,6 @@ const server = Bun.serve({
             if (result.affectedRows === 0) {
               await deletionConnection.rollback();
               return Response.json({ error: "No se encontró el movimiento seleccionado." }, { status: 404 });
-            }
-            if (["Llegada", "Ingreso", "Retiro"].includes(String(entryToDelete.event_type))) {
-              await reconcileVisitTimerAfterMovementDeletion(deletionConnection, {
-                date: String(entryToDelete.entry_date),
-                appointmentId: linkedAppointmentId,
-                visitorRecordId: entryToDelete.visitor_record_id === null
-                  ? null
-                  : Number(entryToDelete.visitor_record_id),
-                personName: String(entryToDelete.person_name),
-              });
             }
             if (linkedAppointmentId !== null) {
               const appointmentStatus = await getAppointmentStatusFromMovements(
@@ -5857,6 +5861,21 @@ const server = Bun.serve({
               shouldNotifyAppointment = statusUpdate.affectedRows > 0;
             }
             await deletionConnection.commit();
+            if (["Llegada", "Ingreso", "Retiro"].includes(String(entryToDelete.event_type))) {
+              try {
+                await reconcileVisitTimerAfterMovementDeletion(deletionConnection, {
+                  date: String(entryToDelete.entry_date),
+                  appointmentId: linkedAppointmentId,
+                  visitorRecordId: entryToDelete.visitor_record_id === null
+                    ? null
+                    : Number(entryToDelete.visitor_record_id),
+                  personName: String(entryToDelete.person_name),
+                });
+              } catch (error) {
+                timerWarning = true;
+                console.error("Failed to reconcile visit timer after deleting daily log movement:", error);
+              }
+            }
           } catch (error) {
             await deletionConnection.rollback();
             throw error;
@@ -5867,7 +5886,12 @@ const server = Bun.serve({
             void sendAppointmentStatusNotification(linkedAppointmentId);
           }
           publishRealtimeUpdate();
-          return Response.json({ message: "El movimiento se eliminó." });
+          return Response.json({
+            message: timerWarning
+              ? "El movimiento se eliminó, pero no se pudo actualizar su temporizador."
+              : "El movimiento se eliminó.",
+            timerWarning,
+          });
         }
         if (entryId !== null) {
           return Response.json({ error: "La solicitud no es válida." }, { status: 400 });
