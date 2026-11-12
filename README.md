@@ -78,6 +78,12 @@ MySQL.
    `DB_EXTERNAL_DATABASE`, `DB_EXTERNAL_USERNAME` y `DB_EXTERNAL_PASSWORD`
    con los datos de MySQL que contiene `seg_users`. La contraseña solo debe
    guardarse en el archivo local `backend\.env`, que no se sube al repositorio.
+   Si ese servidor admite TLS, define `DB_EXTERNAL_SSL=true`; para una CA
+   privada, proporciona su certificado PEM en `DB_EXTERNAL_SSL_CA`. El cliente
+   valida la cadena y el hostname del servidor; por eso `DB_EXTERNAL_HOST`
+   debe ser el nombre DNS incluido en el certificado cuando TLS esté habilitado.
+   Si las variables se omiten, se conserva el modo de conexión actual para no
+   romper redes privadas que aún no tengan TLS configurado.
    Para conceder el permiso inicial de administrador, define
    `INITIAL_ADMIN_LOGIN` con un login activo de `seg_users` antes de ejecutar la
    migración. Cada ejecución de la migración garantiza ese permiso sin crear

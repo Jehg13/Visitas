@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { apiEventSource, apiFetch as fetch } from "../api";
 import { notifyUser } from "../notifications";
+import {
+  clearKioskDraft,
+  clearKioskStorage,
+  readExpiringKioskDraft,
+  writeExpiringKioskDraft,
+} from "../visitor-kiosk-lifecycle";
+import { createKioskStatusUpdates } from "../visitor-kiosk-live-updates";
 
 type KioskItem = {
   type: "Equipo" | "Herramienta";
@@ -21,6 +29,7 @@ type RegistrationResult = {
 
 type KioskSessionDraft = {
   version: 1;
+  expiresAt: number;
   step: number;
   requestIdempotencyKey: string;
   visitorName: string;
@@ -31,7 +40,6 @@ type KioskSessionDraft = {
   itemDraft: KioskItem;
   editingItemIndex: number | null;
   identificationTypesSelected: IdentificationType[];
-  informationConfirmed: boolean;
 };
 
 type PendingKioskRegistration = {
@@ -83,9 +91,9 @@ const requestIdempotencyKey = ref<string>(crypto.randomUUID());
 const draftStorageKey = "visitas:visitor-kiosk:draft:v1";
 const pendingStorageKey = "visitas:visitor-kiosk:pending:v1";
 let resetTimer: number | undefined;
-let statusEventSource: EventSource | null = null;
-let statusPollingTimer: number | undefined;
+let draftExpiryTimer: number | undefined;
 let statusRequestInProgress = false;
+let statusUpdates: ReturnType<typeof createKioskStatusUpdates> | undefined;
 
 const progress = computed(() => Math.min(step.value, 4));
 const hasValidDraft = computed(() =>
@@ -144,6 +152,8 @@ function isKioskSessionDraft(value: unknown): value is KioskSessionDraft {
   if (!isRecord(value)) return false;
   return (
     value.version === 1 &&
+    Number.isSafeInteger(value.expiresAt) &&
+    Number(value.expiresAt) > Date.now() &&
     Number.isInteger(value.step) &&
     Number(value.step) >= 1 &&
     Number(value.step) <= 4 &&
@@ -164,8 +174,7 @@ function isKioskSessionDraft(value: unknown): value is KioskSessionDraft {
         Number(value.editingItemIndex) >= 0 &&
         Number(value.editingItemIndex) < value.items.length)) &&
     Array.isArray(value.identificationTypesSelected) &&
-    value.identificationTypesSelected.every(isIdentificationType) &&
-    typeof value.informationConfirmed === "boolean"
+    value.identificationTypesSelected.every(isIdentificationType)
   );
 }
 
@@ -187,10 +196,11 @@ function isPendingKioskRegistration(value: unknown): value is PendingKioskRegist
 
 function persistDraft() {
   if (step.value < 1 || step.value > 4 || completed.value) {
-    sessionStorage.removeItem(draftStorageKey);
+    clearKioskDraft(sessionStorage, draftStorageKey);
+    clearDraftExpiryTimer();
     return;
   }
-  const draft: KioskSessionDraft = {
+  const draft = {
     version: 1,
     step: step.value,
     requestIdempotencyKey: requestIdempotencyKey.value,
@@ -202,9 +212,31 @@ function persistDraft() {
     itemDraft: itemDraft.value,
     editingItemIndex: editingItemIndex.value,
     identificationTypesSelected: identificationTypesSelected.value,
-    informationConfirmed: informationConfirmed.value,
   };
-  sessionStorage.setItem(draftStorageKey, JSON.stringify(draft));
+  const expiresAt = writeExpiringKioskDraft(sessionStorage, draftStorageKey, draft);
+  scheduleDraftExpiry(expiresAt);
+}
+
+function clearDraftExpiryTimer() {
+  if (draftExpiryTimer === undefined) return;
+  window.clearTimeout(draftExpiryTimer);
+  draftExpiryTimer = undefined;
+}
+
+function scheduleDraftExpiry(expiresAt: number) {
+  clearDraftExpiryTimer();
+  draftExpiryTimer = window.setTimeout(() => {
+    draftExpiryTimer = undefined;
+    if (sending.value) {
+      draftExpiryTimer = window.setTimeout(() => scheduleDraftExpiry(expiresAt), 60_000);
+      return;
+    }
+    if (step.value >= 1 && step.value <= 4 && !completed.value) {
+      resetKiosk();
+    } else {
+      sessionStorage.removeItem(draftStorageKey);
+    }
+  }, Math.max(expiresAt - Date.now(), 0));
 }
 
 function scheduleKioskReset(delay: number) {
@@ -223,16 +255,13 @@ function scheduleKioskReset(delay: number) {
 
 function resumePendingStatus() {
   if (!completed.value) return;
-  closeStatusEventSource();
-  statusEventSource = apiEventSource(
-    `/api/visitor-kiosk/events?key=${encodeURIComponent(requestIdempotencyKey.value)}`,
+  statusUpdates ??= createKioskStatusUpdates(
+    () => apiEventSource(
+      `/api/visitor-kiosk/events?key=${encodeURIComponent(requestIdempotencyKey.value)}`,
+    ),
+    refreshCompletedStatus,
   );
-  statusEventSource.onopen = () => void refreshCompletedStatus();
-  statusEventSource.onmessage = () => void refreshCompletedStatus();
-  statusEventSource.onerror = () => {
-    void refreshCompletedStatus();
-  };
-  statusPollingTimer = window.setInterval(() => void refreshCompletedStatus(), 5000);
+  statusUpdates.start();
   void refreshCompletedStatus();
 }
 
@@ -254,9 +283,8 @@ function restoreKioskSession() {
       sessionStorage.removeItem(pendingStorageKey);
     }
 
-    const savedDraft = sessionStorage.getItem(draftStorageKey);
-    if (!savedDraft) return;
-    const parsed: unknown = JSON.parse(savedDraft);
+    const parsed = readExpiringKioskDraft(sessionStorage, draftStorageKey);
+    if (!parsed) return;
     if (!isKioskSessionDraft(parsed)) {
       sessionStorage.removeItem(draftStorageKey);
       errorMessage.value = "El borrador guardado no es válido. Inicia un registro nuevo.";
@@ -272,10 +300,16 @@ function restoreKioskSession() {
     itemDraft.value = parsed.itemDraft;
     editingItemIndex.value = parsed.editingItemIndex;
     identificationTypesSelected.value = parsed.identificationTypesSelected;
-    informationConfirmed.value = parsed.informationConfirmed;
+    informationConfirmed.value = false;
     showRestoreNotice.value = true;
+    scheduleDraftExpiry(parsed.expiresAt);
   } catch (error) {
     console.error("No se pudo restaurar el avance del registro de visitante:", error);
+    try {
+      sessionStorage.removeItem(draftStorageKey);
+    } catch (storageError) {
+      console.error("No se pudo limpiar el borrador inválido del registro:", storageError);
+    }
     errorMessage.value = "No se pudo recuperar el registro guardado en esta pestaña.";
   }
 }
@@ -302,7 +336,6 @@ watch(
     itemDraft,
     editingItemIndex,
     identificationTypesSelected,
-    informationConfirmed,
     requestIdempotencyKey,
     completed,
   ],
@@ -320,32 +353,61 @@ watch(
 onMounted(() => {
   restoreKioskSession();
   window.addEventListener("pointerdown", handleKioskActivity);
-  window.addEventListener("pointermove", handleKioskActivity);
   window.addEventListener("keydown", handleKioskActivity);
   window.addEventListener("touchstart", handleKioskActivity, { passive: true });
+  window.addEventListener("online", handleNetworkRestored);
+  document.addEventListener("visibilitychange", handleKioskVisibilityChange);
 });
 
 onBeforeUnmount(() => {
   if (resetTimer !== undefined) window.clearTimeout(resetTimer);
+  clearDraftExpiryTimer();
   window.removeEventListener("pointerdown", handleKioskActivity);
-  window.removeEventListener("pointermove", handleKioskActivity);
   window.removeEventListener("keydown", handleKioskActivity);
   window.removeEventListener("touchstart", handleKioskActivity);
-  statusEventSource?.close();
+  window.removeEventListener("online", handleNetworkRestored);
+  document.removeEventListener("visibilitychange", handleKioskVisibilityChange);
+  statusUpdates?.stop();
 });
 
-function closeStatusEventSource() {
-  statusEventSource?.close();
-  statusEventSource = null;
-  if (statusPollingTimer !== undefined) {
-    window.clearInterval(statusPollingTimer);
-    statusPollingTimer = undefined;
+onBeforeRouteLeave((to) => {
+  if (to.path !== "/registro") clearPersistedKioskState();
+});
+
+function clearPersistedKioskState() {
+  if (resetTimer !== undefined) {
+    window.clearTimeout(resetTimer);
+    resetTimer = undefined;
   }
+  clearDraftExpiryTimer();
+  statusUpdates?.stop();
+  try {
+    clearKioskStorage(sessionStorage, draftStorageKey, pendingStorageKey);
+  } catch (error) {
+    console.error("No se pudo limpiar el estado guardado del registro:", error);
+  }
+}
+
+function handleNetworkRestored() {
+  statusUpdates?.reconnectNow();
+}
+
+function handleKioskVisibilityChange() {
+  if (document.visibilityState !== "visible" || !completed.value) return;
+  statusUpdates?.reconnectNow();
+  void refreshCompletedStatus();
 }
 
 function handleKioskActivity() {
   if (step.value === 5 && completed.value && !sending.value) {
     scheduleKioskReset(60_000);
+  } else if (step.value >= 1 && step.value <= 4 && !completed.value) {
+    try {
+      persistDraft();
+    } catch (error) {
+      console.error("No se pudo actualizar la vigencia del borrador:", error);
+      errorMessage.value = "No se pudo guardar el avance en esta pestaña.";
+    }
   }
 }
 
@@ -459,10 +521,10 @@ function resetKiosk() {
     window.clearTimeout(resetTimer);
     resetTimer = undefined;
   }
-  closeStatusEventSource();
+  clearDraftExpiryTimer();
+  statusUpdates?.stop();
   try {
-    sessionStorage.removeItem(draftStorageKey);
-    sessionStorage.removeItem(pendingStorageKey);
+    clearKioskStorage(sessionStorage, draftStorageKey, pendingStorageKey);
   } catch (error) {
     console.error("No se pudo limpiar el estado guardado del registro:", error);
     notifyUser("No se pudo limpiar el avance guardado en esta pestaña.");
@@ -522,7 +584,7 @@ async function refreshCompletedStatus() {
       completedStatus.value = "awaiting-entry-authorization";
     }
     if (completedStatus.value === "entered" || completedStatus.value === "rejected") {
-      closeStatusEventSource();
+      statusUpdates?.stop();
     }
   } catch (error) {
     console.warn("No se pudo consultar el estado del autorregistro; se reintentará automáticamente:", error);
@@ -592,7 +654,8 @@ async function submitRegistration() {
     };
     try {
       sessionStorage.setItem(pendingStorageKey, JSON.stringify(pendingRegistration.value));
-      sessionStorage.removeItem(draftStorageKey);
+      clearKioskDraft(sessionStorage, draftStorageKey);
+      clearDraftExpiryTimer();
     } catch (storageError) {
       console.error("No se pudo conservar el folio del registro en esta pestaña:", storageError);
       notifyUser("El registro se guardó, pero no se pudo conservar el folio en esta pestaña.");

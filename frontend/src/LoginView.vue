@@ -198,39 +198,24 @@ async function resetPassword() {
 
 <template>
   <main class="login-page" :class="{ 'is-tablet-visitor-landing': tabletLanding }">
-    <section class="image-panel" aria-label="CyMEZ Recep Visitantes" :inert="tabletLanding">
-      <img
-        class="brand-image"
-        src="/images/cymez-recep-logo-v2.webp"
-        alt="CyMEZ Recep Visitantes"
-        fetchpriority="high"
-        decoding="async"
-      />
+    <section class="image-panel" role="img" aria-label="Recepción de visitantes CyMEZ" :inert="tabletLanding">
+      <div class="login-brand-group" aria-hidden="true">
+        <div class="login-brand"></div>
+        <p class="login-brand-tagline">Controla. Registra. <span>Accede.</span></p>
+      </div>
     </section>
 
-    <section class="login-panel" aria-labelledby="welcome-title" :inert="tabletLanding">
+    <section class="login-panel" aria-labelledby="login-title" :inert="tabletLanding">
       <div class="panel-pattern" aria-hidden="true"></div>
       <div class="login-content">
-        <header class="welcome-heading">
-          <h1 id="welcome-title">Bienvenido de nuevo</h1>
-          <p>Inicia sesión para continuar</p>
-        </header>
-
         <section class="login-card" aria-labelledby="login-title">
-          <header class="card-heading">
-            <h2 id="login-title">Iniciar sesión</h2>
-            <span class="card-heading-mark" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none">
-                <path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.4 7.5 9.5 4.4-1.1 7.5-4.9 7.5-9.5V6L12 3Z" />
-                <path d="m9 12 2 2 4-4" />
-              </svg>
-            </span>
+          <header class="welcome-heading">
+            <h1 id="login-title">Bienvenido de <span>nuevo</span></h1>
+            <p>Inicia sesión para continuar</p>
           </header>
 
           <form class="login-form" @submit.prevent="handleLogin">
-            <div class="field-label">
-              <label for="identifier">Usuario o correo electrónico</label>
-            </div>
+            <label class="login-visually-hidden" for="identifier">Usuario o correo electrónico</label>
             <div class="input-wrap">
               <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <circle cx="12" cy="8" r="3.5" />
@@ -249,12 +234,16 @@ async function resetPassword() {
             </div>
 
             <div class="password-label">
-              <label for="password">Contraseña</label>
+              <label class="login-visually-hidden" for="password">Contraseña</label>
               <button class="recovery-link" type="button" @click="handlePasswordRecovery">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6" />
+                  <path d="M6.7 6.1a1.4 1.4 0 1 1 2.4 1c-.7.7-1.1.9-1.1 1.9M8 11.4v.1" />
+                </svg>
                 ¿Olvidaste tu contraseña?
               </button>
             </div>
-            <div class="input-wrap">
+            <div class="input-wrap password-input-wrap">
               <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <rect x="5" y="10" width="14" height="11" rx="2" />
                 <path d="M8 10V7a4 4 0 0 1 8 0v3" />
@@ -288,35 +277,39 @@ async function resetPassword() {
             </div>
 
             <button class="submit-button" type="submit" :disabled="loginSubmitting">
+              <svg class="submit-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M13 5h6v14h-6" />
+                <path d="M3 12h12m-4-4 4 4-4 4" />
+              </svg>
               <span>{{ loginSubmitting ? "Validando..." : "Iniciar sesión" }}</span>
-              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path d="M4 10h12m-5-5 5 5-5 5" />
+              <svg class="submit-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M3 10h13m-5-5 5 5-5 5" />
               </svg>
             </button>
             <p v-if="loginMessage" class="form-message" role="status">{{ loginMessage }}</p>
           </form>
-        </section>
 
-        <div class="corporate-access">
-          <div class="access-divider" aria-hidden="true">
-            <span></span>
-            <p>Registro de visitantes</p>
-            <span></span>
-          </div>
-          <RouterLink class="access-notice access-notice-button" to="/registro">
-            <svg class="access-notice-icon" viewBox="0 0 32 36" fill="none" aria-hidden="true">
-              <path d="M16 3 4 8v9c0 7.7 4.7 13.1 12 16 7.3-2.9 12-8.3 12-16V8L16 3Z" />
-              <path d="M16 11v12m-6-6h12" />
-            </svg>
-            <div class="access-notice-copy">
-              <h2>Visitas sin cita</h2>
-              <p>Registra tu visita sin iniciar sesión.</p>
+          <div class="corporate-access">
+            <div class="access-divider" aria-hidden="true">
+              <span></span>
+              <p>Registro de visitantes</p>
+              <span></span>
             </div>
-            <svg class="access-notice-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-              <path d="M4 10h12m-5-5 5 5-5 5" />
-            </svg>
-          </RouterLink>
-        </div>
+            <RouterLink class="access-notice access-notice-button" to="/registro">
+              <svg class="access-notice-icon" viewBox="0 0 32 36" fill="none" aria-hidden="true">
+                <path d="M16 3 4 8v9c0 7.7 4.7 13.1 12 16 7.3-2.9 12-8.3 12-16V8L16 3Z" />
+                <path d="M16 11v12m-6-6h12" />
+              </svg>
+              <div class="access-notice-copy">
+                <h2>Visitas sin cita</h2>
+                <p>Registra tu visita sin iniciar sesión.</p>
+              </div>
+              <svg class="access-notice-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M4 10h12m-5-5 5 5-5 5" />
+              </svg>
+            </RouterLink>
+          </div>
+        </section>
       </div>
     </section>
 

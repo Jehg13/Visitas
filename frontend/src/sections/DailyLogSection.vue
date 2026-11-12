@@ -69,7 +69,7 @@ type Department = {
   id: number;
   name: string;
 };
-type SubjectType = "appointment" | "externalStaff" | "visitor" | "manual";
+type SubjectType = "visitor" | "manual";
 type LogResponse = {
   entries?: LogEntry[];
   recentEntries?: LogEntry[];
@@ -187,7 +187,7 @@ const employeeMovementId = ref<number | null>(null);
 const employeeAttendanceAction = ref<"absent" | "restore" | null>(null);
 const dialogOpen = ref(false);
 const helpOpen = ref(false);
-const logPersonType = ref<SubjectType>("appointment");
+const logPersonType = ref<SubjectType>("manual");
 const logSubjectId = ref("");
 const manualPerson = ref("");
 const logDetails = ref("");
@@ -219,7 +219,7 @@ const dailyLogHelpSections = [
   {
     title: "Visitas sin cita y registro manual",
     steps: [
-      "Para registrar una llegada que no está en la agenda, pulsa Registrar movimiento y elige Personal externo, Visitante registrado o Captura manual. Completa los datos y guarda la llegada. Después selecciona ese registro para añadir la entrada y, más tarde, la salida.",
+      "Para registrar una llegada que no está en la agenda, pulsa Registrar movimiento y elige Visitante registrado o Captura manual. Completa los datos y guarda la llegada. Después selecciona ese registro para añadir la entrada y, más tarde, la salida.",
       "Si la persona ya llenó su registro manual, pulsa Introducir código y escribe el folio de ocho dígitos. Con la autorización automática activada, el sistema autoriza el registro y anota solo la llegada; recepción debe registrar la entrada cuando la persona pase. Sin esa opción, revisa los datos y la identificación, y autoriza o rechaza manualmente.",
       "Al autorizar manualmente una visita sin artículos, también se registra su entrada. Si declaró artículos, verifica cada uno y elige una sola opción en el checklist: permitir su ingreso o mantenerlo resguardado en recepción. Al salir, completa el checklist de salida y confirma la devolución de los artículos resguardados. Puedes agregar una observación opcional si hace falta.",
     ],
@@ -811,8 +811,8 @@ async function submitEntry() {
     time: getLocalTime(),
     personName: logPersonType.value === "manual" ? manualPerson.value.trim() : "",
     details: logDetails.value.trim(),
-    appointmentId: logPersonType.value === "appointment" ? selectedId : null,
-    externalStaffId: logPersonType.value === "externalStaff" ? selectedId : null,
+    appointmentId: null,
+    externalStaffId: null,
     visitorRecordId: logPersonType.value === "visitor" ? selectedId : null,
   };
   saving.value = true;
@@ -2296,19 +2296,15 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <label>
             Persona registrada como
             <select :value="logPersonType" @change="changePersonType(($event.target as HTMLSelectElement).value as SubjectType)">
-              <option value="externalStaff">Personal externo</option>
               <option value="visitor">Visitante registrado</option>
               <option value="manual">Captura manual</option>
             </select>
           </label>
           <label v-if="logPersonType !== 'manual'">
-            {{ logPersonType === "externalStaff" ? "Personal externo" : "Visitante" }}
+            Visitante
             <select v-model="logSubjectId" required>
               <option value="" disabled>Selecciona un registro</option>
-              <option v-if="logPersonType === 'externalStaff'" v-for="person in selectedExternalStaff" :key="person.id" :value="String(person.id)">
-                {{ person.fullName }} · {{ person.companyName }} ({{ person.relationshipType.toLowerCase() }})
-              </option>
-              <option v-if="logPersonType === 'visitor'" v-for="person in selectedVisitors" :key="person.id" :value="String(person.id)">
+              <option v-for="person in selectedVisitors" :key="person.id" :value="String(person.id)">
                 {{ person.fullName }}
               </option>
             </select>
@@ -2327,7 +2323,7 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
             ></textarea>
           </label>
           <p class="daily-log-form-note">
-            {{ logPersonType === "externalStaff" ? "La empresa se conservará desde su ficha; el anfitrión se mostrará como N/A." : "Empresa y anfitrión se mostrarán como N/A para esta visita." }}
+            Empresa / área: Público general · Anfitrión: N/A
           </p>
           <button class="button-primary workspace-submit" type="submit" :disabled="saving">
             <svg v-if="!saving" class="icon"><use href="#i-plus" /></svg>

@@ -19,6 +19,7 @@ import {
   formatElapsedMinutes,
   getVisitTimerIntervalMinutes,
 } from "./visit-timers";
+import { inheritManualRegistrationReference } from "./daily-log-details";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
@@ -67,6 +68,18 @@ type RealtimeSubscriber = {
   publicKey: string | null;
   heartbeat: ReturnType<typeof setInterval>;
 };
+
+function safeErrorCode(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+  return "UNKNOWN";
+}
 
 const realtimeSubscribers = new Set<RealtimeSubscriber>();
 const realtimeEncoder = new TextEncoder();
@@ -1854,7 +1867,7 @@ async function handleVisitorKioskRequest(
         autoAuthorizePublicVisitors: Boolean(rows[0]?.auto_authorize_public_visitors),
       });
     } catch (error) {
-      console.error("Failed to load visitor kiosk settings:", error);
+      console.error("Failed to load visitor kiosk settings:", { code: safeErrorCode(error) });
       return Response.json({ error: "No se pudo cargar la configuración del registro." }, { status: 500 });
     }
   }
@@ -1887,7 +1900,7 @@ async function handleVisitorKioskRequest(
         autoAuthorizePublicVisitors: body.autoAuthorizePublicVisitors,
       });
     } catch (error) {
-      console.error("Failed to update visitor kiosk settings:", error);
+      console.error("Failed to update visitor kiosk settings:", { code: safeErrorCode(error) });
       return Response.json({ error: "No se pudo guardar la configuración del registro." }, { status: 500 });
     }
   }
@@ -1945,9 +1958,9 @@ async function handleVisitorKioskRequest(
         autoAuthorized: Boolean(rows[0].auto_authorized),
         entryChecklistComplete: Boolean(rows[0].entry_checklist_complete),
         entered: Boolean(rows[0].entered),
-      });
+      }, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
-      console.error("Failed to load visitor kiosk status:", error);
+      console.error("Failed to load visitor kiosk status:", { code: safeErrorCode(error) });
       return Response.json({ error: "No se pudo consultar el estado del registro." }, { status: 500 });
     }
   }
@@ -2010,7 +2023,7 @@ async function handleVisitorKioskRequest(
           folio: existingRegistrations[0].folio,
           visitorName: existingRegistrations[0].visitor_name,
           autoAuthorized: Boolean(existingRegistrations[0].auto_authorized),
-        });
+        }, { headers: { "Cache-Control": "no-store" } });
       }
 
       const [settingsRows] = await connection.execute<RowDataPacket[]>(
@@ -2174,7 +2187,7 @@ async function handleVisitorKioskRequest(
         folio,
         visitorName: input.visitorName,
         autoAuthorized: autoAuthorizePublicVisitors,
-      }, { status: 201 });
+      }, { status: 201, headers: { "Cache-Control": "no-store" } });
     } catch (error) {
       await connection.rollback();
       if (
@@ -2200,7 +2213,7 @@ async function handleVisitorKioskRequest(
             folio: existingRegistrations[0].folio,
             visitorName: existingRegistrations[0].visitor_name,
             autoAuthorized: Boolean(existingRegistrations[0].auto_authorized),
-          });
+          }, { headers: { "Cache-Control": "no-store" } });
         }
       }
       const errorCode =
@@ -2211,7 +2224,7 @@ async function handleVisitorKioskRequest(
       console.error("Failed to create visitor kiosk registration:", {
         step: transactionStep,
         code: errorCode || "UNKNOWN",
-      }, error);
+      });
       const databaseSchemaError = [
         "ER_NO_SUCH_TABLE",
         "ER_BAD_FIELD_ERROR",
@@ -2666,7 +2679,9 @@ async function handleVisitorKioskRequest(
       connection.release();
     }
   } catch (error) {
-    console.error("Failed to process visitor kiosk registration:", error);
+    console.error("Failed to process visitor kiosk registration:", {
+      code: safeErrorCode(error),
+    });
     return Response.json({ error: "No se pudo procesar el registro. Inténtalo de nuevo." }, { status: 500 });
   }
 }
@@ -3090,6 +3105,22 @@ const dailyLogSubjectKey = `CASE
   ELSE CONCAT('name:', LOWER(TRIM(d.person_name)))
 END`;
 
+const dailyLogManualRegistrationFolio = `(SELECT CASE
+    WHEN prior_arrival.details LIKE 'Registro manual · Folio %'
+      THEN SUBSTRING_INDEX(SUBSTRING_INDEX(prior_arrival.details, 'Folio ', -1), ' ·', 1)
+    ELSE NULL
+  END
+  FROM daily_log_entries prior_arrival
+  WHERE prior_arrival.visitor_record_id = d.visitor_record_id
+    AND prior_arrival.entry_date = d.entry_date
+    AND prior_arrival.event_type = 'Llegada'
+    AND (
+      prior_arrival.entry_time < d.entry_time
+      OR (prior_arrival.entry_time = d.entry_time AND prior_arrival.id < d.id)
+    )
+  ORDER BY prior_arrival.entry_time DESC, prior_arrival.id DESC
+  LIMIT 1)`;
+
 const dailyLogEntryPartition = `CASE
   WHEN d.event_type = 'Observaciones' THEN CONCAT('observation:', d.id)
   WHEN d.details LIKE 'Registro manual · Folio %'
@@ -3097,6 +3128,10 @@ const dailyLogEntryPartition = `CASE
       'registration:',
       SUBSTRING_INDEX(SUBSTRING_INDEX(d.details, 'Folio ', -1), ' ·', 1)
     )
+  WHEN d.event_type IN ('Ingreso', 'Retiro')
+    AND d.visitor_record_id IS NOT NULL
+    AND ${dailyLogManualRegistrationFolio} IS NOT NULL
+    THEN CONCAT('registration:', ${dailyLogManualRegistrationFolio})
   WHEN d.appointment_id IS NOT NULL
     THEN CONCAT('appointment:', d.appointment_id, ':', d.subject_key)
   ELSE CONCAT('date:', d.entry_date, ':', d.subject_key)
@@ -3123,7 +3158,15 @@ function dailyLogRecordsCte(includeRecorder: boolean) {
                ),
                'Público general'
              )
-             ELSE COALESCE(bp.name, a.company_name)
+             ELSE COALESCE(
+               bp.name,
+               a.company_name,
+               CASE
+                 WHEN gv.id IS NOT NULL
+                   OR (d.appointment_id IS NULL AND s.id IS NULL)
+                   THEN 'Público general'
+               END
+             )
            END AS company_name,
            a.host_name,
            CASE
@@ -4492,7 +4535,9 @@ const server = Bun.serve({
         }
         return addCorsHeaders(createRealtimeResponse(requestKey), corsOrigin);
       } catch (error) {
-        console.error("Failed to connect visitor kiosk to live updates:", error);
+        console.error("Failed to connect visitor kiosk to live updates:", {
+          code: safeErrorCode(error),
+        });
         return addCorsHeaders(
           Response.json({ error: "No se pudo conectar con las actualizaciones del registro." }, { status: 500 }),
           corsOrigin,
@@ -4638,7 +4683,9 @@ const server = Bun.serve({
           connection.release();
         }
       } catch (error) {
-        console.error("Failed to handle public equipment declaration:", error);
+        console.error("Failed to handle public equipment declaration:", {
+          code: safeErrorCode(error),
+        });
         return Response.json({ error: "No se pudo guardar la declaración. Inténtalo de nuevo." }, { status: 500 });
       }
     }
@@ -5283,7 +5330,7 @@ const server = Bun.serve({
           visitors: await listHostVisitors(hostOnlyAccess ? user.login : undefined),
         }, { status: 201 });
       } catch (error) {
-        console.error("Failed to modify host visitor:", error);
+        console.error("Failed to modify host visitor:", { code: safeErrorCode(error) });
         return Response.json({ error: "No se pudo guardar el visitante. Inténtalo de nuevo." }, { status: 500 });
       }
     }
@@ -5386,7 +5433,7 @@ const server = Bun.serve({
             { status: 409 },
           );
         }
-        console.error("Failed to modify general visitor:", error);
+        console.error("Failed to modify general visitor:", { code: safeErrorCode(error) });
         return Response.json(
           { error: "No se pudo guardar la persona. Inténtalo de nuevo." },
           { status: 500 },
@@ -6029,6 +6076,25 @@ const server = Bun.serve({
             );
           }
         }
+        let movementDetails = input.details;
+        if (
+          input.sourceEntryId !== null &&
+          visitorId !== null &&
+          (input.event === "Ingreso" || input.event === "Retiro")
+        ) {
+          const [sourceRows] = await pool.execute<RowDataPacket[]>(
+            `SELECT d.details, ${dailyLogManualRegistrationFolio} AS registration_folio
+             FROM daily_log_entries d
+             WHERE d.id = ? AND d.visitor_record_id = ?
+             LIMIT 1`,
+            [input.sourceEntryId, visitorId],
+          );
+          movementDetails = inheritManualRegistrationReference(
+            input.details,
+            String(sourceRows[0]?.details ?? ""),
+            sourceRows[0]?.registration_folio,
+          );
+        }
         let subjectCondition: string;
         const subjectParameters: Array<string | number> = [];
         if (externalStaffId !== null) {
@@ -6060,7 +6126,7 @@ const server = Bun.serve({
             input.time,
             input.event,
             personName,
-            input.details || null,
+            movementDetails || null,
             input.appointmentId,
             externalStaffId,
             visitorId,
@@ -6192,7 +6258,7 @@ const server = Bun.serve({
               personName,
               user.login,
               user.name?.trim() || user.login,
-              input.details || null,
+              movementDetails || null,
               input.appointmentId,
               externalStaffId,
               visitorId,
@@ -8283,13 +8349,6 @@ const server = Bun.serve({
           code: databaseError.code ?? "UNKNOWN_DATABASE_ERROR",
           errno: databaseError.errno,
           sqlState: databaseError.sqlState,
-          host: usersDatabaseConnected
-            ? Bun.env.DB_HOST ?? "127.0.0.1"
-            : Bun.env.DB_EXTERNAL_HOST ?? "not configured",
-          database: usersDatabaseConnected
-            ? Bun.env.DB_NAME ?? "visitas_recep"
-            : Bun.env.DB_EXTERNAL_DATABASE ?? "not configured",
-          message: databaseError.message,
         };
         console.error("Database health check failed:", diagnostic);
         return Response.json(
@@ -8318,7 +8377,7 @@ const server = Bun.serve({
         );
         return Response.json(visits);
       } catch (error) {
-        console.error("Failed to load visits:", error);
+        console.error("Failed to load visits:", { code: safeErrorCode(error) });
         return Response.json(
           { error: "No se pudieron cargar las visitas." },
           { status: 500 },
@@ -8338,6 +8397,21 @@ const server = Bun.serve({
       !visitorRegistrationAction
     ) {
       publishRealtimeUpdate();
+    }
+    if (
+      url.pathname.startsWith("/api/visitor-kiosk/") ||
+      url.pathname.startsWith("/api/equipment/public/")
+    ) {
+      const headers = new Headers(response.headers);
+      headers.set("Cache-Control", "no-store");
+      return addCorsHeaders(
+        new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        }),
+        corsOrigin,
+      );
     }
     return addCorsHeaders(response, corsOrigin);
   },
