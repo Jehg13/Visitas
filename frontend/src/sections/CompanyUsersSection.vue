@@ -1,20 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { Company, CompanyUser } from "../stores/types";
+import type { Company, CompanyUser, Department } from "../stores/types";
 
 const props = defineProps<{
   users: CompanyUser[];
   search: string;
   companyName: string;
   companies: Company[];
+  departments: Department[];
   companyId: number | null;
   canSelectCompany: boolean;
+  canManageDepartments: boolean;
 }>();
 
 const emit = defineEmits<{
   "update:search": [value: string];
   "update:companyId": [value: number | null];
   create: [];
+  createDepartment: [];
   edit: [user: CompanyUser];
   remove: [user: CompanyUser];
 }>();
@@ -67,12 +70,31 @@ watch([() => props.search, () => props.users], () => {
         </select>
       </label>
       <span class="workspace-count"><strong>{{ users.length }}</strong> usuarios</span>
-      <button class="button-primary" type="button" @click="emit('create')">Agregar usuario</button>
+      <button
+        class="button-primary"
+        type="button"
+        :disabled="companyId === null || departments.length === 0"
+        @click="emit('create')"
+      >Agregar usuario</button>
     </div>
   </header>
 
+  <div v-if="companyId === null" class="department-empty-state">
+    <strong>Selecciona una empresa</strong>
+    <p>Selecciona la empresa cuyos usuarios quieres administrar.</p>
+  </div>
+  <div v-else-if="departments.length === 0" class="department-empty-state">
+    <strong>Primero registra un departamento</strong>
+    <p>Debes tener al menos un departamento dado de alta para poder registrar usuarios en {{ companyName }}.</p>
+    <button
+      v-if="canManageDepartments"
+      class="button-primary"
+      type="button"
+      @click="emit('createDepartment')"
+    >Registrar departamento</button>
+  </div>
   <p class="workspace-hint">
-    Administra recepcionistas y anfitriones de <strong>{{ companyName }}</strong>. Las cuentas nuevas recibirán una contraseña temporal que deberán cambiar al ingresar.
+    Administra recepcionistas y anfitriones de <strong>{{ companyName }}</strong>. Asigna a cada usuario un departamento. Las cuentas nuevas recibirán una contraseña temporal que deberán cambiar al ingresar.
   </p>
   <div class="external-staff-toolbar">
     <label class="agenda-search">

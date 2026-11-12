@@ -15,6 +15,7 @@ import {
   handleMobileAppReleaseRequest,
   isPublicMobileAppReleaseRequest,
 } from "./mobile-releases";
+import { handleTabletPairingRequest } from "./tablet-pairing";
 import {
   formatElapsedMinutes,
   getVisitTimerIntervalMinutes,
@@ -3902,7 +3903,15 @@ async function requestedCompanyScope(user: AuthenticatedUser, url: URL) {
   const scope = url.searchParams.get("scope") ?? "cymez";
   if (scope === "all") return { valid: true, companyId: undefined };
   if (scope === "cymez") return { valid: true, companyId: await getCymezCompanyId() };
-  return { valid: false, companyId: undefined };
+  if (!/^[1-9]\d*$/.test(scope)) return { valid: false, companyId: undefined };
+  const companyId = Number(scope);
+  if (!Number.isSafeInteger(companyId)) return { valid: false, companyId: undefined };
+  const [companies] = await pool.execute<RowDataPacket[]>(
+    "SELECT id FROM companies WHERE id = ? LIMIT 1",
+    [companyId],
+  );
+  if (companies.length === 0) return { valid: false, companyId: undefined };
+  return { valid: true, companyId };
 }
 
 async function companyIdForNewRecord(user: AuthenticatedUser) {
@@ -4769,6 +4778,7 @@ const server = Bun.serve({
           authenticatedUser.isCompanyAdmin,
           request.method,
           url.pathname,
+          authenticatedUser.companyRole,
         )
       ) {
         return addCorsHeaders(
@@ -4843,6 +4853,13 @@ const server = Bun.serve({
       getRequestUser,
     );
     if (mobileReleaseResponse) return mobileReleaseResponse;
+
+    const tabletPairingResponse = await handleTabletPairingRequest(
+      request,
+      url,
+      getRequestUser,
+    );
+    if (tabletPairingResponse) return tabletPairingResponse;
 
     const publicEquipmentPath = url.pathname.match(/^\/api\/equipment\/public\/([A-Za-z0-9_-]{40,60})$/);
     if (publicEquipmentPath && ["GET", "PUT"].includes(request.method)) {
@@ -5764,6 +5781,12 @@ const server = Bun.serve({
           ? null
           : Number(values.departmentId);
         const resetPassword = values.resetPassword === true;
+        if (departmentId === null) {
+          return Response.json(
+            { error: "Registra al menos un departamento para la empresa y asígnalo al usuario." },
+            { status: 400 },
+          );
+        }
         if (
           typeof accountLogin !== "string" || !accountLogin.trim() || accountLogin.trim().length > 255 ||
           typeof name !== "string" || !name.trim() || name.trim().length > 180 ||
@@ -5775,8 +5798,8 @@ const server = Bun.serve({
             (typeof phone !== "string" || phone.trim().length > 30)) ||
           applicationRole === null ||
           !["Y", "N"].includes(active) ||
-          (departmentId !== null && (!Number.isSafeInteger(departmentId) || departmentId < 1)) ||
-          (applicationRole === "anfitrion" && departmentId === null)
+          !Number.isSafeInteger(departmentId) ||
+          departmentId < 1
         ) {
           return Response.json({ error: "Revisa el usuario, rol, departamento y datos de contacto." }, { status: 400 });
         }

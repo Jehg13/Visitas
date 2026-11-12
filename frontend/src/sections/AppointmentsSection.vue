@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import AppDownloadCard from "../components/AppDownloadCard.vue";
 import SectionHelpDialog from "./SectionHelpDialog.vue";
+import type { Company } from "../stores/types";
 
 type AppointmentStatus = "Dentro" | "En proceso" | "Pendiente" | "Retirado" | "Cancelada";
 type Appointment = {
@@ -45,7 +46,8 @@ const props = defineProps<{
   canManageAppointments: boolean;
   canSendReference: boolean;
   isCompanyUser: boolean;
-  companyScope: "cymez" | "all";
+  companyScope: string;
+  companies: Company[];
   isAdmin: boolean;
   isReception: boolean;
   isHost: boolean;
@@ -56,6 +58,13 @@ const props = defineProps<{
 const helpOpen = ref(false);
 const clock = ref(Date.now());
 let attendanceClock: ReturnType<typeof setInterval> | undefined;
+const cymezCompanyName = computed(() =>
+  props.companies.find((company) => company.name.trim().toLocaleLowerCase("es") === "cymez")?.name ??
+  "Cymez",
+);
+const otherCompanies = computed(() =>
+  props.companies.filter((company) => company.name.trim().toLocaleLowerCase("es") !== "cymez"),
+);
 type HelpAudience = "reception" | "host";
 const helpAudience = ref<HelpAudience>("reception");
 const effectiveHelpAudience = computed<HelpAudience>(() =>
@@ -179,7 +188,7 @@ const appointmentHelpSections = computed(() =>
 );
 
 const emit = defineEmits<{
-  "update:companyScope": [scope: "cymez" | "all"];
+  "update:companyScope": [scope: string];
   "update:filter": [value: "day" | "all"];
   "update:search": [value: string];
   "update:page": [value: number];
@@ -255,9 +264,12 @@ const emit = defineEmits<{
           <select
             :value="companyScope"
             aria-label="Filtrar agenda por empresa"
-            @change="emit('update:companyScope', ($event.target as HTMLSelectElement).value as 'cymez' | 'all')"
+            @change="emit('update:companyScope', ($event.target as HTMLSelectElement).value)"
           >
-            <option value="cymez">Cymez</option>
+            <option value="cymez">{{ cymezCompanyName }}</option>
+            <option v-for="company in otherCompanies" :key="company.id" :value="String(company.id)">
+              {{ company.name }}
+            </option>
             <option value="all">Todas las empresas</option>
           </select>
         </label>

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { Company, Department, Host } from "../stores/types";
+import type { Company, CompanyUser, Department, Host } from "../stores/types";
 
 const props = defineProps<{
   companies: Company[];
   departments: Department[];
   hosts: Host[];
+  companyUsers: CompanyUser[];
   isAdmin: boolean;
   canManageDepartments: boolean;
+  showOnlyDepartments: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -17,7 +19,16 @@ const emit = defineEmits<{
   createDepartment: [companyId: number];
   editDepartment: [department: Department];
   removeDepartment: [departmentId: number];
+  selectCompany: [companyId: number];
 }>();
+
+type DepartmentMember = {
+  id: string;
+  name: string;
+  login: string;
+  role: string;
+  access: string;
+};
 
 const selectedCompanyId = ref<number | null>(null);
 const selectedDepartmentId = ref<number | null>(null);
@@ -33,15 +44,69 @@ const selectedDepartment = computed(() =>
 const assignedHosts = computed(() =>
   props.hosts.filter((host) => host.departmentId === selectedDepartmentId.value),
 );
+const assignedMembers = computed<DepartmentMember[]>(() => {
+  const departmentHosts = assignedHosts.value.map((host) => ({
+    id: `host:${host.id}`,
+    name: host.name,
+    login: host.login,
+    role: host.role || "N/A",
+    access: host.accessRoles.join(" · "),
+  }));
+  const departmentHostLogins = new Set(
+    assignedHosts.value.map((host) => host.login.toLocaleLowerCase()),
+  );
+  const receptionUsers = props.companyUsers
+    .filter((user) =>
+      user.departmentId === selectedDepartmentId.value &&
+      user.companyId === selectedCompanyId.value &&
+      user.applicationRole === "recepcion" &&
+      !departmentHostLogins.has(user.login.toLocaleLowerCase()),
+    )
+    .map((user) => ({
+      id: `reception:${user.login}`,
+      name: user.name ?? user.login,
+      login: user.login,
+      role: user.role || "N/A",
+      access: "Recepción",
+    }));
+  return [...departmentHosts, ...receptionUsers];
+});
+
+function departmentUserCount(departmentId: number) {
+  const hostLogins = new Set(
+    props.hosts
+      .filter((host) => host.departmentId === departmentId)
+      .map((host) => host.login.toLocaleLowerCase()),
+  );
+  return props.hosts.filter((host) => host.departmentId === departmentId).length +
+    props.companyUsers.filter((user) =>
+      user.departmentId === departmentId &&
+      user.companyId === selectedCompanyId.value &&
+      user.applicationRole === "recepcion" &&
+      !hostLogins.has(user.login.toLocaleLowerCase()),
+    ).length;
+}
+
+watch(selectedCompanyId, (companyId) => {
+  if (companyId !== null) emit("selectCompany", companyId);
+});
 
 watch(
   () => props.companies.map((company) => company.id),
   (companyIds) => {
+    if (props.showOnlyDepartments) {
+      if (selectedCompanyId.value === null || !companyIds.includes(selectedCompanyId.value)) {
+        selectedCompanyId.value = companyIds[0] ?? null;
+        selectedDepartmentId.value = null;
+      }
+      return;
+    }
     if (selectedCompanyId.value !== null && !companyIds.includes(selectedCompanyId.value)) {
       selectedCompanyId.value = null;
       selectedDepartmentId.value = null;
     }
   },
+  { immediate: true },
 );
 
 watch(
@@ -69,7 +134,7 @@ watch(
             Departamentos
           </button>
           <button
-            v-else-if="selectedCompany"
+            v-else-if="selectedCompany && !showOnlyDepartments"
             class="company-directory-back"
             type="button"
             @click="selectedCompanyId = null"
@@ -79,13 +144,13 @@ watch(
           </button>
           <svg v-else class="icon"><use href="#i-building" /></svg>
           <h2 id="companies-title">
-            {{ selectedDepartment?.name ?? selectedCompany?.name ?? "Empresas" }}
+            {{ selectedDepartment?.name ?? (showOnlyDepartments ? "Departamentos" : selectedCompany?.name ?? "Empresas") }}
           </h2>
         </div>
         <div class="workspace-heading-actions">
           <template v-if="selectedDepartment">
             <span class="workspace-count">
-              {{ assignedHosts.length }} {{ assignedHosts.length === 1 ? "usuario asignado" : "usuarios asignados" }}
+              {{ assignedMembers.length }} {{ assignedMembers.length === 1 ? "usuario asignado" : "usuarios asignados" }}
             </span>
           </template>
           <template v-else-if="selectedCompany">
@@ -178,13 +243,13 @@ watch(
             <span class="company-directory-card-copy">
               <strong>{{ department.name }}</strong>
               <span>
-                {{ department.hostCount ?? 0 }}
-                {{ department.hostCount === 1 ? "usuario asignado" : "usuarios asignados" }}
+                {{ departmentUserCount(department.id) }}
+                {{ departmentUserCount(department.id) === 1 ? "usuario asignado" : "usuarios asignados" }}
               </span>
             </span>
             <svg class="icon company-directory-card-chevron"><use href="#i-chevron" /></svg>
           </button>
-          <div v-if="isAdmin" class="department-card-actions">
+          <div v-if="isAdmin || canManageDepartments" class="department-card-actions">
             <button
               class="staff-edit-button"
               type="button"
@@ -212,7 +277,7 @@ watch(
         <p class="department-users-intro">
           Usuarios actualmente vinculados a {{ selectedDepartment.name }} en {{ selectedCompany?.name }}.
         </p>
-        <div v-if="assignedHosts.length" class="workspace-table-scroll">
+        <div v-if="assignedMembers.length" class="workspace-table-scroll">
           <table class="workspace-table">
             <thead>
               <tr>
@@ -223,11 +288,11 @@ watch(
               </tr>
             </thead>
             <tbody>
-              <tr v-for="host in assignedHosts" :key="host.id">
-                <td>{{ host.name }}</td>
-                <td>{{ host.login }}</td>
-                <td>{{ host.role || "N/A" }}</td>
-                <td>{{ host.accessRoles.join(" · ") }}</td>
+              <tr v-for="member in assignedMembers" :key="member.id">
+                <td>{{ member.name }}</td>
+                <td>{{ member.login }}</td>
+                <td>{{ member.role }}</td>
+                <td>{{ member.access }}</td>
               </tr>
             </tbody>
           </table>
@@ -237,7 +302,7 @@ watch(
             <svg class="icon"><use href="#i-users" /></svg>
           </span>
           <strong>Aún no hay usuarios asignados</strong>
-          <p>Los anfitriones se registran desde Usuarios de empresa y se asignan a un departamento.</p>
+          <p>Los usuarios de empresa se registran desde Usuarios de empresa y se asignan a un departamento.</p>
         </div>
       </div>
     </section>

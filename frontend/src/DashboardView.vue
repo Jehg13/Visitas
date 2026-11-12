@@ -44,6 +44,9 @@ const AccessSection = defineAsyncComponent(() => import("./sections/AccessSectio
 const MobileAppReleasesSection = defineAsyncComponent(
   () => import("./sections/MobileAppReleasesSection.vue"),
 );
+const TabletsSection = defineAsyncComponent(
+  () => import("./sections/TabletsSection.vue"),
+);
 
 type AccessRoleDraft = "administrador" | "recepcion" | "anfitriones" | "";
 const otherAppointmentVisitor = "__otro__";
@@ -95,13 +98,19 @@ const dashboardSections = [
   "Equipo y herramientas",
   "Bitácora diaria",
   "Aplicación móvil",
+  "Tablets",
 ];
 const visibleNavigationGroups = computed(() =>
   navigationGroups
-    .map((group) => ({
-      ...group,
-      items: group.items.filter((item) => allowedDashboardSections.value.includes(item.label)),
-    }))
+    .map((group) => {
+      const items = group.items.filter((item) =>
+        allowedDashboardSections.value.includes(item.label),
+      );
+      if (currentUser.value.isCompanyAdmin && group.title === "ORGANIZACIÓN") {
+        items.unshift({ label: "Departamento", icon: "organization" });
+      }
+      return { ...group, items };
+    })
     .filter((group) => group.items.length > 0),
 );
 
@@ -179,9 +188,12 @@ const allowedDashboardSections = computed(() => {
     "Bitácora diaria",
   ];
   if (currentUser.value.isCompanyAdmin) {
-    return ["Empresas", "Usuarios de empresa", ...companyOperationalSections];
+    return ["Departamento", "Usuarios de empresa", ...companyOperationalSections];
   }
-  if (currentUser.value.companyRole) return companyOperationalSections;
+  if (currentUser.value.companyRole === "recepcion") {
+    return ["Agenda de citas", "Bitácora diaria"];
+  }
+  if (currentUser.value.companyRole === "anfitrion") return companyOperationalSections;
   if (currentUser.value.sectionAccess.includes("recepcion")) {
     return [
       "Agenda de citas",
@@ -286,7 +298,7 @@ const visitorTime = ref("18:00");
 const appointmentSaving = ref(false);
 const appointmentLoading = ref(false);
 const appointmentSearch = ref("");
-const globalCompanyScope = ref<"cymez" | "all">("cymez");
+const globalCompanyScope = ref("cymez");
 const appointmentsPage = ref(1);
 const appointmentsPerPage = 7;
 const calendarMonth = ref(getLocalDate().slice(0, 7));
@@ -895,6 +907,7 @@ const navigationGroups = [
     title: "ADMINISTRACIÓN",
     items: [
       { label: "Administradores", icon: "users" },
+      { label: "Tablets", icon: "tablet" },
     ],
   },
   {
@@ -939,6 +952,8 @@ const pageTitle = computed(() =>
     ? "Sin acceso asignado"
     : activeSection.value === "Inicio"
       ? "Panel de control"
+      : activeSection.value === "Departamento" && currentUser.value.isCompanyAdmin
+        ? "Departamentos"
       : activeSection.value,
 );
 const hostEligibleDepartments = computed(() => departments.value);
@@ -2001,6 +2016,17 @@ function openCompanyUserDialog(companyUser?: CompanyUser) {
   companyUserDialogOpen.value = true;
 }
 
+function openDepartmentForCompanyUsers() {
+  const companyId = currentUser.value.isCompanyAdmin
+    ? currentUser.value.companyId
+    : selectedCompanyUsersCompanyId.value;
+  if (companyId === null) {
+    showToast("Selecciona una empresa antes de registrar su departamento.");
+    return;
+  }
+  openDepartmentDialog(undefined, companyId);
+}
+
 async function submitCompanyUser() {
   const login = companyUserLogin.value.trim();
   const name = companyUserName.value.trim();
@@ -2012,9 +2038,9 @@ async function submitCompanyUser() {
     !login ||
     !name ||
     companyId === null ||
-    (companyUserApplicationRole.value === "anfitrion" && companyUserDepartmentId.value === null)
+    companyUserDepartmentId.value === null
   ) {
-    showToast("Revisa el usuario, nombre, empresa y departamento del anfitrión.");
+    showToast("Revisa el usuario, nombre, empresa y departamento.");
     return;
   }
   companyUserSaving.value = true;
@@ -2033,9 +2059,7 @@ async function submitCompanyUser() {
         role: companyUserRole.value.trim(),
         phone: companyUserPhone.value.trim(),
         applicationRole: companyUserApplicationRole.value,
-        departmentId: companyUserApplicationRole.value === "anfitrion"
-          ? companyUserDepartmentId.value
-          : null,
+        departmentId: companyUserDepartmentId.value,
         active: companyUserActive.value,
         resetPassword: companyUserResetPassword.value,
       }),
@@ -2197,7 +2221,7 @@ function openDepartmentDialog(department?: Department, companyId?: number) {
   editingDepartmentId.value = department?.id ?? null;
   departmentCompanyId.value =
     department?.companyId ??
-    companyId ??
+    (currentUser.value.isCompanyAdmin ? currentUser.value.companyId : companyId) ??
     companies.value[0]?.id ??
     null;
   departmentName.value = department?.name ?? "";
@@ -3172,6 +3196,10 @@ async function removeBusinessPartner(id: number) {
     <symbol id="i-tool" viewBox="0 0 24 24">
       <path d="m14.7 6.3 3-3a6 6 0 0 1-7.8 7.8L4 17a2.1 2.1 0 0 0 3 3l5.9-5.9a6 6 0 0 0 7.8-7.8l-3 3-3-3Z" />
     </symbol>
+    <symbol id="i-tablet" viewBox="0 0 24 24">
+      <rect x="5" y="2.5" width="14" height="19" rx="2" />
+      <path d="M10 5h4m-2 13.5h.01" />
+    </symbol>
     <symbol id="i-link" viewBox="0 0 24 24">
       <path d="M10 13a5 5 0 0 0 7.1 0l3-3A5 5 0 0 0 13 2.9l-1.7 1.7" />
       <path d="M14 11a5 5 0 0 0-7.1 0l-3 3A5 5 0 0 0 11 21.1l1.7-1.7" />
@@ -3360,7 +3388,7 @@ async function removeBusinessPartner(id: number) {
           @click="selectSection(item.label)"
         >
           <svg class="icon"><use :href="`#i-${item.icon}`" /></svg>
-          <span>{{ item.label }}</span>
+          <span>{{ item.label === "Departamento" ? "Departamentos" : item.label }}</span>
         </button>
       </div>
 
@@ -3422,7 +3450,9 @@ async function removeBusinessPartner(id: number) {
             · agenda conectada
           </p>
           <p v-else-if="activeSection === 'Departamento'">
-            Administra departamentos y consulta los anfitriones vinculados
+            {{ currentUser.isCompanyAdmin
+              ? "Administra los departamentos de tu empresa y consulta los usuarios asignados"
+              : "Administra departamentos y consulta los anfitriones vinculados" }}
           </p>
           <p v-else-if="activeSection === 'Empresas'">
             Organiza empresas y consulta sus departamentos y usuarios asignados
@@ -3441,6 +3471,9 @@ async function removeBusinessPartner(id: number) {
           </p>
           <p v-else-if="activeSection === 'Aplicación móvil'">
             Publica actualizaciones para celulares de recepción o tablets de visitas sin cita
+          </p>
+          <p v-else-if="activeSection === 'Tablets'">
+            Genera códigos de un solo uso y asígnalos a la empresa que utilizará cada tablet
           </p>
           <p v-else>Resumen de acceso y visitas</p>
         </div>
@@ -3468,6 +3501,7 @@ async function removeBusinessPartner(id: number) {
         v-model:filter="appointmentFilter"
         v-model:search="appointmentSearch"
         v-model:company-scope="globalCompanyScope"
+        :companies="companies"
         :selected-appointments="selectedAppointments"
         :searched-appointments="searchedAppointments"
         :paginated-appointments="paginatedAppointments"
@@ -3507,10 +3541,13 @@ async function removeBusinessPartner(id: number) {
         v-model:search="companyUsersSearch"
         :users="companyUsers"
         :companies="companies"
+        :departments="companyUserDepartments"
         :company-id="selectedCompanyUsersCompanyId"
         :company-name="companyUsersCompanyName"
         :can-select-company="currentUser.isAdmin"
+        :can-manage-departments="currentUser.isAdmin || currentUser.isCompanyAdmin"
         @update:company-id="selectCompanyForUsers"
+        @create-department="openDepartmentForCompanyUsers"
         @create="openCompanyUserDialog()"
         @edit="openCompanyUserDialog"
         @remove="removeCompanyUser"
@@ -3525,7 +3562,7 @@ async function removeBusinessPartner(id: number) {
       />
 
       <DepartmentSection
-        v-else-if="activeSection === 'Departamento'"
+        v-else-if="activeSection === 'Departamento' && currentUser.isAdmin"
         :departments="departments"
         :hosts="hosts"
         :is-admin="currentUser.isAdmin"
@@ -3535,12 +3572,15 @@ async function removeBusinessPartner(id: number) {
       />
 
       <CompanySection
-        v-else-if="activeSection === 'Empresas'"
+        v-else-if="activeSection === 'Empresas' || (activeSection === 'Departamento' && currentUser.isCompanyAdmin)"
         :companies="companies"
         :departments="departments"
         :hosts="hosts"
+        :company-users="companyUsers"
         :is-admin="currentUser.isAdmin"
         :can-manage-departments="currentUser.isCompanyAdmin"
+        :show-only-departments="currentUser.isCompanyAdmin"
+        @select-company="selectCompanyForUsers"
         @create-company="openCompanyDialog()"
         @edit-company="openCompanyDialog"
         @remove-company="removeCompany"
@@ -3615,6 +3655,7 @@ async function removeBusinessPartner(id: number) {
         :is-company-user="Boolean(currentUser.companyRole)"
         :is-company-admin="currentUser.isCompanyAdmin"
         v-model:company-scope="globalCompanyScope"
+        :companies="companies"
         :appointments="appointments"
         :appointments-loading="appointmentLoading"
         :external-staff="externalStaff"
@@ -3644,6 +3685,11 @@ async function removeBusinessPartner(id: number) {
       />
       <MobileAppReleasesSection
         v-else-if="activeSection === 'Aplicación móvil' && currentUser.isAdmin"
+        :theme="dashboardTheme"
+      />
+      <TabletsSection
+        v-else-if="activeSection === 'Tablets' && currentUser.isAdmin"
+        :companies="companies"
         :theme="dashboardTheme"
       />
       <div v-else class="panel workspace-panel access-none-panel">
@@ -4243,7 +4289,7 @@ async function removeBusinessPartner(id: number) {
               <option value="anfitrion">Anfitrión</option>
             </select>
           </label>
-          <label v-if="companyUserApplicationRole === 'anfitrion'">
+          <label>
             Departamento
             <select v-model="companyUserDepartmentId" required>
               <option :value="null" disabled>Selecciona un departamento</option>
@@ -4252,6 +4298,15 @@ async function removeBusinessPartner(id: number) {
               </option>
             </select>
           </label>
+          <p v-if="companyUserDepartments.length === 0" class="workspace-hint directory-form-full">
+            Debes registrar al menos un departamento para esta empresa antes de poder dar de alta usuarios.
+          </p>
+          <button
+            v-if="companyUserDepartments.length === 0"
+            class="button-secondary workspace-submit"
+            type="button"
+            @click="companyUserDialogOpen = false; openDepartmentForCompanyUsers()"
+          >Registrar departamento</button>
           <label>
             Correo electrónico
             <input v-model.trim="companyUserEmail" type="email" maxlength="254" autocomplete="email" />

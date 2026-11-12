@@ -20,6 +20,25 @@ describe("company account API boundaries", () => {
     expect(canCompanyAccountAccessApi(false, "GET", "/api/companies")).toBe(false);
   });
 
+  test("limits company reception to the agenda and daily-log workflows", () => {
+    const role = "recepcion";
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/appointments", role)).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/daily-log", role)).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "POST", "/api/daily-log", role)).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/departments", role)).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/business-partners", role)).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "POST", "/api/appointments/12/send-qr", role)).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "PATCH", "/api/business-partners/4", role)).toBe(false);
+    expect(canCompanyAccountAccessApi(false, "POST", "/api/appointments", role)).toBe(false);
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/equipment/declarations", role)).toBe(false);
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/company-users", role)).toBe(false);
+  });
+
+  test("keeps company host operational access separate from reception", () => {
+    expect(canCompanyAccountAccessApi(false, "GET", "/api/business-partners", "anfitrion")).toBe(true);
+    expect(canCompanyAccountAccessApi(false, "PATCH", "/api/business-partners/4", "anfitrion")).toBe(true);
+  });
+
   test("allows a signed-in company account to change its temporary password", () => {
     expect(canCompanyAccountAccessApi(false, "POST", "/api/auth/change-password")).toBe(true);
   });

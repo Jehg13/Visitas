@@ -47,6 +47,10 @@ const companyAdminAccountsMigrationUrl = new URL(
   "../../database/init/014_create_company_admin_accounts.sql",
   import.meta.url,
 );
+const visitorKioskPairingCodesMigrationUrl = new URL(
+  "../../database/init/015_create_visitor_kiosk_pairing_codes.sql",
+  import.meta.url,
+);
 const initialMobileAppUrl = new URL("../../initial-mobile-app.apk", import.meta.url);
 
 async function migrate() {
@@ -63,6 +67,7 @@ async function migrate() {
     appointmentEmployeeAttendanceMigrationUrl,
     companiesMigrationUrl,
     companyAdminAccountsMigrationUrl,
+    visitorKioskPairingCodesMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));

@@ -11,6 +11,7 @@ export const dashboardSectionPaths = {
   "Equipo y herramientas": "/equipos",
   "Bitácora diaria": "/bitacora",
   "Aplicación móvil": "/aplicacion-movil",
+  Tablets: "/tablets",
 } as const;
 
 export type DashboardSection = keyof typeof dashboardSectionPaths;

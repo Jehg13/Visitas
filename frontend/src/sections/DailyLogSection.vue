@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { apiFetch as fetch } from "../api";
 import { confirmUser, notifyUser } from "../notifications";
+import type { Company } from "../stores/types";
 import SectionHelpDialog from "./SectionHelpDialog.vue";
 import VisitorKioskReceptionSection from "./VisitorKioskReceptionSection.vue";
 
@@ -107,7 +108,8 @@ const props = defineProps<{
   isReception: boolean;
   isCompanyUser: boolean;
   isCompanyAdmin: boolean;
-  companyScope: "cymez" | "all";
+  companyScope: string;
+  companies: Company[];
   appointments: Appointment[];
   appointmentsLoading: boolean;
   externalStaff: ExternalStaff[];
@@ -118,12 +120,19 @@ const props = defineProps<{
   theme: "dark" | "light";
 }>();
 const emit = defineEmits<{
-  "update:companyScope": [scope: "cymez" | "all"];
+  "update:companyScope": [scope: string];
   movementSaved: [];
   openQr: [appointment: Appointment, externalStaffId?: number];
 }>();
 
 const today = ref(getLocalDate());
+const cymezCompanyName = computed(() =>
+  props.companies.find((company) => company.name.trim().toLocaleLowerCase("es") === "cymez")?.name ??
+  "Cymez",
+);
+const otherCompanies = computed(() =>
+  props.companies.filter((company) => company.name.trim().toLocaleLowerCase("es") !== "cymez"),
+);
 const fromDate = ref(props.initialRange?.from ?? today.value);
 const toDate = ref(props.initialRange?.to ?? today.value);
 const search = ref("");
@@ -1630,10 +1639,13 @@ function handleDetailDrawerKeydown(event: KeyboardEvent) {
           <select
             :value="companyScope"
             aria-label="Filtrar bitácora por empresa"
-            @change="emit('update:companyScope', ($event.target as HTMLSelectElement).value as 'cymez' | 'all')"
+            @change="emit('update:companyScope', ($event.target as HTMLSelectElement).value)"
           >
-            <option value="cymez">Cymez</option>
-            <option value="all">Todas</option>
+            <option value="cymez">{{ cymezCompanyName }}</option>
+            <option v-for="company in otherCompanies" :key="company.id" :value="String(company.id)">
+              {{ company.name }}
+            </option>
+            <option value="all">Todas las empresas</option>
           </select>
         </label>
         <button class="daily-log-secondary-button" type="button" @click="showRecentHistory">
