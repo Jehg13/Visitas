@@ -51,6 +51,10 @@ const visitorKioskPairingCodesMigrationUrl = new URL(
   "../../database/init/015_create_visitor_kiosk_pairing_codes.sql",
   import.meta.url,
 );
+const visitorKioskDevicesMigrationUrl = new URL(
+  "../../database/init/016_create_visitor_kiosk_devices.sql",
+  import.meta.url,
+);
 const initialMobileAppUrl = new URL("../../initial-mobile-app.apk", import.meta.url);
 
 async function migrate() {
@@ -68,6 +72,7 @@ async function migrate() {
     companiesMigrationUrl,
     companyAdminAccountsMigrationUrl,
     visitorKioskPairingCodesMigrationUrl,
+    visitorKioskDevicesMigrationUrl,
   ];
   const statements = (await Promise.all(migrationFiles.map((url) => Bun.file(url).text())))
     .flatMap((sql) => sql.split(";").map((statement) => statement.trim()).filter(Boolean));
@@ -97,6 +102,48 @@ async function migrate() {
   try {
     for (const statement of statements) {
       await connection.query(statement);
+    }
+    const [visitorKioskDeviceColumn] = await connection.query<RowDataPacket[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'visitor_kiosk_registrations'
+         AND COLUMN_NAME = 'tablet_device_id'`,
+    );
+    if (visitorKioskDeviceColumn.length === 0) {
+      await connection.query(
+        `ALTER TABLE visitor_kiosk_registrations
+         ADD COLUMN tablet_device_id BIGINT UNSIGNED NULL AFTER idempotency_key`,
+      );
+    }
+    const [visitorKioskDeviceIndexes] = await connection.query<RowDataPacket[]>(
+      `SELECT INDEX_NAME
+       FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'visitor_kiosk_registrations'
+         AND INDEX_NAME = 'idx_visitor_kiosk_registrations_tablet_device'`,
+    );
+    if (visitorKioskDeviceIndexes.length === 0) {
+      await connection.query(
+        `ALTER TABLE visitor_kiosk_registrations
+         ADD INDEX idx_visitor_kiosk_registrations_tablet_device (tablet_device_id)`,
+      );
+    }
+    const [visitorKioskDeviceForeignKeys] = await connection.query<RowDataPacket[]>(
+      `SELECT CONSTRAINT_NAME
+       FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'visitor_kiosk_registrations'
+         AND CONSTRAINT_NAME = 'fk_visitor_kiosk_registrations_tablet_device'
+         AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+    );
+    if (visitorKioskDeviceForeignKeys.length === 0) {
+      await connection.query(
+        `ALTER TABLE visitor_kiosk_registrations
+         ADD CONSTRAINT fk_visitor_kiosk_registrations_tablet_device
+         FOREIGN KEY (tablet_device_id) REFERENCES visitor_kiosk_devices (id)
+         ON UPDATE CASCADE ON DELETE SET NULL`,
+      );
     }
     const [departmentCompanyColumns] = await connection.query<RowDataPacket[]>(
       `SELECT COLUMN_NAME

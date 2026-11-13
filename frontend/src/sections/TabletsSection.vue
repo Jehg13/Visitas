@@ -30,6 +30,7 @@ const generatedCode = ref<GeneratedPairingCode | null>(null);
 const loading = ref(false);
 const generating = ref(false);
 const revokingCodeId = ref<number | null>(null);
+const deletingCodeId = ref<number | null>(null);
 const errorMessage = ref("");
 const successMessage = ref("");
 
@@ -160,8 +161,8 @@ async function revokeCode(code: PairingCode) {
   errorMessage.value = "";
   successMessage.value = "";
   try {
-    const response = await fetch(`/api/tablet-pairing-codes/${code.id}`, {
-      method: "DELETE",
+    const response = await fetch(`/api/tablet-pairing-codes/${code.id}/revoke`, {
+      method: "POST",
     });
     const result = await response.json() as { message?: string; error?: string };
     if (!response.ok) {
@@ -175,6 +176,37 @@ async function revokeCode(code: PairingCode) {
       : "No se pudo revocar el código.";
   } finally {
     revokingCodeId.value = null;
+  }
+}
+
+async function deleteCode(code: PairingCode) {
+  const confirmed = await confirmUser(
+    `Se eliminará el código de ${code.companyName} del historial. Esta acción no se puede deshacer. Si ya se utilizó, la tablet vinculada no se desvinculará.`,
+    "Eliminar código",
+    "¿Eliminar este código del historial?",
+    "warning",
+  );
+  if (!confirmed) return;
+
+  deletingCodeId.value = code.id;
+  errorMessage.value = "";
+  successMessage.value = "";
+  try {
+    const response = await fetch(`/api/tablet-pairing-codes/${code.id}`, {
+      method: "DELETE",
+    });
+    const result = await response.json() as { message?: string; error?: string };
+    if (!response.ok) {
+      throw new Error(result.error ?? "No se pudo eliminar el código.");
+    }
+    successMessage.value = result.message ?? "El código se eliminó del historial.";
+    await loadCodes();
+  } catch (error) {
+    errorMessage.value = error instanceof Error
+      ? error.message
+      : "No se pudo eliminar el código.";
+  } finally {
+    deletingCodeId.value = null;
   }
 }
 
@@ -301,15 +333,26 @@ onMounted(loadCodes);
                 </span>
               </td>
               <td>
-                <button
-                  v-if="code.status === 'active'"
-                  class="workspace-remove"
-                  type="button"
-                  :disabled="revokingCodeId === code.id"
-                  @click="revokeCode(code)"
-                >
-                  {{ revokingCodeId === code.id ? "Revocando…" : "Revocar" }}
-                </button>
+                <div class="department-card-actions tablet-row-actions">
+                  <button
+                    v-if="code.status === 'active'"
+                    class="staff-edit-button"
+                    type="button"
+                    :disabled="revokingCodeId === code.id || deletingCodeId === code.id"
+                    @click="revokeCode(code)"
+                  >
+                    {{ revokingCodeId === code.id ? "Revocando…" : "Revocar" }}
+                  </button>
+                  <button
+                    class="workspace-remove"
+                    type="button"
+                    :disabled="deletingCodeId === code.id || revokingCodeId === code.id"
+                    :aria-label="`Eliminar código de ${code.companyName}`"
+                    @click="deleteCode(code)"
+                  >
+                    {{ deletingCodeId === code.id ? "Eliminando…" : "Eliminar" }}
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>

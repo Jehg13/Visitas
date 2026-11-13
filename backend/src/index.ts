@@ -15,7 +15,10 @@ import {
   handleMobileAppReleaseRequest,
   isPublicMobileAppReleaseRequest,
 } from "./mobile-releases";
-import { handleTabletPairingRequest } from "./tablet-pairing";
+import {
+  authenticateTabletDevice,
+  handleTabletPairingRequest,
+} from "./tablet-pairing";
 import {
   formatElapsedMinutes,
   getVisitTimerIntervalMinutes,
@@ -1899,6 +1902,17 @@ async function handleVisitorKioskRequest(
   url: URL,
   sourceAddress: string,
 ): Promise<Response | null> {
+  const isTabletRegistrationRequest =
+    (request.method === "GET" && url.pathname === "/api/visitor-kiosk/status") ||
+    (request.method === "POST" && url.pathname === "/api/visitor-kiosk/registrations");
+  const tabletAuthentication = isTabletRegistrationRequest
+    ? await authenticateTabletDevice(request)
+    : null;
+  if (tabletAuthentication?.tokenProvided && !tabletAuthentication.device) {
+    return Response.json({ error: "La vinculación de esta tablet no es válida." }, { status: 401 });
+  }
+  const tabletDevice = tabletAuthentication?.device ?? null;
+
   if (url.pathname === "/api/visitor-kiosk/settings" && request.method === "GET") {
     try {
       const [rows] = await pool.execute<RowDataPacket[]>(
@@ -1991,8 +2005,9 @@ async function handleVisitorKioskRequest(
          FROM visitor_kiosk_registrations r
          INNER JOIN general_visitors v ON v.id = r.visitor_record_id
          WHERE r.idempotency_key = ?
+           AND ((? IS NULL AND r.tablet_device_id IS NULL) OR r.tablet_device_id = ?)
          LIMIT 1`,
-        [requestKey],
+        [requestKey, tabletDevice?.id ?? null, tabletDevice?.id ?? null],
       );
       if (!rows[0]) return Response.json({ error: "No se encontró el registro." }, { status: 404 });
       return Response.json({
@@ -2048,7 +2063,7 @@ async function handleVisitorKioskRequest(
     let transactionStep = "iniciar transacción";
     try {
       await connection.beginTransaction();
-      const companyId = await getCymezCompanyId();
+      const companyId = tabletDevice?.companyId ?? await getCymezCompanyId();
       transactionStep = "comprobar clave de idempotencia";
       const [existingRegistrations] = await connection.execute<RowDataPacket[]>(
         `SELECT r.folio, v.full_name AS visitor_name, r.authorization_status,
@@ -2059,8 +2074,10 @@ async function handleVisitorKioskRequest(
                 ) AS auto_authorized
          FROM visitor_kiosk_registrations r
          INNER JOIN general_visitors v ON v.id = r.visitor_record_id
-         WHERE r.idempotency_key = ? LIMIT 1 FOR UPDATE`,
-        [requestKey],
+         WHERE r.idempotency_key = ?
+           AND ((? IS NULL AND r.tablet_device_id IS NULL) OR r.tablet_device_id = ?)
+         LIMIT 1 FOR UPDATE`,
+        [requestKey, tabletDevice?.id ?? null, tabletDevice?.id ?? null],
       );
       if (existingRegistrations[0]) {
         await connection.commit();
@@ -2143,8 +2160,8 @@ async function handleVisitorKioskRequest(
       const [registrationResult] = await connection.execute<ResultSetHeader>(
         `INSERT INTO visitor_kiosk_registrations
            (visitor_record_id, folio, company_name, visit_reason, carries_equipment, identification_type,
-            idempotency_key, authorization_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            idempotency_key, tablet_device_id, authorization_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
           visitorRecordId,
           folio,
@@ -2153,6 +2170,7 @@ async function handleVisitorKioskRequest(
           input.carriesItems,
           input.identificationTypes.join(", "),
           requestKey,
+          tabletDevice?.id ?? null,
           autoAuthorizePublicVisitors ? "Autorizada" : "Pendiente",
         ],
       );
@@ -2251,8 +2269,10 @@ async function handleVisitorKioskRequest(
                   ) AS auto_authorized
            FROM visitor_kiosk_registrations r
            INNER JOIN general_visitors v ON v.id = r.visitor_record_id
-           WHERE r.idempotency_key = ? LIMIT 1`,
-          [requestKey],
+           WHERE r.idempotency_key = ?
+             AND ((? IS NULL AND r.tablet_device_id IS NULL) OR r.tablet_device_id = ?)
+           LIMIT 1`,
+          [requestKey, tabletDevice?.id ?? null, tabletDevice?.id ?? null],
         );
         if (existingRegistrations[0]) {
           return Response.json({
@@ -3759,6 +3779,7 @@ function isPublicApiRequest(request: Request, url: URL) {
       "/api/auth/password-recovery",
       "/api/auth/password-reset",
       "/api/visitor-kiosk/registrations",
+      "/api/tablet-pairing-codes/redeem",
     ].includes(pathname))
   ) {
     return true;
@@ -4809,6 +4830,14 @@ const server = Bun.serve({
     }
 
     if (request.method === "GET" && url.pathname === "/api/visitor-kiosk/events") {
+      const tabletAuthentication = await authenticateTabletDevice(request);
+      if (tabletAuthentication.tokenProvided && !tabletAuthentication.device) {
+        return addCorsHeaders(
+          Response.json({ error: "La vinculación de esta tablet no es válida." }, { status: 401 }),
+          corsOrigin,
+        );
+      }
+      const tabletDevice = tabletAuthentication.device;
       const requestKey = url.searchParams.get("key") ?? "";
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestKey)) {
         return addCorsHeaders(
@@ -4818,8 +4847,12 @@ const server = Bun.serve({
       }
       try {
         const [rows] = await pool.execute<RowDataPacket[]>(
-          "SELECT id FROM visitor_kiosk_registrations WHERE idempotency_key = ? LIMIT 1",
-          [requestKey],
+          `SELECT id
+           FROM visitor_kiosk_registrations
+           WHERE idempotency_key = ?
+             AND ((? IS NULL AND tablet_device_id IS NULL) OR tablet_device_id = ?)
+           LIMIT 1`,
+          [requestKey, tabletDevice?.id ?? null, tabletDevice?.id ?? null],
         );
         if (!rows[0]) {
           return addCorsHeaders(
@@ -4858,6 +4891,7 @@ const server = Bun.serve({
       request,
       url,
       getRequestUser,
+      request.headers.get("x-real-ip") ?? server.requestIP(request)?.address ?? "unknown",
     );
     if (tabletPairingResponse) return tabletPairingResponse;
 
